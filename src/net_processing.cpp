@@ -135,7 +135,7 @@ static bool PeerHasSubblockHeader(CNodeStateAccessor &state, const uint256 &hash
 }
 
 template <class T>
-void static SendBlock(CNode *pfrom,
+bool static SendBlock(CNode *pfrom,
     T &inv,
     ConstCBlockRef pblock,
     const uint32_t msgCookie,
@@ -143,8 +143,7 @@ void static SendBlock(CNode *pfrom,
     uint32_t &replyCookieCount,
     unsigned char &noSendReason,
     std::string &noSendStr,
-    const bool lastInv,
-    bool &fSend)
+    const bool lastInv)
 {
     if (inv.type == MSG_BLOCK)
     {
@@ -152,12 +151,14 @@ void static SendBlock(CNode *pfrom,
         pfrom->blocksSent += 1;
         pfrom->PushMessageWithCookie(NetMsgType::BLOCK, oneReplyPerInvCookie, *pblock);
         replyCookieCount++;
+        return true;
     }
     else if (inv.type == MSG_CMPCT_BLOCK)
     {
         LOG(CMPCT, "Sending compactblock via getdata message to %s\n", pfrom->GetLogName());
         SendCompactBlock(pblock, pfrom, msgCookie, inv.type);
         replyCookieCount++;
+        return true;
     }
     else // MSG_FILTERED_BLOCK)
     {
@@ -192,12 +193,13 @@ void static SendBlock(CNode *pfrom,
                 pfrom->PushMessageWithCookie(NetMsgType::TX, replyCookie, pblock->vtx[pair.first]);
                 replyCookieCount++;
             }
+            return true;
         }
         else
         {
-            fSend = false;
             noSendReason = REJECT_MALFORMED;
             noSendStr = std::string("Merkle block requested but no filter installed");
+            return false;
         }
     }
 }
@@ -250,12 +252,10 @@ void static ProcessGetData(CNode *pfrom,
             ConstCBlockRef pblock;
             if (tailstormForest.Find(inv.hash, pblock))
             {
-                bool fSend = true;
                 unsigned char noSendReason = 0;
                 std::string noSendStr = std::string("");
-                SendBlock(pfrom, inv, pblock, msgCookie, oneReplyPerInvCookie, replyCookieCount, noSendReason,
-                    noSendStr, lastInv, fSend);
-                if (!fSend)
+                if (!SendBlock(pfrom, inv, pblock, msgCookie, oneReplyPerInvCookie, replyCookieCount, noSendReason,
+                        noSendStr, lastInv))
                 {
                     std::string strCommand = NetMsgType::BLOCK;
                     uint32_t replyCookie = msgCookie + replyCookieCount;
@@ -302,6 +302,7 @@ void static ProcessGetData(CNode *pfrom,
                         // TODO: in the future we can throttle old block requests by setting send=false if we are out
                         // of bandwidth
                     }
+
                     // disconnect node in case we have reached the outbound limit for serving historical blocks
                     // never disconnect whitelisted nodes
                     if (fSend && CNode::OutboundTargetReached(true) &&
@@ -334,33 +335,40 @@ void static ProcessGetData(CNode *pfrom,
                         noSendStr = "Block too old";
                         noSendReason = REJECT_LIMITED;
                     }
-                    if (!(mi->nStatus & BLOCK_HAVE_DATA))
-                    {
-                        fSend = false;
-                        noSendStr = "Block pruned";
-                        noSendReason = REJECT_OBSOLETE;
-                    }
-                    // Pruned nodes may have deleted the block, so check whether
-                    // it's available before trying to send.
+
+                    // Everything checks out so try to send the block.
                     if (fSend)
                     {
-                        // Send block from disk
-                        pblock = ReadBlockFromDisk(mi, consensusParams);
-                        if (!pblock)
+                        // Pruned nodes may have deleted the block, so check whether
+                        // it's available before trying to send.
+                        if (!(mi->nStatus & BLOCK_HAVE_DATA))
                         {
-                            // its possible that I know about it but haven't stored it yet
-                            LOG(THIN, "unable to load block %s from disk\n",
-                                mi->phashBlock ? mi->phashBlock->ToString() : "");
                             fSend = false;
-                            noSendStr = "Block is processing";
-                            noSendReason = REJECT_WAITING;
+                            noSendStr = "Block pruned";
+                            noSendReason = REJECT_OBSOLETE;
                         }
                         else
                         {
-                            SendBlock(pfrom, inv, pblock, msgCookie, oneReplyPerInvCookie, replyCookieCount,
-                                noSendReason, noSendStr, lastInv, fSend);
+                            // Send block from disk
+                            pblock = ReadBlockFromDisk(mi, consensusParams);
+                            if (!pblock)
+                            {
+                                // it's possible that I know about it but haven't stored it yet
+                                LOG(THIN, "unable to load block %s from disk\n",
+                                    mi->phashBlock ? mi->phashBlock->ToString() : "");
+                                fSend = false;
+                                noSendStr = "Block is processing";
+                                noSendReason = REJECT_WAITING;
+                            }
+                            else
+                            {
+                                fSend = SendBlock(pfrom, inv, pblock, msgCookie, oneReplyPerInvCookie, replyCookieCount,
+                                    noSendReason, noSendStr, lastInv);
+                            }
                         }
                     }
+
+                    // Return reject if sending failed for any reason.
                     if (!fSend)
                     {
                         std::string strCommand = NetMsgType::BLOCK;
