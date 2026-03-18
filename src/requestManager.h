@@ -250,7 +250,7 @@ public:
     void BlockRejected(const CInv &obj, CNode *pfrom);
 
     // Indicate that we got this object
-    void Received(const CInv &obj, CNode *pfrom);
+    void Accepted(const CInv &obj, CNode *pfrom);
 
     // Indicate that we previously got this object
     void AlreadyReceived(CNode *pnode, const CInv &obj);

@@ -339,7 +339,7 @@ void CRequestManager::Downloading(const uint256 &hash, CNode *pfrom, unsigned in
 }
 
 // Indicate that we got this object.
-void CRequestManager::Received(const CInv &obj, CNode *pfrom)
+void CRequestManager::Accepted(const CInv &obj, CNode *pfrom)
 {
     if (obj.type == MSG_TX)
     {

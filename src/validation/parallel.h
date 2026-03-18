@@ -163,6 +163,7 @@ private:
         NodeId nodeid;
         bool fIsValidating; // is the block currently in connectblock() and validating inputs
         bool fIsReorgInProgress; // has a re-org to another chain been triggered.
+        bool fSummaryBlock;
     };
     std::map<boost::thread::id, CHandleBlockMsgThreads> mapBlockValidationThreads GUARDED_BY(cs_blockvalidationthread);
 
@@ -178,14 +179,11 @@ public:
     ~CParallelValidation();
 
     /** Initialize mapBlockValidationThreads */
-    void InitThread(const boost::thread::id this_id,
-        const CNode *pfrom,
-        ConstCBlockRef pblock,
-        const uint256 &hash,
-        uint64_t blockSize);
+    void InitThread(const boost::thread::id this_id, const CNode *pfrom, ConstCBlockRef pblock);
 
     /** Number of block validation threads currently validating a block */
     unsigned int NumBlocksValidating() { return numBlocksValidating.load(); }
+
     /** Initialize a PV session */
     bool Initialize(const boost::thread::id this_id, const CBlockIndex *pindex, const bool fParallel);
 
@@ -193,17 +191,23 @@ public:
     void Cleanup(const ConstCBlockRef pblock, CBlockIndex *pindex);
 
     /** Send quit to competing threads */
-    void QuitCompetingThreads(const uint256 &prevBlockHash);
+    void QuitCompetingThreads(const uint256 &prevBlockHash, bool fSummaryBlock);
 
     /** Is this block already running a validation thread? */
     bool IsAlreadyValidating(const NodeId id, const uint256 blockhash);
 
-    /** Terminate all currently running Block Validation threads, except the passed thread */
-    void StopAllValidationThreads(const boost::thread::id this_id = boost::thread::id());
-    /** Terminate all currently running Block Validation threads whose chainWork is <= the passed parameter, except the
-     * calling thread
+    /** Terminate all currently running Block Validation threads for all block types, except our own */
+    void StopAllValidationThreads();
+
+    /** Terminate all currently running Summary Block Validation threads, except the passed thread */
+    void StopAllSummaryBlockValidationThreads(const boost::thread::id this_id);
+
+    /** Terminate all currently running Summary Block Validation threads whose chainWork is <= the
+     * passed parameter, except the calling thread
      */
-    void StopAllValidationThreads(const uint32_t nChainWork);
+    void StopAllSummaryBlockValidationThreads(const uint32_t nChainWork);
+
+    /** Wait for all block validation threads to stop */
     void WaitForAllValidationThreadsToStop();
 
     /** Has parallel block validation been turned on via the config settings */
@@ -217,11 +221,12 @@ public:
 
     /** Post the semaphore when the thread exits.  */
     void Post() { semThreadCount.post(); }
+
     /** Was the fQuit flag set to true which causes the PV thread to exit */
     bool QuitReceived(const boost::thread::id this_id, const bool fParallel);
 
     /** Used to determine if another thread has already updated the utxo and advance the chain tip */
-    bool ChainWorkHasChanged(const arith_uint256 &nStartingChainWork);
+    bool ChainWorkHasChanged(const arith_uint256 &nStartingChainWork, bool fSummaryBlock);
 
     /** Set the correct locks and locking order before returning from a PV session */
     void SetLocks(const bool fParallel);
@@ -238,7 +243,7 @@ public:
     uint32_t MaxWorkChainBeingProcessed();
 
     /** Process a block message */
-    bool HandleBlockMessage(CNode *pfrom, const std::string &strCommand, ConstCBlockRef pblock, const uint256 &hash);
+    bool HandleBlockMessage(CNode *pfrom, const std::string &strCommand, ConstCBlockRef pblock);
 
     /** The number of script validation threads */
     unsigned int ThreadCount() { return nThreads; }

@@ -157,7 +157,7 @@ UniValue generateBlocks(boost::shared_ptr<CReserveScript> coinbaseScript,
         // we must terminate any block validation threads that are currently running,
         // Unless they have more work than our own block or are processing a chain
         // that has more work than our block.
-        PV->StopAllValidationThreads(pblock->GetBlockHeader().nBits);
+        PV->StopAllSummaryBlockValidationThreads(pblock->GetBlockHeader().nBits);
 
         CValidationState state;
         if (!ProcessNewBlock(state, Params(), nullptr, pblock, true, nullptr, false))
@@ -941,7 +941,7 @@ UniValue SubmitBlock(ConstCBlockRef pblock)
         // we must terminate any block validation threads that are currently running,
         // Unless they have more work than our own block or are processing a chain
         // that has more work than our block.
-        PV->StopAllValidationThreads(pblock->nBits);
+        PV->StopAllSummaryBlockValidationThreads(pblock->nBits);
 
         fAccepted = ProcessNewBlock(state, Params(), nullptr, pblock, true, nullptr, false);
     }

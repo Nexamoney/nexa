@@ -571,6 +571,7 @@ bool CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
                 if (!InitializeTree(newNode, _pcoinsTip))
                 {
                     mapGroveNodes.erase(newNode->hash);
+                    tailstormForest.AddSubblockOrphan(newNode);
                     return false;
                 }
                 LOG(DAG, "%s(): Initialize Tree: completed init tree for %s", __func__, newNode->hash.ToString());
@@ -1041,25 +1042,19 @@ bool CTailstormForest::_Insert(ConstCBlockRef subblock)
 
 void CTailstormForest::AddSummaryBlockOrphan(ConstCBlockRef pblock)
 {
-    LOCK(cs_forest);
-    CTailstormGroveRef grove = nullptr;
     const uint256 &hash = pblock->GetHash();
-    if (!GetGrove(hash, grove))
-    {
-        LOG(DAG, "Insert summary block orphan : %s", hash.ToString());
-        mapSummaryBlocksUnlinked.emplace(hash, pblock);
-    }
-    else
-    {
-        LOG(DAG, "Grove already exists. Did not insert summary block orphan : %s", hash.ToString());
-    }
+    LOG(DAG, "Insert summary block orphan : %s", hash.ToString());
+
+    LOCK(cs_forest);
+    mapSummaryBlocksUnlinked.emplace(hash, pblock);
 }
 
 void CTailstormForest::RemoveSummaryBlockOrphan(ConstCBlockRef pblock)
 {
-    LOCK(cs_forest);
     const uint256 &hash = pblock->GetHash();
     LOG(DAG, "Remove summary block orphan : %s", hash.ToString());
+
+    LOCK(cs_forest);
     mapSummaryBlocksUnlinked.erase(hash);
 }
 
@@ -1100,11 +1095,12 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
 
             if (((pindex && pindex->IsLinked()) && fHaveAllPrevSubblocks) && !mapSummaryBlocksUnlinked.count(prevhash))
             {
-                LOG(DAG, "%s(): process orphans - found orphan %s connecting to prev block %s", __func__,
-                    iter->second->hash.ToString(), prevhash.ToString());
+                LOG(DAG, "%s(): process orphans - found subblock orphan %s connecting to prev summary block %s",
+                    __func__, iter->second->hash.ToString(), prevhash.ToString());
                 if (_Insert(iter->second->subblock))
                 {
-                    LOG(DAG, "%s(): Insert of orphan succeeded", __func__);
+                    LOG(DAG, "%s(): Success: Insert of subblock orphan %s connecting to prev summary block %s",
+                        __func__, __func__, iter->second->hash.ToString(), prevhash.ToString());
                     setLinked.insert(iter->second->hash);
                     mapNodesUnlinked.erase(iter);
                     iter = mapNodesUnlinked.begin();
@@ -1112,8 +1108,8 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
                 }
                 else
                 {
-                    LOG(DAG, "%s(): unlinked insert failed for %s size %ld", __func__, iter->second->hash.ToString(),
-                        mapNodesUnlinked.size());
+                    LOG(DAG, "%s(): Insert orphan failed for subblock %s size %ld", __func__,
+                        iter->second->hash.ToString(), mapNodesUnlinked.size());
                 }
             }
             ++iter;
@@ -1547,12 +1543,13 @@ void CTailstormForest::CheckForReorg()
         return;
     }
 
-    // Initiate reorg if there is a tree with greater work
-    if (nMaxChainWork > nChainTipWork)
+    // Initiate reorg if there is a tree with greater work on another fork
+    const CBlockIndex *pindexFork = chainActive.FindFork(pindexMostWork);
+    if ((nMaxChainWork > nChainTipWork) && (chainTip != pindexFork))
     {
         LOG(DAG, "%s(): Attempting to initiate a reorg from %s at height %d to %s at height %d", __func__,
-            pindexMostWork->phashBlock->ToString(), pindexMostWork->height(), chainTip->phashBlock->ToString(),
-            chainTip->height());
+            chainTip->phashBlock->ToString(), chainTip->height(), pindexMostWork->phashBlock->ToString(),
+            pindexMostWork->height());
 
         {
             LOCK(cs_main);
@@ -1660,9 +1657,10 @@ void CTailstormForest::GenerateDagData(CTailstormGroveRef grove)
             }
             else
             {
-                AddSubblockOrphan(treenode);
                 tree->dag.erase(treenode->hash);
+                grove->mapGroveNodes.erase(treenode->hash);
                 nSequenceId--;
+                AddSubblockOrphan(treenode);
             }
         }
     }
@@ -1859,13 +1857,16 @@ void CTailstormForest::Check()
     for (auto &mi : mapSummaryBlocksUnlinked)
     {
         CTailstormGroveRef grove = nullptr;
-        /*  Uncomment when you need extra debug logging
         if (GetGrove(mi.first, grove))
         {
-             LOGA(" summary block still in unlinked %s\n", mi.first.ToString().c_str());
+            std::vector<std::map<uint256, CTreeNodeRef> > vDoubleSpendTxns;
+            std::map<COutPoint, CTransactionRef> mapInputs;
+            std::set<CTreeNodeRef> setDag;
+            if (tailstormForest.GetDagForBlock(mi.second, setDag, &vDoubleSpendTxns, &mapInputs))
+            {
+                assert("summary block in unlinked when it should not be");
+            }
         }
-        */
-        assert(!GetGrove(mi.first, grove));
     }
 
     // Count up forest nodes and check that all nodes equal grove nodes plus unlinked.

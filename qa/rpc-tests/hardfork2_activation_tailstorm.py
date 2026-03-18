@@ -941,6 +941,7 @@ class TailstormActivationTest(BitcoinTestFramework):
             currentCount = self.nodes[1].getblockcount();
             self.nodes[1].generate(16)
             waitFor(waitTime, lambda: currentCount + 4 == self.nodes[1].getblockcount())
+            #waitFor(waitTime, lambda: currentCount + 4 == self.nodes[0].getblockcount())
             self.sync_all()
 
         # Create enough large transactions that would more than fill a summary block

@@ -2404,6 +2404,63 @@ static bool AcceptBlock(ConstCBlockRef pblock,
     return true;
 }
 
+bool ProcessAcceptBlock(CNode *pfrom,
+    ConstCBlockRef pblock,
+    CValidationState &state,
+    const CChainParams &chainparams,
+    CBlockIndex **ppindex,
+    CDiskBlockPos *dbp)
+{
+    AssertLockHeld(cs_main);
+
+    const uint256 &hash = pblock->GetHash();
+
+    bool fRequested = false;
+    if (pfrom)
+    {
+        bool forceProcessing = pfrom->fWhitelisted && !IsInitialBlockDownload();
+        fRequested = requester.MarkBlockAsReceived(hash, pfrom);
+        fRequested |= forceProcessing;
+    }
+
+    CBlockIndex *&pindex = *ppindex;
+    bool ret = AcceptBlock(pblock, state, chainparams, ppindex, fRequested, dbp);
+    if (pindex && pfrom)
+    {
+        mapBlockSource[pindex->GetBlockHash()] = pfrom->GetId();
+    }
+    const auto &cparams = chainparams.GetConsensus();
+    CheckBlockIndex(cparams);
+
+    CInv inv(MSG_BLOCK, hash);
+    if (!ret)
+    {
+        // If the block was not accepted then reset the fProcessing flag to false.
+        requester.BlockRejected(inv, pfrom);
+        LOG(BLK, "Invalid block %s: time:%d TX size:%d len:%d AcceptBlock: %s\n", hash.ToString(), pblock->nTime,
+            pblock->vtx.size(), pblock->GetBlockSize(), state.GetLogString());
+        return error("%s: AcceptBlock FAILED", __func__);
+    }
+    else
+    {
+        // We must indicate to the request manager that the block was accepted only after it has
+        // been stored to disk (or been shown to be invalid). Doing so prevents unnecessary re-requests.
+        requester.Accepted(inv, pfrom);
+
+        // Let the subblock tracking know that this peer has this subblock already
+        // to prevent re-requests. Similar to just above here where we do the same
+        // for full summary blocks with requester.Received() where the item gets removed
+        // from the request manager.
+        if (pfrom && !IsSummaryBlock(pblock))
+        {
+            CNodeStateAccessor modablestate(nodestate, pfrom->GetId());
+            modablestate->mapSubblockHeaders.emplace(inv.hash, pblock->GetBlockHeader().height);
+            LOG(DAG, "Added to modable state after acceptsubblock");
+        }
+    }
+    return true;
+}
+
 uint32_t GetBlockScriptFlags(const CBlockIndex *pindex, const Consensus::Params &consensusparams)
 {
     uint32_t flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
@@ -2779,6 +2836,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     int nChecked = 0;
     int nUnVerifiedChecked = 0;
     const arith_uint256 nStartingChainWork = chainActive.Tip()->chainWork();
+    bool fSummaryBlock = IsSummaryBlock(pblock);
 
     // Section for boost scoped lock on the scriptcheck_mutex
     boost::thread::id this_id(boost::this_thread::get_id());
@@ -2832,7 +2890,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                     if (coin->IsSpent())
                     {
                         // Chain got reorged, this is just a block on the wrong chain not a malicious block
-                        if (PV->ChainWorkHasChanged(nStartingChainWork) || PV->QuitReceived(this_id, fParallel))
+                        if (PV->ChainWorkHasChanged(nStartingChainWork, fSummaryBlock) ||
+                            PV->QuitReceived(this_id, fParallel))
                         {
                             return false;
                         }
@@ -2992,7 +3051,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                         // validation race and updates the UTXO first, then we may end up here with missing inputs.
                         // Therefore we check to see if the chainwork has advanced or if we recieved a quit and if
                         // so return without DOSing the node.
-                        if (PV->ChainWorkHasChanged(nStartingChainWork) || PV->QuitReceived(this_id, fParallel))
+                        if (PV->ChainWorkHasChanged(nStartingChainWork, fSummaryBlock) ||
+                            PV->QuitReceived(this_id, fParallel))
                         {
                             return false;
                         }
@@ -3237,13 +3297,13 @@ bool ConnectBlock(ConstCBlockRef pblock,
     // terminating any competing threads.
 
     // Last check for chain work just in case the thread manages to get here before being terminated.
-    if (PV->ChainWorkHasChanged(nStartingChainWork) || PV->QuitReceived(this_id, fParallel))
+    if (PV->ChainWorkHasChanged(nStartingChainWork, IsSummaryBlock(pblock)) || PV->QuitReceived(this_id, fParallel))
     {
         return false; // no need to lock cs_main before returning as it should already be locked.
     }
 
     // Quit any competing threads may be validating which have the same previous block before updating the UTXO.
-    PV->QuitCompetingThreads(pblock->GetBlockHeader().hashPrevBlock);
+    PV->QuitCompetingThreads(pblock->GetBlockHeader().hashPrevBlock, IsSummaryBlock(pblock));
 
     // Write undo information to disk
     {
@@ -4264,7 +4324,7 @@ bool _ActivateBestChain(CValidationState &state,
             {
                 // kill all validating threads except our own.
                 boost::thread::id this_id(boost::this_thread::get_id());
-                PV->StopAllValidationThreads(this_id);
+                PV->StopAllSummaryBlockValidationThreads(this_id);
             }
             else if (!PV->BlockExtendsChain(pblock))
             {
@@ -4367,48 +4427,17 @@ bool ProcessNewBlock(CValidationState &state,
     //                called from other places.  Currently it seems best to leave cs_main here as is.
     CBlockIndex *pindex = nullptr;
     {
-        LOCK(cs_main);
-        uint256 hash = pblock->GetHash();
-        bool fRequested = requester.MarkBlockAsReceived(hash, pfrom);
-        fRequested |= fForceProcessing;
         if (!checked)
         {
             return error("%s: CheckBlock FAILED", __func__);
         }
 
         // Store to disk
-        bool ret = AcceptBlock(pblock, state, chainparams, &pindex, fRequested, dbp);
-        if (pindex && pfrom)
-        {
-            mapBlockSource[pindex->GetBlockHash()] = pfrom->GetId();
-        }
-        CheckBlockIndex(cparams);
-
-        CInv inv(MSG_BLOCK, hash);
+        LOCK(cs_main);
+        bool ret = ProcessAcceptBlock(pfrom, pblock, state, chainparams, &pindex, dbp);
         if (!ret)
         {
-            // If the block was not accepted then reset the fProcessing flag to false.
-            requester.BlockRejected(inv, pfrom);
-            LOG(BLK, "Invalid block %s: time:%d TX size:%d len:%d AcceptBlock: %s\n", hexHash, pblock->nTime,
-                pblock->vtx.size(), pblock->GetBlockSize(), state.GetLogString());
-            return error("%s: AcceptBlock FAILED", __func__);
-        }
-        else
-        {
-            // We must indicate to the request manager that the block was received only after it has
-            // been stored to disk (or been shown to be invalid). Doing so prevents unnecessary re-requests.
-            requester.Received(inv, pfrom);
-
-            // Let the subblock tracking know that this peer has this subblock already
-            // to prevent re-requests. Similar to just above here where we do the same
-            // for full summary blocks with requester.Received() where the item gets removed
-            // from the request manager.
-            if (pfrom && !IsSummaryBlock(pblock))
-            {
-                CNodeStateAccessor modablestate(nodestate, pfrom->GetId());
-                modablestate->mapSubblockHeaders.emplace(inv.hash, pblock->GetBlockHeader().height);
-                LOG(DAG, "Added to modable state after acceptsubblock");
-            }
+            return error("%s: ProcessAcceptBlock FAILED", __func__);
         }
     }
 
