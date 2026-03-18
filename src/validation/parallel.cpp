@@ -37,10 +37,7 @@ static const unsigned int nScriptCheckQueues = 4;
 std::unique_ptr<CParallelValidation> PV;
 
 bool ShutdownRequested();
-static void HandleBlockMessageThread(CNodeRef noderef,
-    const string strCommand,
-    ConstCBlockRef pblock,
-    const uint256 hash);
+static void HandleBlockMessageThread(CNodeRef noderef, const string strCommand, ConstCBlockRef pblock);
 
 static void AddScriptCheckThreads(int i, CCheckQueue<CScriptCheck> *pqueue)
 {
@@ -196,6 +193,9 @@ bool CParallelValidation::Initialize(const boost::thread::id this_id, const CBlo
 
 void CParallelValidation::Cleanup(const ConstCBlockRef pblock, CBlockIndex *pindex)
 {
+    if (!IsSummaryBlock(pblock))
+        return;
+
     // Swap the block index sequence id's such that the winning block has the lowest id and all other id's
     // are still in their same order relative to each other.
     LOCK(cs_blockvalidationthread);
@@ -240,9 +240,12 @@ void CParallelValidation::Cleanup(const ConstCBlockRef pblock, CBlockIndex *pind
     }
 }
 
-void CParallelValidation::QuitCompetingThreads(const uint256 &prevBlockHash)
+void CParallelValidation::QuitCompetingThreads(const uint256 &prevBlockHash, bool fSummaryBlock)
 {
-    // Kill other competing threads but not this one.
+    if (!fSummaryBlock)
+        return;
+
+    // Kill other competing summary block threads but not this one.
     LOCK(cs_blockvalidationthread);
     {
         boost::thread::id this_id(boost::this_thread::get_id()); // get this thread's id
@@ -255,10 +258,10 @@ void CParallelValidation::QuitCompetingThreads(const uint256 &prevBlockHash)
             // Interrupt threads:  We want to stop any threads that have lost the validation race. We have to compare
             //                     at the previous block hashes to make the determination.  If they match then it must
             //                     be a parallel block validation that was happening.
-            if ((*mi).first != this_id && (*mi).second.hashPrevBlock == prevBlockHash)
+            if ((*mi).first != this_id && (*mi).second.hashPrevBlock == prevBlockHash && (*mi).second.fSummaryBlock)
             {
                 Quit(mi);
-                LOG(PARALLEL, "Interruping a PV thread with blockhash %s and previous blockhash %s\n",
+                LOG(PARALLEL, "Interrupting a PV thread with blockhash %s and previous blockhash %s\n",
                     (*mi).second.hash.ToString(), prevBlockHash.ToString());
             }
         }
@@ -282,8 +285,10 @@ bool CParallelValidation::IsAlreadyValidating(const NodeId nodeid, const uint256
     return false;
 }
 
-void CParallelValidation::StopAllValidationThreads(const boost::thread::id this_id)
+void CParallelValidation::StopAllValidationThreads()
 {
+    const boost::thread::id this_id = boost::thread::id();
+
     LOCK(cs_blockvalidationthread);
     map<boost::thread::id, CHandleBlockMsgThreads>::iterator mi = mapBlockValidationThreads.begin();
     while (mi != mapBlockValidationThreads.end())
@@ -296,7 +301,21 @@ void CParallelValidation::StopAllValidationThreads(const boost::thread::id this_
     }
 }
 
-void CParallelValidation::StopAllValidationThreads(const uint32_t nChainWork)
+void CParallelValidation::StopAllSummaryBlockValidationThreads(const boost::thread::id this_id)
+{
+    LOCK(cs_blockvalidationthread);
+    map<boost::thread::id, CHandleBlockMsgThreads>::iterator mi = mapBlockValidationThreads.begin();
+    while (mi != mapBlockValidationThreads.end())
+    {
+        if ((*mi).first != this_id && (*mi).second.fSummaryBlock) // we don't want to kill our own thread
+        {
+            Quit(mi);
+        }
+        mi++;
+    }
+}
+
+void CParallelValidation::StopAllSummaryBlockValidationThreads(const uint32_t nChainWork)
 {
     boost::thread::id this_id(boost::this_thread::get_id());
 
@@ -308,7 +327,7 @@ void CParallelValidation::StopAllValidationThreads(const uint32_t nChainWork)
         // this method when we're mining our own block.  In that event we want to give priority to our own
         // block rather than any competing block or chain.
         if (((*mi).first != this_id) && (*mi).second.nChainWork <= nChainWork &&
-            (*mi).second.nMostWorkOurFork <= nChainWork)
+            (*mi).second.nMostWorkOurFork <= nChainWork && (*mi).second.fSummaryBlock)
         {
             Quit(mi);
         }
@@ -333,17 +352,13 @@ void CParallelValidation::WaitForAllValidationThreadsToStop()
 }
 
 bool CParallelValidation::Enabled() { return parallelTweak.Value(); }
-void CParallelValidation::InitThread(const boost::thread::id this_id,
-    const CNode *pfrom,
-    ConstCBlockRef pblock,
-    const uint256 &hash,
-    uint64_t blockSize)
+void CParallelValidation::InitThread(const boost::thread::id this_id, const CNode *pfrom, ConstCBlockRef pblock)
 {
     LOCK(cs_blockvalidationthread);
     assert(mapBlockValidationThreads.count(this_id) == 0); // this id should not already be in use
-    mapBlockValidationThreads.emplace(
-        this_id, CHandleBlockMsgThreads{nullptr, hash, pblock->hashPrevBlock, pblock->nBits, pblock->nBits, INT_MAX,
-                     GetTimeMillis(), blockSize, false, pfrom->id, false, false});
+    mapBlockValidationThreads.emplace(this_id,
+        CHandleBlockMsgThreads{nullptr, pblock->GetHash(), pblock->hashPrevBlock, pblock->nBits, pblock->nBits, INT_MAX,
+            GetTimeMillis(), pblock->GetBlockSize(), false, pfrom->id, false, false, IsSummaryBlock(pblock)});
 
     numBlocksValidating.store(mapBlockValidationThreads.size());
 
@@ -393,11 +408,11 @@ bool CParallelValidation::QuitReceived(const boost::thread::id this_id, const bo
     return false;
 }
 
-bool CParallelValidation::ChainWorkHasChanged(const arith_uint256 &nStartingChainWork)
+bool CParallelValidation::ChainWorkHasChanged(const arith_uint256 &nStartingChainWork, bool fSummaryBlock)
 {
-    if (chainActive.Tip()->chainWork() != nStartingChainWork)
+    if (fSummaryBlock && (chainActive.Tip()->chainWork() != nStartingChainWork))
     {
-        LOG(PARALLEL, "Quitting - Chain Work %s is not the same as the starting Chain Work %s\n",
+        LOG(PARALLEL, "Quitting - Chain Work %s is not the same as the starting chain Work %s\n",
             chainActive.Tip()->chainWork().ToString(), nStartingChainWork.ToString());
         return true;
     }
@@ -444,6 +459,9 @@ bool CParallelValidation::IsReorgInProgress()
 
 bool CParallelValidation::BlockExtendsChain(const ConstCBlockRef pblock)
 {
+    if (!IsSummaryBlock(pblock))
+        return false;
+
     LOCK(cs_blockvalidationthread);
     map<boost::thread::id, CHandleBlockMsgThreads>::iterator mi = mapBlockValidationThreads.begin();
     while (mi != mapBlockValidationThreads.end())
@@ -457,6 +475,9 @@ bool CParallelValidation::BlockExtendsChain(const ConstCBlockRef pblock)
 
 void CParallelValidation::UpdateMostWorkOurFork(const CBlockHeader &header)
 {
+    if (!IsSummaryBlock(header))
+        return;
+
     LOCK(cs_blockvalidationthread);
     map<boost::thread::id, CHandleBlockMsgThreads>::iterator mi = mapBlockValidationThreads.begin();
     while (mi != mapBlockValidationThreads.end())
@@ -475,7 +496,7 @@ uint32_t CParallelValidation::MaxWorkChainBeingProcessed()
     map<boost::thread::id, CHandleBlockMsgThreads>::iterator mi = mapBlockValidationThreads.begin();
     while (mi != mapBlockValidationThreads.end())
     {
-        if ((*mi).second.nChainWork > nMaxWork)
+        if ((*mi).second.nChainWork > nMaxWork && (*mi).second.fSummaryBlock)
             nMaxWork = (*mi).second.nChainWork;
         mi++;
     }
@@ -485,14 +506,13 @@ uint32_t CParallelValidation::MaxWorkChainBeingProcessed()
 //  HandleBlockMessage launches a HandleBlockMessageThread.  And HandleBlockMessageThread processes each block and
 //  updates the UTXO if the block has been accepted and the tip updated. We cleanup and release the semaphore after
 //  the thread has finished.
-bool CParallelValidation::HandleBlockMessage(CNode *pfrom,
-    const string &strCommand,
-    ConstCBlockRef pblock,
-    const uint256 &hash)
+bool CParallelValidation::HandleBlockMessage(CNode *pfrom, const string &strCommand, ConstCBlockRef pblock)
 {
+    const uint256 &hash = pblock->GetHash();
+
     // Indicate that the block was received and is about to be processed. Setting the processing flag
     // prevents us from re-requesting the block during the time it is being processed.
-    requester.ProcessingBlock(pblock->GetHash(), pfrom);
+    requester.ProcessingBlock(hash, pfrom);
 
 
     // Indicate that the block was fully received. At this point we have either a block or a fully reconstructed
@@ -551,7 +571,7 @@ bool CParallelValidation::HandleBlockMessage(CNode *pfrom,
                     {
                         LOG(PARALLEL,
                             "New Block validation terminated - Too many blocks currently being validated: %s\n",
-                            pblock->GetHash().ToString());
+                            hash.ToString());
                         return false;
                     }
                     // Terminate the thread with the largest block.
@@ -593,28 +613,28 @@ bool CParallelValidation::HandleBlockMessage(CNode *pfrom,
     // only launch block validation in a separate thread if PV is enabled.
     if (PV->Enabled() && !ShutdownRequested())
     {
-        boost::thread thread(boost::bind(&HandleBlockMessageThread, noderef, strCommand, pblock, hash));
+        boost::thread thread(boost::bind(&HandleBlockMessageThread, noderef, strCommand, pblock));
         thread.detach();
     }
     else
     {
-        HandleBlockMessageThread(noderef, strCommand, pblock, hash);
+        HandleBlockMessageThread(noderef, strCommand, pblock);
     }
     return true;
 }
 
-void HandleBlockMessageThread(CNodeRef noderef, const string strCommand, ConstCBlockRef pblock, const uint256 hash)
+void HandleBlockMessageThread(CNodeRef noderef, const string strCommand, ConstCBlockRef pblock)
 {
     boost::thread::id this_id(boost::this_thread::get_id());
     CNode *pfrom = noderef.get();
+    const uint256 &hash = pblock->GetHash();
 
     try
     {
-        uint64_t nSizeBlock = pblock->GetBlockSize();
         int64_t startTime = GetStopwatchMicros();
         CValidationState state;
 
-        PV->InitThread(this_id, pfrom, pblock, hash, nSizeBlock); // initialize the mapBlockValidationThread entries
+        PV->InitThread(this_id, pfrom, pblock); // initialize the mapBlockValidationThread entries
 
         // Process all blocks from whitelisted peers, even if not requested,
         // unless we're still syncing with the network.

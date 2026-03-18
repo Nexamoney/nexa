@@ -170,7 +170,7 @@ bool CGrapheneBlock::ValidateAndRecontructBlock(const uint256 &blockhash,
     graphenedata.UpdateInBound(nSizeGrapheneBlockTx + GetSize(), blockSize);
     LOG(GRAPHENE, "Graphene block stats: %s\n", graphenedata.ToString());
 
-    PV->HandleBlockMessage(pfrom, command, pblock, blockhash);
+    PV->HandleBlockMessage(pfrom, command, pblock);
 
     return true;
 }
@@ -712,7 +712,7 @@ bool CGrapheneBlock::process(CNode *pfrom, std::string strCommand, std::shared_p
     LOG(GRAPHENE, "Graphene block stats: %s\n", graphenedata.ToString().c_str());
 
     // Process the full block
-    PV->HandleBlockMessage(pfrom, strCommand, pblock, pblock->GetHash());
+    PV->HandleBlockMessage(pfrom, strCommand, pblock);
 
     return true;
 }

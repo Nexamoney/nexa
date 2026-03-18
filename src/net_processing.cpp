@@ -1676,7 +1676,7 @@ bool ProcessMessage(CNode *pfrom,
             // Indicate that the tx was received and is about to be processed. Setting the processing flag
             // prevents us from re-requesting the txn during the time of processing and before mempool acceptance.
             CInv inv(MSG_TX, txd.tx->GetId());
-            requester.Received(inv, pfrom);
+            requester.Accepted(inv, pfrom);
 
             // Processing begins here where we enqueue the transaction.
             txd.nodeId = pfrom->id;
@@ -2397,7 +2397,7 @@ bool ProcessMessage(CNode *pfrom,
         // Message consistency checking
         // NOTE: consistency checking is handled by checkblock() which is called during
         //       ProcessNewBlock() in HandleBlockMessage.
-        if (!PV->HandleBlockMessage(pfrom, strCommand, pblock, hash))
+        if (!PV->HandleBlockMessage(pfrom, strCommand, pblock))
         {
             // If we couldn't get a validation thread and this is a tailstorm subblock
             // then we have to save it to dag map so it can be processed later as an
@@ -2405,18 +2405,23 @@ bool ProcessMessage(CNode *pfrom,
             // block orphan map.
             if (IsInitialSyncComplete())
             {
-                if (!IsSummaryBlock(pblock))
+                CValidationState state;
+                CBlockIndex *pindex = nullptr;
+                CDiskBlockPos *dbp = nullptr;
                 {
-                    tailstormForest.Insert(pblock);
-                }
-                else if (IsTailstormSummaryBlock(pblock))
-                {
-                    CValidationState state;
-                    if (AcceptBlockHeader(*pblock, state, Params()))
+                    LOG(DAG, "%s(): Did not get validation thread - processing subblock", __func__);
+                    LOCK(cs_main);
+                    bool ret = ProcessAcceptBlock(pfrom, pblock, state, chainparams, &pindex, dbp);
+                    if (!ret)
                     {
-                        LOG(DAG, "%s(): Did not get validation thread - storing summary block orphan", __func__);
-                        tailstormForest.AddSummaryBlockOrphan(pblock);
+                        return error("%s: ProcessAcceptBlock FAILED", __func__);
                     }
+                }
+
+                if (IsTailstormSummaryBlock(pblock))
+                {
+                    LOG(DAG, "%s(): Did not get validation thread - storing summary block orphan", __func__);
+                    tailstormForest.AddSummaryBlockOrphan(pblock);
                 }
             }
         }

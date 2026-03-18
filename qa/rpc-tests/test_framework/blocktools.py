@@ -119,6 +119,8 @@ def generateTx(node, txBytes, addrs, data=None):
     while size < txBytes:
         count += 1
         utxo = wallet.pop()
+        if utxo['spendable'] != True:
+            continue
         outp = {}
         # Make the tx bigger by adding addtl outputs so it validates faster
         payamt = satoshi_round(utxo["amount"] / 8)

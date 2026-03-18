@@ -221,6 +221,16 @@ bool ProcessNewBlock(CValidationState &state,
     CDiskBlockPos *dbp,
     bool fParallel);
 
+/** Go through the process of doing initial block checks and accepting the summary
+ *  block by writing it to disk, or accepting the subblock by storing in the dag
+ */
+bool ProcessAcceptBlock(CNode *pfrom,
+    ConstCBlockRef pblock,
+    CValidationState &state,
+    const CChainParams &chainparams,
+    CBlockIndex **ppindex,
+    CDiskBlockPos *dbp);
+
 //! Check whether the block associated with this index entry is pruned or not.
 bool IsBlockPruned(const CBlockIndex *pblockindex);
 

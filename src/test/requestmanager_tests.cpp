@@ -999,7 +999,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
 
 
     // Mark a txn as received. The deleter should then have one item added to it.
-    rman.Received(inv_txn, dummyNode1);
+    rman.Accepted(inv_txn, dummyNode1);
     setDeleter = rman_access.GetSetDeleter();
     BOOST_CHECK_EQUAL(setDeleter.count(inv_txn.hash), 1);
     BOOST_CHECK_EQUAL(setDeleter.size(), 1);
@@ -1020,7 +1020,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     // Receive the new txn before it gets added to mapTxnInfo
     mapTmp.clear();
     rman.GetTxnRequests(mapTmp);
-    rman.Received(inv_txn2, dummyNode1);
+    rman.Accepted(inv_txn2, dummyNode1);
     setDeleter = rman_access.GetSetDeleter();
     mapTxnToAdd = rman_access.GetMapTxnToAdd();
     BOOST_CHECK_EQUAL(setDeleter.count(inv_txn2.hash), 1);
@@ -1094,7 +1094,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(setBlockDeleter.count(inv_block.hash), 0);
 
     // deleter should have one item added to it
-    rman.Received(inv_block, dummyNode1);
+    rman.Accepted(inv_block, dummyNode1);
     setBlockDeleter = rman_access.GetSetBlockDeleter();
     BOOST_CHECK_EQUAL(setBlockDeleter.count(inv_block.hash), 1);
     BOOST_CHECK_EQUAL(setBlockDeleter.size(), 1);
