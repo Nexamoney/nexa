@@ -710,9 +710,9 @@ void ThreadTxAdmission()
                     }
                     else
                     {
-                        LOG(MEMPOOL, "Rejected tx: %s(%d) %s: %s. peer %s  hash %s \n", state.GetRejectReason(),
-                            state.GetRejectCode(), fMissingInputs ? "orphan" : "", state.GetDebugMessage(),
-                            txd.nodeName, tx->GetId().ToString());
+                        LOG(MEMPOOL, "Rejected tx: %s(%d) %s: %s. peer %s  txid:%s txidem:%s \n",
+                            state.GetRejectReason(), state.GetRejectCode(), fMissingInputs ? "orphan" : "",
+                            state.GetDebugMessage(), txd.nodeName, tx->GetId().ToString(), tx->GetIdem().ToString());
 
                         if (fMissingInputs || state.GetRejectCode() == REJECT_NONFINAL)
                         {
@@ -788,6 +788,9 @@ void ThreadTxAdmission()
                                     rejectCode, state.GetRejectReason().substr(0, MAX_REJECT_MESSAGE_LENGTH), inv.hash);
                                 if (nDoS > 0)
                                 {
+                                    // Tolerate bad tx from light clients, since they can't fully check it
+                                    if (from->fClient)
+                                        nDoS = 1;
                                     dosMan.Misbehaving(from.get(), nDoS, BanReasonInvalidOrMissingInputs);
                                 }
                             }
@@ -815,7 +818,8 @@ bool AcceptToMemoryPool(CTxMemPool &pool,
     bool fLimitFree,
     bool *pfMissingInputs,
     bool fRejectAbsurdFee,
-    TransactionClass allowedTx)
+    TransactionClass allowedTx,
+    bool fRelay)
 {
     std::vector<COutPoint> vCoinsToUncache;
     bool res = false;
@@ -854,7 +858,8 @@ bool AcceptToMemoryPool(CTxMemPool &pool,
     }
     if (res)
     {
-        RelayTransaction(tx);
+        if (fRelay)
+            RelayTransaction(tx);
         LimitMempoolSize(mempool, maxTxPool.Value() * ONE_MEGABYTE, txPoolExpiry.Value() * 60 * 60);
     }
     return res;

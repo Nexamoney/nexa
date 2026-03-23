@@ -132,6 +132,13 @@ const char *ScriptErrorString(const ScriptError serror)
     case SCRIPT_ERR_INVALID_REGISTER:
         return "Invalid script register number";
 
+    case SCRIPT_ERR_PARSE: // Parsing the bytecode provided to op_parse failed
+        return "PARSE operation error";
+    case SCRIPT_ERR_INVALID_JUMP:
+        return "JUMP is invalid";
+    case SCRIPT_ERR_INVALID_PARAMETER: // one of the opcode parameters is invalid
+        return "Invalid parameter";
+
     case SCRIPT_ERR_UNKNOWN_ERROR:
     case SCRIPT_ERR_ERROR_COUNT:
     default:

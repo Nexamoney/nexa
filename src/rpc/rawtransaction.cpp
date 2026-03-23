@@ -1348,7 +1348,7 @@ UniValue signrawtransaction(const UniValue &params, bool fHelp)
 
 UniValue sendrawtransaction(const UniValue &params, bool fHelp)
 {
-    if (fHelp || params.size() < 1 || params.size() > 5)
+    if (fHelp || params.size() < 1 || params.size() > 6)
         throw runtime_error(
             "sendrawtransaction \"hexstring\" ( allowhighfees, allownonstandard, verbose )\n"
             "\nSubmits raw transaction (serialized, hex-encoded) to local node and network.\n"
@@ -1362,6 +1362,7 @@ UniValue sendrawtransaction(const UniValue &params, bool fHelp)
             "                    Force standard or nonstandard transaction check\n"
             "4. alloworphans    (boolean, optional, default=false) Allow orphans and store them in the orphan pool\n"
             "5. verbose         (boolean, optional, default=false) Return dictionary with additional information\n"
+            "6. relay         (boolean, optional, default=true) Relay to other nodes\n"
             "\nResult:\n"
             "\"hex\"             (string) The transaction hash in hex\n"
             "\nExamples:\n"
@@ -1379,7 +1380,7 @@ UniValue sendrawtransaction(const UniValue &params, bool fHelp)
     CTransactionRef ptx(MakeTransactionRef(std::move(tx)));
     const uint256 idTx = ptx->GetId();
     const uint256 idemTx = ptx->GetIdem();
-
+    bool fRelay = true;
     bool fOverrideFees = false;
     TransactionClass txClass = TransactionClass::DEFAULT;
     bool fAllowOrphans = false;
@@ -1407,6 +1408,10 @@ UniValue sendrawtransaction(const UniValue &params, bool fHelp)
     {
         fVerbose = params[4].get_bool();
     }
+    if (params.size() > 5)
+    {
+        fRelay = params[5].get_bool();
+    }
 
     CCoinsViewCache &view = *pcoinsTip;
     bool fHaveChain = false;
@@ -1424,7 +1429,8 @@ UniValue sendrawtransaction(const UniValue &params, bool fHelp)
         CValidationState state;
         bool fMissingInputs;
         // Don't ignore fees even though this is a tx pushed from the RPC
-        if (!AcceptToMemoryPool(mempool, state, ptx, AreFreeTxnsAllowed(), &fMissingInputs, !fOverrideFees, txClass))
+        if (!AcceptToMemoryPool(
+                mempool, state, ptx, AreFreeTxnsAllowed(), &fMissingInputs, !fOverrideFees, txClass, fRelay))
         {
             if (state.IsInvalid() && state.GetRejectCode() != REJECT_MULTIPLE_INPUTS)
             {

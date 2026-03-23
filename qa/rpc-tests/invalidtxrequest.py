@@ -11,6 +11,8 @@ import sys
 if sys.version_info[0] < 3:
     raise "Use Python 3"
 import logging
+import pprint
+import pdb
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
@@ -72,9 +74,15 @@ class MyTest (BitcoinTestFramework):
         assert p2pErr in rej.reason
         assert txrpcIdem not in node.getrawtxpool()
         assert txrpcIdem not in rnode.getrawtxpool()  # Verify that the bad tx did not relay
+        ret = rnode.validaterawtransaction(testTx.toHex())
+        if not (rpcErr in str(ret)):  # This is going to fail so let's print some info out to diagnose
+            print("TX DECODED:")
+            dectx = rnode.decoderawtransaction(testTx.toHex())
+            pprint.pprint(dectx)
+            print("TX VALIDATED:")
+            pprint.pprint(ret)
         # Check RPC interface
         expectException(lambda: rnode.sendrawtransaction(testTx.toHex()), JSONRPCException, rpcErr)
-        ret = rnode.validaterawtransaction(testTx.toHex())
         assert rpcErr in str(ret)  # We don't know exactly where validaterawtransaction will put the error, but it must be in there
 
     def run_test (self):
@@ -106,9 +114,12 @@ class MyTest (BitcoinTestFramework):
         # grab a list of coins to work with
         utxos = self.node.listunspent()
         utxos = list(filter(lambda x: x["scriptType"] != "template", utxos)) # Find inputs that are not a template
+        #print("UTXOS:")
+        #pprint.pprint(utxos)
 
         # Try a valid tx
         utxo = utxos.pop()
+        # print(f"Using UTXO: {utxo}")
         tx1 = CTransaction()
         tx1.vin.append(CTxIn(utxo))
         tx1.vout.append(TxOut(0,utxo["amount"]-fee, CScript([OP_1])))
@@ -125,7 +136,13 @@ class MyTest (BitcoinTestFramework):
         # b'\x64' is OP_NOTIF
         # 0x61 is OP_NOP (throw a bunch of nops in so that tx > 100 bytes
         # Transaction will be rejected with code 16 (REJECT_INVALID)
+
+        #utxos2 = self.node.listunspent()
+        #utxos2 = list(filter(lambda x: x["scriptType"] != "template", utxos2)) # Find inputs that are not a template
+        #print("UTXOS2:")
+        #pprint.pprint(utxos2)
         utxo = utxos.pop()
+        #print(f"Using UTXO: {utxo}")
         tx2 = CTransaction()
         tx2.vin.append(CTxIn(utxo))
         #tx2.vin[0].scriptSig = b'\x61'*48 + b'\x64'

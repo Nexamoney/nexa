@@ -727,8 +727,10 @@ class TailstormActivationTest(BitcoinTestFramework):
         interconnect_nodes(self.nodes)
         waitFor(waitTime, lambda: len(self.nodes[0].getpeerinfo()) != 0)
         waitFor(waitTime, lambda: len(self.nodes[1].getpeerinfo()) != 0)
-        waitFor(waitTime, lambda: self.nodes[1].getbestblockhash() == summary_block_node1[0])
-        waitFor(waitTime, lambda: self.nodes[0].getbestblockhash() == summary_block_node1[0])
+        waitFor(waitTime, lambda: self.nodes[1].getbestblockhash() == summary_block_node1[0],
+                onError= lambda: print(f"Expected block: {summary_block_node1[0]}  actual: {self.nodes[1].getbestblockhash()}\ntips:\n{self.nodes[1].getchaintips()}"))
+        waitFor(waitTime, lambda: self.nodes[0].getbestblockhash() == summary_block_node1[0],
+                onError= lambda: print(f"Expected block: {summary_block_node1[0]}  actual: {self.nodes[0].getbestblockhash()}\ntips:\n{self.nodes[0].getchaintips()}"))
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 0)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 0)
         waitFor(waitTime, lambda: self.nodes[0].getblockcount() == self.nodes[1].getblockcount())
@@ -901,7 +903,8 @@ class TailstormActivationTest(BitcoinTestFramework):
         logging.info("Check the trimming of the dag")
         currentCount = self.nodes[1].getblockcount();
         self.nodes[0].generate(4)
-        waitFor(waitTime, lambda: currentCount + 1 == self.nodes[1].getblockcount())
+        waitFor(waitTime, lambda: currentCount + 1 == self.nodes[1].getblockcount(),
+                onError= lambda: print(f"Expected blocks: {currentCount+1}  actual: {self.nodes[1].getblockcount()}"))
         self.sync_all()
 
         currentCount = self.nodes[0].getblockcount();

@@ -317,8 +317,7 @@ if __name__ == '__main__':
 
 def Test():
     for i in range(0,100): OneTest()
-    
-    
+
 def OneTest():
     global ITERS
     ITERS=500
