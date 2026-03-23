@@ -62,6 +62,7 @@ bool ScriptMachine::EvalParseBytecode(int64_t first,
 // 8 onwards = the subsequent pushes in this output (visible args and non-arg data)
 bool ScriptMachine::EvalParseCanonicalLockingBytecode(int64_t first, int64_t count, const CScript &pscript)
 {
+    const bool upgrade2 = (flags & SCRIPT_UPGRADE2_OPCODES) != 0;
     CGroupTokenInfo grp;
     VchType templateHash;
     VchType hiddenArgsHash;
@@ -116,8 +117,20 @@ bool ScriptMachine::EvalParseCanonicalLockingBytecode(int64_t first, int64_t cou
                     PushStack(zero);
                 else
                 {
-                    CScriptNum bn = CScriptNum::fromIntUnchecked(static_cast<uint64_t>(grp.controllingGroupFlags));
-                    PushStack(bn.vchStackItem());
+                    if (upgrade2)
+                    {
+                        // Push the authority flags as a 8 byte buffer not as an integer because the script bitfield
+                        // ops operate on bytes not numbers anyway.
+                        uint64_t bitfield = htole64(static_cast<uint64_t>(grp.controllingGroupFlags));
+                        unsigned char *bfptr = (unsigned char *)&bitfield;
+                        PushStack(bfptr, bfptr + sizeof(uint64_t));
+                    }
+                    else
+                    {
+                        CScriptNum bn = CScriptNum::fromIntUnchecked(static_cast<uint64_t>(grp.controllingGroupFlags));
+                        auto vec = bn.getvch();
+                        PushStack(bn.vchStackItem());
+                    }
                 }
             }
             pushedCount++;

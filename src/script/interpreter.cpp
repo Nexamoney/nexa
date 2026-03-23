@@ -517,6 +517,7 @@ bool ScriptMachine::Step()
     const bool enableJump = (flags & SCRIPT_FORK1_OPCODES) != 0;
     const bool enableExtBignum = (flags & SCRIPT_FORK1_OPCODES) != 0;
     const bool opMerkleRootEnabled = (flags & SCRIPT_FORK1_OPCODES) != 0;
+    const bool upgrade2 = (flags & SCRIPT_UPGRADE2_OPCODES) != 0;
 
     const size_t maxIntegerSize =
         integers64Bit ? CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT : CScriptNum::MAXIMUM_ELEMENT_SIZE_32_BIT;
@@ -555,6 +556,11 @@ bool ScriptMachine::Step()
             {
                 return set_error(serror, SCRIPT_ERR_DISABLED_OPCODE);
             }
+            bool isIfControlOpcode = (OP_IF <= opcode && opcode <= OP_ENDIF);
+            if (upgrade2)
+                isIfControlOpcode =
+                    (OP_IF == opcode) || (opcode == OP_ELSE) || (opcode == OP_ENDIF) || (opcode == OP_NOTIF);
+
             if (fExec && 0 <= opcode && opcode <= OP_PUSHDATA4)
             {
                 if (fRequireMinimal && !CheckMinimalPush(vchPushValue.data(), opcode))
@@ -563,7 +569,7 @@ bool ScriptMachine::Step()
                 }
                 PushStack(vchPushValue);
             }
-            else if (fExec || (OP_IF <= opcode && opcode <= OP_ENDIF))
+            else if (fExec || isIfControlOpcode)
             {
                 switch (opcode)
                 {
@@ -1618,9 +1624,19 @@ bool ScriptMachine::Step()
                     if (a.isBigNum() || b.isBigNum())
                     {
                         BigNum ret;
-                        if (!BigNumScriptOp(
-                                ret, opcode, a.asBigNum(bigNumModulo), b.asBigNum(bigNumModulo), bigNumModulo, serror))
-                            return false;
+                        if (upgrade2)
+                        {
+                            // In upgrade 2 swap the order of arguments to match that of non-bignum operations
+                            if (!BigNumScriptOp(ret, opcode, b.asBigNum(bigNumModulo), a.asBigNum(bigNumModulo),
+                                    bigNumModulo, serror))
+                                return false;
+                        }
+                        else
+                        {
+                            if (!BigNumScriptOp(ret, opcode, a.asBigNum(bigNumModulo), b.asBigNum(bigNumModulo),
+                                    bigNumModulo, serror))
+                                return false;
+                        }
                         PopStack();
                         PopStack();
                         PushStack(StackItem(ret));
