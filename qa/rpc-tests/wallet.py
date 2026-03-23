@@ -491,6 +491,7 @@ class WalletTest (BitcoinTestFramework):
         btcAddress2 = self.nodes[1].getaddressforms(btcAddress2)["legacy"]
         ( p2shAddress2, redeemScript2) = GenerateSingleSigP2SH(btcAddress2)
         self.nodes[0].sendtoaddress(p2shAddress2,1000000)
+        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 2)
 
         self.nodes[0].generate(1)
         sync_blocks(self.nodes)
@@ -512,7 +513,8 @@ class WalletTest (BitcoinTestFramework):
 
         # Check wallet unspent counts. The counts may be different from the listunspent count because
         # they include watch-only amounts as well as any immature coinbases, unconfirmed and/or locked coins.
-        waitFor(waitTime, lambda: self.nodes[0].getwalletinfo()["unspentcount"] == 11, lambda: "Expecting unspent count of 11: wallet Info: %s" % self.nodes[0].getwalletinfo())
+
+        waitFor(waitTime, lambda: self.nodes[0].getwalletinfo()["unspentcount"] == 11)
         waitFor(waitTime, lambda: len(self.nodes[0].listunspent()) == 5)
         waitFor(waitTime, lambda: self.nodes[1].getwalletinfo()["unspentcount"] == 229)
         waitFor(waitTime, lambda: len(self.nodes[1].listunspent()) == 139)

@@ -17,6 +17,7 @@
 #include "keystore.h"
 #include "main.h"
 #include "sync.h"
+#include "txadmission.h"
 #include "ui_interface.h"
 #include "wallet/grouptokenwallet.h"
 #include "wallet/wallet.h"
@@ -252,6 +253,7 @@ WalletModel::SendCoinsReturn WalletModel::prepareTransaction(WalletModelTransact
     }
 
     {
+        CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
         LOCK(wallet->cs_wallet);
 
         transaction.newPossibleKeyChange(wallet);
@@ -293,6 +295,7 @@ WalletModel::SendCoinsReturn WalletModel::sendCoins(WalletModelTransaction &tran
     QByteArray transaction_array; /* store serialized transaction */
 
     {
+        CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
         LOCK(wallet->cs_wallet);
         CWalletTx *newTx = transaction.getTransaction();
 

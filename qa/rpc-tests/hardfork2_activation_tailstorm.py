@@ -714,14 +714,18 @@ class TailstormActivationTest(BitcoinTestFramework):
         subblock_hash_node1 = self.nodes[1].generate(1)
         subblock_hash_node1 = self.nodes[1].generate(1)
         subblock_hash_node1 = self.nodes[1].generate(1)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
         summary_block_node1 = self.nodes[1].generate(1)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 0)
 
         mocktime = mocktime + 30
         self.setmocktime(mocktime)
         subblock_hash_node1 = self.nodes[1].generate(1)
         subblock_hash_node1 = self.nodes[1].generate(1)
         subblock_hash_node1 = self.nodes[1].generate(1)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
         summary_block_node1 = self.nodes[1].generate(1)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 0)
 
         # connect peers and the nodes should sync
         interconnect_nodes(self.nodes)

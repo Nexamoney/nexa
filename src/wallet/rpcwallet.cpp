@@ -33,7 +33,6 @@ using namespace std;
 
 int64_t nWalletUnlockTime;
 static CCriticalSection cs_nWalletUnlockTime;
-static CCriticalSection serializeCreateTx;
 
 extern CTweak<bool> instantTxns;
 
@@ -158,8 +157,9 @@ UniValue consolidate(const UniValue &params, bool fHelp)
 
     EnsureWalletIsUnlocked();
 
+
     // Begin consolidation process
-    LOCK(serializeCreateTx);
+    CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING); // corral must be taken before cs_wallet
     LOCK(pwalletMain->cs_wallet);
 
     if (!pwalletMain->IsLocked())
@@ -621,7 +621,8 @@ static void SendMoney(const CTxDestination &address, CAmount nValue, bool fSubtr
 
     // Create and send the transaction
     {
-        LOCK(serializeCreateTx);
+        CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING); // corral must be taken before cs_wallet
+        LOCK(pwalletMain->cs_wallet);
 
         CReserveKey reservekey(pwalletMain);
         CAmount nFeeRequired = 0;
@@ -1507,7 +1508,8 @@ UniValue sendmany(const UniValue &params, bool fHelp)
 
     // Check funds
     {
-        LOCK(serializeCreateTx);
+        CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING); // corral must be taken before cs_wallet
+        LOCK(pwalletMain->cs_wallet);
 
         // If an account is provided we need to make sure it doesn't exceed our account balance.
         // Otherwise, skip this expensive step because coin selection will fail if the amount exceeds the balance.

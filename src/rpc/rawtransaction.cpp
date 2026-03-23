@@ -1673,6 +1673,7 @@ UniValue validaterawtransaction(const UniValue &params, bool fHelp)
         bool fMissingInputs = false;
         std::vector<COutPoint> vCoinsToUncache;
         bool isRespend = false;
+        CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
         ParallelAcceptToMemoryPool(mempool, state, std::move(ptx), AreFreeTxnsAllowed(), &fMissingInputs, fOverrideFees,
             txClass, vCoinsToUncache, &isRespend, &debugger);
     }

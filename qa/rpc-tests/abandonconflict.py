@@ -100,8 +100,8 @@ class AbandonConflictTest(BitcoinTestFramework):
         # Verify that even with a zero min relay fee, the tx is not reaccepted from wallet on startup once abandoned
         stop_node(self.nodes[0],0)
         self.nodes[0]=start_node(0, self.options.tmpdir, ["-debug=net,mempool","-logtimemicros","-relay.minRelayTxFee=0", "-cache.persistTxPool=0"])
-        assert(len(self.nodes[0].getrawtxpool()) == 0)
-        assert(self.nodes[0].getbalance() == balance)
+        waitFor(waitTime, lambda: len(self.nodes[0].getrawtxpool()) == 0)
+        waitFor(waitTime, lambda: self.nodes[0].getbalance() == balance)
 
         # But if its received again then it is unabandoned
         # And since now in txpool, the change is available
@@ -134,27 +134,21 @@ class AbandonConflictTest(BitcoinTestFramework):
         signed = self.nodes[0].signrawtransaction(tx)
         self.nodes[1].enqueuerawtransaction(signed["hex"],"flush")
         blkhash = self.nodes[1].generate(1)[0]
-        blk = self.nodes[1].getblock(blkhash)
-        assert signed["txid"] in blk["txid"]
+        waitFor(waitTime, lambda: signed["txid"] in self.nodes[1].getblock(blkhash)["txid"])
 
         connect_nodes(self.nodes[0], 1)
         sync_blocks(self.nodes)
+        waitFor(waitTime, lambda: self.nodes[0].getbestblockhash() == blkhash)
 
-        assert self.nodes[0].getbestblockhash() == blkhash
         # Verify that B and C's 1 BTC outputs are available for spending again because AB1 is now conflicted
-        newbalance = self.nodes[0].getbalance()
-        assert(newbalance == balance + Decimal("2000000"))
-        balance = newbalance
+        waitFor(waitTime, lambda: self.nodes[0].getbalance() == balance + Decimal("2000000"))
+        balance =  self.nodes[0].getbalance()
 
         # There is currently a minor bug around this and so this test doesn't work.  See Issue #7315
         # Invalidate the block with the double spend and B's 1 BCH output should no longer be available
         # Don't think C's should either
         self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
-        newbalance = self.nodes[0].getbalance()
-        #assert(newbalance == balance - Decimal("1.0"))
-        print("If balance has not declined after invalidateblock then out of txpool wallet tx which is no longer")
-        print("conflicted has not resumed causing its inputs to be seen as spent.  See Issue #7315")
-        print(str(balance) + " -> " + str(newbalance) + " ?")
+        waitFor(waitTime, lambda: self.nodes[0].getbalance() == balance - Decimal("2000000"))
 
 if __name__ == '__main__':
     AbandonConflictTest().main()
