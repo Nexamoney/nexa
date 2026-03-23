@@ -19,6 +19,8 @@ from codecs import encode
 import http.client
 import urllib.parse
 
+waitTime = 60
+
 def deser_uint256(f):
     r = 0
     for i in range(8):
@@ -68,7 +70,7 @@ class RESTTest (BitcoinTestFramework):
         self.nodes[2].generate(100)
         self.sync_all()
 
-        assert_equal(self.nodes[0].getbalance(), COINBASE_REWARD)
+        waitFor(waitTime, lambda: self.nodes[0].getbalance() == COINBASE_REWARD)
 
         txid = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), 100000)
         self.sync_all()
@@ -76,7 +78,7 @@ class RESTTest (BitcoinTestFramework):
         self.sync_all()
         bb_hash = self.nodes[0].getbestblockhash()
 
-        assert_equal(self.nodes[1].getbalance(), Decimal("100000")) #balance now should be 0.1 on node 1
+        waitFor(waitTime, lambda: self.nodes[1].getbalance() == Decimal("100000")) #balance now should be 0.1 on node 1
 
         # load the latest 0.1 tx over the REST API
         json_string = http_get_call(url.hostname, url.port, '/rest/tx/'+txid+self.FORMAT_SEPARATOR+"json")

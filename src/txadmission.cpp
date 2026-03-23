@@ -876,6 +876,10 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
     bool *isRespend,
     CValidationDebugger *debugger)
 {
+    DbgAssert(txProcessingCorral.region() == CORRAL_TX_PROCESSING ||
+                  txProcessingCorral.region() == CORRAL_TX_COMMITMENT || txProcessingCorral.region() == CORRAL_TX_PAUSE,
+        LOGA("Do not have corral during parallelaccepttomemorypool"));
+
     const CChainParams &chainparams = Params();
 
     if (isRespend)

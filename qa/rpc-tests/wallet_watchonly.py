@@ -16,6 +16,8 @@ import binascii
 from test_framework.script import *
 from test_framework.nodemessages import *
 
+waitTime = 60
+
 class WalletWatchonlyTest (BitcoinTestFramework):
 
     def add_options(self, parser):
@@ -44,12 +46,10 @@ class WalletWatchonlyTest (BitcoinTestFramework):
         logging.info("Mining blocks...")
 
         self.nodes[0].generate(1)
-
-        walletinfo = self.nodes[0].getwalletinfo()
-        assert_equal(walletinfo['immature_balance'], COINBASE_REWARD)
-        assert_equal(walletinfo['balance'], 0)
-        assert_equal(walletinfo['txcount'], 1)
-        assert_equal(walletinfo['unspentcount'], 1)
+        waitFor(waitTime, lambda: self.nodes[0].getwalletinfo()['immature_balance'] == COINBASE_REWARD)
+        waitFor(waitTime, lambda: self.nodes[0].getwalletinfo()['balance'] == 0)
+        waitFor(waitTime, lambda: self.nodes[0].getwalletinfo()['txcount'] == 1)
+        waitFor(waitTime, lambda: self.nodes[0].getwalletinfo()['unspentcount'] == 1)
 
         self.sync_blocks()
         watch_mining_address = self.nodes[1].getnewaddress()
@@ -61,42 +61,38 @@ class WalletWatchonlyTest (BitcoinTestFramework):
         self.nodes[1].generatetoaddress(101, str(watch_mining_address), 100000000)
         self.sync_blocks()
 
-        assert_equal(self.nodes[0].getbalance(), COINBASE_REWARD)
-        assert_equal(self.nodes[1].getbalance(), COINBASE_REWARD)
-        assert_equal(self.nodes[2].getbalance(), 0)
-        assert_equal(self.nodes[0].getbalance("*"), COINBASE_REWARD)
-        assert_equal(self.nodes[1].getbalance("*"), COINBASE_REWARD)
-        assert_equal(self.nodes[2].getbalance("*"), 0)
+        waitFor(waitTime, lambda: self.nodes[0].getbalance() == COINBASE_REWARD)
+        waitFor(waitTime, lambda: self.nodes[1].getbalance() == COINBASE_REWARD)
+        waitFor(waitTime, lambda: self.nodes[2].getbalance() == 0)
+        waitFor(waitTime, lambda: self.nodes[0].getbalance("*") == COINBASE_REWARD)
+        waitFor(waitTime, lambda: self.nodes[1].getbalance("*") == COINBASE_REWARD)
+        waitFor(waitTime, lambda: self.nodes[2].getbalance("*") == 0)
 
         # Check that only first and second nodes have spendable UTXOs
-        unspent_0 = self.nodes[0].listunspent()
-        assert_equal(len(unspent_0), 1)
-        assert_equal(unspent_0[0]['spendable'], True)
-
-        unspent_1 = self.nodes[1].listunspent()
-        assert_equal(len(unspent_1), 1)
-        assert_equal(unspent_1[0]['spendable'], True)
+        waitFor(waitTime, lambda: len(self.nodes[0].listunspent()) == 1)
+        waitFor(waitTime, lambda: self.nodes[0].listunspent()[0]['spendable'] == True)
+ 
+        waitFor(waitTime, lambda: len(self.nodes[1].listunspent()) == 1)
+        waitFor(waitTime, lambda: self.nodes[1].listunspent()[0]['spendable'] == True)
 
         # the third node has 1 unspenable utxo
-        unspent_2 = self.nodes[2].listunspent()
-        assert_equal(len(unspent_2), 1)
-        assert_equal(unspent_2[0]['spendable'], False)
+        waitFor(waitTime, lambda: len(self.nodes[2].listunspent()) == 1)
+        waitFor(waitTime, lambda: self.nodes[2].listunspent()[0]['spendable'] == False)
 
         # check watch only balances on node 2
-        waitFor(60, lambda: self.nodes[2].getwalletinfo()['watchonly_balance'] == COINBASE_REWARD)
-        waitFor(60, lambda: self.nodes[2].getwalletinfo()['immature_watchonly_balance'] == COINBASE_REWARD * 100)
-        waitFor(60, lambda: self.nodes[2].getwalletinfo()['unconfirmed_watchonly_balance'] == 0)
-        waitFor(60, lambda: self.nodes[2].getwalletinfo()['unspentcount'] == 101)
+        waitFor(waitTime, lambda: self.nodes[2].getwalletinfo()['watchonly_balance'] == COINBASE_REWARD)
+        waitFor(waitTime, lambda: self.nodes[2].getwalletinfo()['immature_watchonly_balance'] == COINBASE_REWARD * 100)
+        waitFor(waitTime, lambda: self.nodes[2].getwalletinfo()['unconfirmed_watchonly_balance'] == 0)
+        waitFor(waitTime, lambda: self.nodes[2].getwalletinfo()['unspentcount'] == 101)
 
         # send some coins to watchonly address, see that we see it in the watcher
         watch_sent = 50000
         self.nodes[0].sendtoaddress(watch_recv_address, watch_sent, "", "", False)
         sync_mempools(self.nodes)
-        walletinfo = self.nodes[2].getwalletinfo()
-        assert_equal(walletinfo['watchonly_balance'], COINBASE_REWARD)
-        assert_equal(walletinfo['immature_watchonly_balance'], COINBASE_REWARD * 100)
-        assert_equal(walletinfo['unconfirmed_watchonly_balance'], watch_sent)
-        assert_equal(walletinfo['unspentcount'], 102)
+        waitFor(waitTime, lambda: self.nodes[2].getwalletinfo()['watchonly_balance'] == COINBASE_REWARD)
+        waitFor(waitTime, lambda: self.nodes[2].getwalletinfo()['immature_watchonly_balance'] == COINBASE_REWARD * 100)
+        waitFor(waitTime, lambda: self.nodes[2].getwalletinfo()['unconfirmed_watchonly_balance'] == watch_sent)
+        waitFor(waitTime, lambda: self.nodes[2].getwalletinfo()['unspentcount'] == 102)
 
         # Send small coins from node1 to node2. This should work but in the past
         # would trigger an error becasue watchonly coins were being used as available coins

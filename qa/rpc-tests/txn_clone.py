@@ -15,6 +15,8 @@ from test_framework.script import *
 import pdb
 import traceback
 
+waitTime = 60
+
 class TxnCloneTest(BitcoinTestFramework):
 
     def add_options(self, parser):
@@ -76,10 +78,10 @@ class TxnCloneTest(BitcoinTestFramework):
         expected = starting_balance + fund_foo_tx["fee"]
         if self.options.mine_block: expected += COINBASE_REWARD
         expected += tx1["amount"] + tx1["fee"]
-        assert_equal(self.nodes[0].getbalance(), expected)
+        waitFor(waitTime, lambda: self.nodes[0].getbalance() == expected)
 
         # foo and bar accounts should be debited:
-        assert_equal(self.nodes[0].getbalance("foo", 0), FooAmt + tx1["amount"] + tx1["fee"])
+        waitFor(waitTime, lambda: self.nodes[0].getbalance("foo", 0) == FooAmt + tx1["amount"] + tx1["fee"])
 
         if self.options.mine_block:
             assert_equal(tx1["confirmations"], 1)
@@ -114,20 +116,20 @@ class TxnCloneTest(BitcoinTestFramework):
         expected += 2*COINBASE_REWARD
         if (self.options.mine_block):
             expected -= COINBASE_REWARD
-        assert_equal(self.nodes[0].getbalance(), expected)
-        assert_equal(self.nodes[0].getbalance("*", 0), expected)
+        waitFor(waitTime, lambda: self.nodes[0].getbalance() == expected)
+        waitFor(waitTime, lambda: self.nodes[0].getbalance("*", 0) == expected)
 
         # Check node0's individual account balances.
         # "foo" should have been debited by the equivalent clone of tx1
         logging.info("foo balance: " + str(self.nodes[0].getbalance("foo")) + " foo amt " + str(FooAmt) + " tx1amt " + str( tx1["amount"]) + " foo fee " + str(tx1["fee"]))
-        assert_equal(self.nodes[0].getbalance("foo"), FooAmt + tx1["amount"] + tx1["fee"])
-        assert_equal(self.nodes[0].getbalance("", 0), starting_balance
+        waitFor(waitTime, lambda: self.nodes[0].getbalance("foo") == FooAmt + tx1["amount"] + tx1["fee"])
+        waitFor(waitTime, lambda: self.nodes[0].getbalance("", 0) == starting_balance
                                                                 - FooAmt
                                                                 + fund_foo_tx["fee"]
                                                                 + 2*COINBASE_REWARD)
 
         # Node1's "from0" account balance
-        assert_equal(self.nodes[1].getbalance("from0", 0), -(tx1["amount"]))
+        waitFor(waitTime, lambda: self.nodes[1].getbalance("from0", 0) == -(tx1["amount"]))
 
 if __name__ == '__main__':
     TxnCloneTest().main()

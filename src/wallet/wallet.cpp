@@ -3062,6 +3062,7 @@ bool CWallet::SelectCoins(const CAmount &nTargetValue,
     CAmount &nValueRet,
     const CCoinControl *coinControl)
 {
+    DbgAssert(txProcessingCorral.region() == CORRAL_TX_PROCESSING, LOGA("Do not have corral during SelectCoins()"));
     AssertLockHeld(cs_wallet);
 
     setCoinsRet.clear();
@@ -3119,8 +3120,11 @@ bool CWallet::SelectCoins(const CAmount &nTargetValue,
         {
             // flush the txns waiting to enter the txpool so we can respend them
             LEAVE_CRITICAL_SECTION(cs_wallet);
-            CORRAL(txProcessingCorral, CORRAL_TX_COMMITMENT);
+            txProcessingCorral.Exit(CORRAL_TX_PROCESSING);
+            txProcessingCorral.Enter(CORRAL_TX_COMMITMENT);
             _CommitTxToMempool();
+            txProcessingCorral.Exit(CORRAL_TX_COMMITMENT);
+            txProcessingCorral.Enter(CORRAL_TX_PROCESSING);
             ENTER_CRITICAL_SECTION(cs_wallet);
 
             AvailableCoins(customAvailable, coinControl);
@@ -3153,8 +3157,11 @@ bool CWallet::SelectCoins(const CAmount &nTargetValue,
     {
         // flush the txns waiting to enter the txpool so we can respend them
         LEAVE_CRITICAL_SECTION(cs_wallet);
-        CORRAL(txProcessingCorral, CORRAL_TX_COMMITMENT);
+        txProcessingCorral.Exit(CORRAL_TX_PROCESSING);
+        txProcessingCorral.Enter(CORRAL_TX_COMMITMENT);
         _CommitTxToMempool();
+        txProcessingCorral.Exit(CORRAL_TX_COMMITMENT);
+        txProcessingCorral.Enter(CORRAL_TX_PROCESSING);
         ENTER_CRITICAL_SECTION(cs_wallet);
 
         FillAvailableCoins(coinControl);
@@ -3174,8 +3181,11 @@ bool CWallet::SelectCoins(const CAmount &nTargetValue,
         LOG(SELECTCOINS, "Flush all pending tx and reload available coins\n");
         // flush the txns waiting to enter the txpool so we can respend them
         LEAVE_CRITICAL_SECTION(cs_wallet);
-        CORRAL(txProcessingCorral, CORRAL_TX_COMMITMENT);
+        txProcessingCorral.Exit(CORRAL_TX_PROCESSING);
+        txProcessingCorral.Enter(CORRAL_TX_COMMITMENT);
         _CommitTxToMempool();
+        txProcessingCorral.Exit(CORRAL_TX_COMMITMENT);
+        txProcessingCorral.Enter(CORRAL_TX_PROCESSING);
         ENTER_CRITICAL_SECTION(cs_wallet);
 
         // now get all tx
@@ -3247,6 +3257,8 @@ bool CWallet::FundTransaction(CMutableTransaction &tx,
     std::string &strFailReason,
     bool includeWatching)
 {
+    CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING); // corral must be taken before cs_wallet
+    LOCK(pwalletMain->cs_wallet);
     vector<CRecipient> vecSend;
 
     // Turn the txout set into a CRecipient vector
@@ -3362,6 +3374,10 @@ bool CWallet::CreateTransaction(vector<CRecipient> &vecSend,
     const CCoinControl *coinControl,
     bool sign)
 {
+    DbgAssert(
+        txProcessingCorral.region() == CORRAL_TX_PROCESSING, LOGA("Do not have corral during CreateTransaction()"));
+    AssertLockHeld(cs_wallet);
+
     // If automatic consolidation is turned on then create a chain of as many transactions that are
     // required to satisfy the send amount. Either -spendzeroconfchange or instant transactions must be
     // turned on and we must not be using coin control or have any cointrol items selected.
@@ -3589,7 +3605,9 @@ bool CWallet::CreateOneTransaction(const vector<CRecipient> &vecSend,
     assert(txNew.nLockTime < LOCKTIME_THRESHOLD);
 
     {
-        LOCK(cs_wallet);
+        DbgAssert(
+            txProcessingCorral.region() == CORRAL_TX_PROCESSING, LOGA("Do not have corral during CreateTransaction()"));
+        AssertLockHeld(cs_wallet);
         {
             CAmount nFeeNeeded = 0;
             // Estimate base fee from an approx minimum size tx
@@ -3976,6 +3994,10 @@ bool CWallet::CreateOneTransaction(const vector<CRecipient> &vecSend,
  */
 bool CWallet::CommitTransaction(CWalletTx &wtxNew, CReserveKey &reservekey, std::string &errorString)
 {
+    DbgAssert(
+        txProcessingCorral.region() == CORRAL_TX_PROCESSING, LOGA("Do not have corral during CommitTransaction()"));
+    AssertLockHeld(cs_wallet);
+
     const uint256 &txId = wtxNew.GetId();
     if (fBroadcastTransactions)
     {
@@ -3986,11 +4008,13 @@ bool CWallet::CommitTransaction(CWalletTx &wtxNew, CReserveKey &reservekey, std:
         std::vector<COutPoint> vCoinsToUncache;
         bool isRespend = false;
         const bool rejectAbsurdFee = true;
+
         // Since this is our own wallet, we can use nonstandard
         // TODO: limit nonstandard to a tweak because unless you are a miner it won't be mined
         // setting ignoreFee to false -- it should be a power-user option only to create unrelayable tx
         ParallelAcceptToMemoryPool(mempool, state, txref, AreFreeTxnsAllowed(), &fMissingInputs, rejectAbsurdFee,
             TransactionClass::NONSTANDARD, vCoinsToUncache, &isRespend, &debugger);
+
         if (debugger.IsValid() || fMissingInputs)
         {
             CTxInputData d;

@@ -744,6 +744,7 @@ void GroupMelt(CWalletTx &wtxNew, const CGroupTokenID &grpID, CAmount totalNeede
         throw JSONRPCError(RPC_INVALID_PARAMS, strError);
     }
 
+    CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
     LOCK(wallet->cs_wallet);
 
     // Find melt authority
@@ -832,7 +833,9 @@ bool GroupSend(CWalletTx &wtxNew,
     std::string *strError,
     bool fRPC)
 {
+    CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
     LOCK(wallet->cs_wallet);
+
     std::vector<COutput> coins;
     CAmount totalAvailable = 0;
     CAmount totalBchNeeded = 0;
@@ -1206,7 +1209,9 @@ extern UniValue token(const UniValue &params, bool fHelp)
     }
     else if (operation == "authority")
     {
+        CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
         LOCK(wallet->cs_wallet);
+
         CAmount totalBchNeeded = 0;
         CAmount totalBchAvailable = 0;
         unsigned int curparam = 1;
@@ -1416,8 +1421,6 @@ extern UniValue token(const UniValue &params, bool fHelp)
         }
         if (suboperation == "destroy")
         {
-            LOCK(wallet->cs_wallet);
-
             CWalletTx wtx;
             CGroupTokenID dummyGrpID;
 
@@ -1467,6 +1470,7 @@ extern UniValue token(const UniValue &params, bool fHelp)
         CWalletTx wtx;
         std::string strTokenTicker = "";
         {
+            CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
             LOCK(wallet->cs_wallet);
             unsigned int curparam = 1;
 
@@ -1640,6 +1644,7 @@ extern UniValue token(const UniValue &params, bool fHelp)
 
     else if (operation == "mint")
     {
+        CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
         LOCK(wallet->cs_wallet); // because I am reserving UTXOs for use in a tx
         CGroupTokenID grpID;
         CAmount totalTokensNeeded = 0;
