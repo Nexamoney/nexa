@@ -319,6 +319,7 @@ def show_wrapper_options():
     """ print command line options specific to wrapper """
     print("Wrapper options:")
     print()
+    print("  -parallel=num         run this number of tests at the same time (default 2)")
     print("  -extended/--extended  run the extended set of tests")
     print("  -only-extended / -extended-only\n" + \
           "  --only-extended / --extended-only\n" + \
@@ -328,6 +329,24 @@ def show_wrapper_options():
     print("  -f / -force-enable / --force-enable\n" + \
           "                        attempt to run disabled/skipped tests")
     print("  -h / -help / --help   print this help")
+
+def show_framework_options():
+    """ print command line options that are passed to each test """
+    print("Framework options:")
+    print("  These options are passed to every test that is run.")
+    print("""
+  --tracerpc              Print out all RPC calls as they are made.
+  --noshutdown            Do not stop any full nodes after the test completes.
+  --nocleanup             Do not delete the full node directories even if the test succeeded.
+  --no-ipv6-rpc-listen    Switch off listening on the IPv6 ::1 localhost RPC port (use if your environmnent does not support IPV6).
+  --gitlab                Changes root directory for gitlab artifact exporting. overrides tmpdir and tmppfx.
+  --srcdir                Source directory containing nexad and nexa-cli
+  --tmppfx                All full node directories are created in a test-specific subdirectories of this dir (for example, --tmppfx=/ramdisk/test).
+  --coveragedir           Write tested RPC commands into this directory
+  --randomseed            Set RNG seed for tests that use randomness (ignored otherwise)
+  --testbinary            nexad binary to run.
+  --refbinary             nexad binary to use for reference nodes (if any).
+""")
 
 def runtests():
     global passOn
@@ -367,7 +386,10 @@ def runtests():
 
         # check for explicit tests
         if showHelp:
+            print("usage: rpc-tests.py [flags] [tests to run]")
             show_wrapper_options()
+            print()
+            show_framework_options()
             quit()
         else:
             for o in opts:
@@ -562,9 +584,9 @@ class RPCTestHandler:
                     # with a timeout, even though the thread is done reading (which was another cause
                     # of a hang)
                     if not got_outputs[0]:
-                        comms(0.1)
+                        comms(0.5)
 
-                    # .communicate() can only be called once and we have to keep in mind now that
+                    # .communicate() can only be called successfully once and we have to keep in mind now that
                     # communication happened properly (and the files are closed). It _has_ to be called with a non-None
                     # timeout initially, however, to start the communication threads internal to subprocess.Popen(..)
                     # that are necessary to not block on more output than what fits into the OS' pipe buffer.

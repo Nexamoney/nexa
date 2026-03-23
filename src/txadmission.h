@@ -183,7 +183,8 @@ bool AcceptToMemoryPool(CTxMemPool &pool,
     bool fLimitFree,
     bool *pfMissingInputs,
     bool fRejectAbsurdFee = false,
-    TransactionClass allowedTx = TransactionClass::DEFAULT);
+    TransactionClass allowedTx = TransactionClass::DEFAULT,
+    bool fRelay = true);
 
 /** (try to) add transaction to memory pool **/
 bool ParallelAcceptToMemoryPool(CTxMemPool &pool,

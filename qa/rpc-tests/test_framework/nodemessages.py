@@ -2601,10 +2601,14 @@ def fundSignSend(node, tx):
     sgnReturn = node.signrawtransaction(frtReturn["hex"])
     fundedTx = CTransaction().fromHex(sgnReturn["hex"])
     node.sendrawtransaction(fundedTx.toHex())
+    # Catch it now if the transaction you gave me is not even good
+    waitFor(10, lambda: fundedTx.GetRpcHexIdem() in node.getrawtxpool() )
+    #print("TX to spend:")
+    #pprint.pprint(node.decoderawtransaction(fundedTx.toHex()))
     return fundedTx
 
 def fundSignSendSpend(node, tx, finalOutScript=None, relay=True):
-    """Fund, sign, then send the passed CTransaction.  Then spend all its (non-change) outputs, (with the expectation that a valid sigScript is null)"""
+    """Fund, sign, then send the passed CTransaction.  Then spend all its (non-change) outputs, (with the expectation that a valid sigScript is null).  The purpose of this is to execute the scripts in the passed transaction's outputs."""
     fundedTx = fundSignSend(node, tx)
     txs = CTransaction()
     amountIn = 0

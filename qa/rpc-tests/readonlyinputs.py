@@ -285,9 +285,9 @@ class RoTest(BitcoinTestFramework):
 
         # Spend the input I've been using as read-only.
         # Any transaction chains decending from read only input are not allowed as instant transactions so check
-        # that balances are not effected until the next block is mined.
+        # that balances are not affected until the next block is mined.
         for i in range(0, self.NUM_NODES):
-            waitFor(60, lambda: self.nodes[i].gettxpoolinfo()["size"] == 1)
+            waitFor(60, lambda: self.nodes[i].gettxpoolinfo()["size"] == 1, onError=lambda: print(f"Node {i}: {self.nodes[i].gettxpoolinfo()}\n{self.nodes[i].getrawtxpool()}"))
 
         DELAY=3
         StartBalances = []

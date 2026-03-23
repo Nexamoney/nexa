@@ -205,7 +205,7 @@ class BitcoinTestFramework(object):
         parser.add_option("--noshutdown", dest="noshutdown", default=False, action="store_true",
                           help="Don't stop nexads after the test execution")
         parser.add_option("--srcdir", dest="srcdir", default=os.path.normpath(os.path.dirname(os.path.realpath(__file__))+"/../../../src"),
-                          help="Source directory containing nexad/bitcoin-cli (default: %default)")
+                          help="Source directory containing nexad and nexa-cli (default: %default)")
 
 
         testname = "".join(

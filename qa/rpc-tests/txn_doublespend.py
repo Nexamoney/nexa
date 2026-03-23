@@ -69,11 +69,14 @@ class TxnDoubleSpendTest(BitcoinTestFramework):
         # (as opposed to malleated tx, which have same idem, but different id)
         assert doublespend1["txidem"] != doublespend2["txidem"], "transactions are not different"
 
+        # Issue the doublespends to two different nodes, and sendrawtransaction with the "do not relay" flag
+        # so we can be sure that both doublespend tx actually get into each node.
+
         # Now give doublespend1 to one side of the network
-        doublespend1_txidem = self.nodes[0].sendrawtransaction(doublespend1["hex"])
+        doublespend1_txidem = self.nodes[0].sendrawtransaction(doublespend1["hex"], False, "default", False, False, False)
 
         # Now give doublespend2 to miner:
-        doublespend2_txidem = self.nodes[2].sendrawtransaction(doublespend2["hex"])
+        doublespend2_txidem = self.nodes[2].sendrawtransaction(doublespend2["hex"], False, "default", False, False, False)
 
         # Create a valid chain of transactions that are generated using the input
         # from the double spent transaction on node0
@@ -92,10 +95,11 @@ class TxnDoubleSpendTest(BitcoinTestFramework):
               outputs[self.nodes[0].getnewaddress()] = Decimal(tx_amount)
               rawtx = self.nodes[0].createrawtransaction(inputs, outputs)
               signed_tx = self.nodes[0].signrawtransaction(rawtx)["hex"]
-              txidem = self.nodes[0].sendrawtransaction(signed_tx, False, "standard", True)
+              # Don't relay these either.  If relayed to node 1, they will be saved as orphans,
+              # and might be added to the node 1 tx pool when the ancestor is relayed
+              txidem = self.nodes[0].sendrawtransaction(signed_tx, False, "standard", True, False, False)
               self.nodes[0].sendrawtransaction(signed_tx, False, "standard", True) #orphaned
-              logging.info("tx depth %d" % i) # Keep travis from timing out
-              print(str(txidem))
+              logging.info("tx depth %d idem: %s" % (i, str(txidem))) # Keep travis from timing out
 
           except JSONRPCException as e: # an exception you don't catch is a testing error
               print(str(e))
@@ -124,15 +128,15 @@ class TxnDoubleSpendTest(BitcoinTestFramework):
             ret = self.nodes[1].gettransaction(doublespend1_txidem)
         except JSONRPCException:
             assert(False)
-        
+
         # Check balances. The txn just received should intially show in the unconfirmed balance
         balance = self.nodes[1].getwalletinfo()["balance"]
         unconfirmed_balance = self.nodes[1].getwalletinfo()["unconfirmed_balance"]
         immature_balance = self.nodes[1].getwalletinfo()["immature_balance"]
         assert_equal(balance, 250000000)
         assert_equal(unconfirmed_balance, 5000000) # coins are unavailable
-        assert_equal(immature_balance, 245000000)       
-      
+        assert_equal(immature_balance, 245000000)
+
         # Wait for the instant transaction time delay period, and then check balances again on node1.
         # The unavailable coins should now be available.
         time.sleep(instantTxnDelay)
@@ -141,7 +145,7 @@ class TxnDoubleSpendTest(BitcoinTestFramework):
         immature_balance = self.nodes[1].getwalletinfo()["immature_balance"]
         assert_equal(balance, 255000000) # coins are now available to be spent
         assert_equal(unconfirmed_balance, 0)
-        assert_equal(immature_balance, 245000000)       
+        assert_equal(immature_balance, 245000000)
 
         # Send the double spend to node1.
         # We should get an exception caused by a txpool conflict
@@ -150,7 +154,7 @@ class TxnDoubleSpendTest(BitcoinTestFramework):
         except JSONRPCException as e:
             assert_equal(e.error["code"], -26)
             assert_equal(e.error["message"], "258: txn-txpool-conflict")
-        
+
         # Check that the first transaction sent which is currently in the txpool was marked "doublespent".
         # This is caused by the txpool conflict from the second transaction (the doublepend).
         assert_equal(self.nodes[1].gettxpoolentry(node1_txidem)["doublespent"], True)
@@ -162,13 +166,28 @@ class TxnDoubleSpendTest(BitcoinTestFramework):
         immature_balance = self.nodes[1].getwalletinfo()["immature_balance"]
         assert_equal(balance, 250000000)
         assert_equal(unconfirmed_balance, 5000000) # coins now show as unconfirmed
-        assert_equal(immature_balance, 245000000)       
+        assert_equal(immature_balance, 245000000)
 
         # END instant transaction check
         #####################################################################################################
 
         waitFor(30, lambda: self.nodes[0].gettxpoolinfo()['size'] == 6)
-        waitFor(30, lambda: self.nodes[1].gettxpoolinfo()['size'] == 1)
+        # Node 1 should only have 1 tx in it because all the children of the doublespend tx should be expunged from the pool
+        try:
+            waitFor(30, lambda: self.nodes[1].gettxpoolinfo()['size'] == 1)
+        except TimeoutException:
+            print("Tx Pool:")
+            print(self.nodes[1].gettxpoolinfo())
+            pool = self.nodes[1].getrawtxpool()
+            print(str(pool) + ":")
+            for p in pool:
+                print(p)
+                print("  " + str(self.nodes[1].gettxpoolentry(p)))
+            print()
+            print("Peers:")
+            print(self.nodes[1].getpeerinfo())
+            raise
+
         waitFor(30, lambda: self.nodes[2].gettxpoolinfo()['size'] == 1)
 
         # Reconnect the split network, and resend wallet transactions:

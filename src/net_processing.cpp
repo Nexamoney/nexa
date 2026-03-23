@@ -800,8 +800,10 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
             }
             // RE !IsInitialBlockDownload(): during IBD, its a waste of bandwidth to grab transactions, they will
             // likely be included in blocks that we IBD download anyway.  This is especially important as
-            // transaction volumes increase.
-            else if (!fMayAlreadyHaveTx && !IsInitialBlockDownload())
+            // transaction volumes increase.  However we need to process transactions during IBD in regtest because
+            // its a really common test scenario to just bring up a single local node (and a node with no other
+            // full node connections is ALWAYS marked as in IBD).
+            else if (!fMayAlreadyHaveTx && (!IsInitialBlockDownload() || Params().NetworkIDString() == "regtest"))
             {
                 requester.AskFor(CInv(inv.type, inv.hash), pfrom);
             }
@@ -1620,7 +1622,12 @@ bool ProcessMessage(CNode *pfrom,
         {
             pindex = LookupBlockIndex(hashStop);
             if (!pindex)
+            {
+                // end header is unknown -- must be a reorged fork (or just a bogus request).
+                pfrom->PushMessageWithCookie(NetMsgType::REJECT, msgCookie | 0xFFFF, strCommand, REJECT_FORK,
+                    strprintf("unknown header %s", hashStop.GetHex().c_str()));
                 return true;
+            }
         }
 
         std::vector<CBlockHeader> vHeaders;
@@ -1634,8 +1641,8 @@ bool ProcessMessage(CNode *pfrom,
             }
 
             int nLimit = MAX_HEADERS_RESULTS;
-            LOG(NET, "getheaders height %d for block %s from peer %s\n", (pindex ? pindex->height() : -1),
-                hashStop.ToString(), pfrom->GetLogName());
+            LOG(NET, "getheaders located at height %d (locator size %d) to stop block %s from peer %s\n",
+                (pindex ? pindex->height() : -1), locator.vHave.size(), hashStop.ToString(), pfrom->GetLogName());
             READLOCK(chainActive.cs_chainLock);
             for (; pindex; pindex = chainActive._Next(pindex))
             {
@@ -1652,6 +1659,7 @@ bool ProcessMessage(CNode *pfrom,
             CNodeStateAccessor state(nodestate, pfrom->GetId());
             state->pindexBestHeaderSent = pindex ? pindex : chainActive.Tip();
         }
+        LOG(NET, "HEADERS reply with %d headers\n", vHeaders.size());
         pfrom->PushMessageWithCookie(NetMsgType::HEADERS, msgCookie | 0xFFFF, vHeaders);
     }
 
