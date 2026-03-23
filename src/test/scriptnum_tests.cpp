@@ -742,6 +742,8 @@ void testScript(const CScript &s, bool expectedRet, bool expectedStackTF, Script
     }
 }
 
+// If not upgraded we expect a script failure
+// If upgraded, we expect the top stack item to be expectedStackTF
 void testScriptU(bool upgraded, const CScript &s, bool expectedStackTF)
 {
     ScriptMachine sm(testScriptFlags, ScriptImportedState(), 0xffffffff, 0xffffffff);
@@ -867,6 +869,51 @@ void bignumscript(uint32_t flags, bool upgraded)
         CScript() << OP_10 << OP_BIN2BIGNUM << OP_NEGATE << OP_10 << OP_BIN2BIGNUM << OP_NEGATE << OP_9 << OP_BIN2BIGNUM
                   << OP_NEGATE << OP_WITHIN,
         trueIfUpgraded);
+
+    // Check operation order for all non-commutative ops and verify consistency with int operations
+    // check SUB
+    testScript(CScript() << OP_10 << OP_4 << OP_SUB << OP_6 << OP_NUMEQUAL, true);
+    testScript(
+        CScript() << OP_10 << OP_BIN2BIGNUM << OP_4 << OP_BIN2BIGNUM << OP_SUB << OP_6 << OP_NUMEQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_4 << OP_BIN2BIGNUM << OP_SUB << OP_6 << OP_NUMEQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_4 << OP_SUB << OP_6 << OP_NUMEQUAL, trueIfUpgraded);
+
+    // check DIV
+    testScript(CScript() << OP_10 << OP_2 << OP_DIV << OP_5 << OP_NUMEQUAL, true);
+    testScript(
+        CScript() << OP_10 << OP_BIN2BIGNUM << OP_2 << OP_BIN2BIGNUM << OP_DIV << OP_5 << OP_NUMEQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_2 << OP_BIN2BIGNUM << OP_DIV << OP_5 << OP_NUMEQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_2 << OP_DIV << OP_5 << OP_NUMEQUAL, trueIfUpgraded);
+
+    // check MOD (10 mod 3 == 1)   should not be: (3 mod 10 == 3)
+    testScript(CScript() << OP_10 << OP_3 << OP_MOD << OP_1 << OP_NUMEQUAL, true);
+    testScript(
+        CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_MOD << OP_1 << OP_NUMEQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_3 << OP_BIN2BIGNUM << OP_MOD << OP_1 << OP_NUMEQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_MOD << OP_1 << OP_NUMEQUAL, trueIfUpgraded);
+
+    // check GREATERTHAN
+    testScript(CScript() << OP_10 << OP_3 << OP_GREATERTHAN, true);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHAN, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHAN, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_GREATERTHAN, trueIfUpgraded);
+    // check GREATERTHANOREQUAL
+    testScript(CScript() << OP_10 << OP_3 << OP_GREATERTHANOREQUAL, true);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHANOREQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHANOREQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_GREATERTHANOREQUAL, trueIfUpgraded);
+
+    // check LESSTHAN
+    testScript(CScript() << OP_1 << OP_3 << OP_LESSTHAN, true);
+    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_LESSTHAN, trueIfUpgraded);
+    testScript(CScript() << OP_1 << OP_3 << OP_BIN2BIGNUM << OP_LESSTHAN, trueIfUpgraded);
+    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_LESSTHAN, trueIfUpgraded);
+    // check LESSTHANOREQUAL
+    testScript(CScript() << OP_1 << OP_3 << OP_LESSTHANOREQUAL, true);
+    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_LESSTHANOREQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_1 << OP_3 << OP_BIN2BIGNUM << OP_LESSTHANOREQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_LESSTHANOREQUAL, trueIfUpgraded);
+
 
     // check OR
     testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_1 << OP_OR << OP_11 << OP_NUMEQUAL, trueIfUpgraded);

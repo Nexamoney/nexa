@@ -105,6 +105,8 @@ enum
     SCRIPT_ENFORCE_STACK_TOTAL = (1U << 27),
     // Flag which determines if OP_ROLL and OP_PICK can be passed negative indexes
     SCRIPT_FORK1_OPCODES = (1U << 28),
+    // Flag controlling 2026 hard fork upgrade features
+    SCRIPT_UPGRADE2_OPCODES = (1U << 29),
 };
 
 #endif // NEXA_SCRIPT_SCRIPTFLAGS_H

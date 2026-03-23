@@ -56,6 +56,7 @@ public:
 #define UPDATE_JSON_TESTS
 
 static const unsigned int flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+static const unsigned int flagsFork1 = MANDATORY_SCRIPT_VERIFY_FLAGS | SCRIPT_FORK1_OPCODES;
 
 UniValue read_json(const std::string &jsondata)
 {
@@ -3203,6 +3204,74 @@ BOOST_AUTO_TEST_CASE(locking_op_parse)
     vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
     BOOST_CHECK(vfy);
     BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+
+
+    // Now make the output have an authority
+    txTo.vout[2].scriptPubKey = ScriptTemplateOutput(tHash, argsHash, ToByteVector(visibleArgs), grp1,
+        (uint64_t)(GroupAuthorityFlags::AUTHORITY | GroupAuthorityFlags::MINT));
+    txTo.vout[2].type = CTxOut::TEMPLATE;
+    sis = ScriptImportedStateSig(&txTo, 0, txFrom.vout[0].nValue, flags);
+
+    // unsigned int flags2 = MANDATORY_SCRIPT_VERIFY_FLAGS | SCRIPT_FORK1_OPCODES;
+    st = CScript() << OP_2 << OP_0 << OP_9 << ParseOption::OUTPUT_DATA << OP_PARSE << ToByteVector(ParseHex("dd"))
+                   << OP_EQUALVERIFY << OP_0 << OP_EQUALVERIFY << OP_0 << OP_EQUALVERIFY << OP_0 << OP_EQUALVERIFY
+                   << argsHash << OP_EQUALVERIFY // argsHash
+                   << tHash
+                   << OP_EQUALVERIFY // template hash
+                   // auth flags
+                   << ((uint64_t)(GroupAuthorityFlags::AUTHORITY | GroupAuthorityFlags::MINT)) << OP_EQUALVERIFY << OP_0
+                   << OP_EQUALVERIFY // group amount
+                   << ToByteVector(grp1.bytes()) << OP_EQUALVERIFY;
+    vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
+    BOOST_CHECK(vfy);
+    BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+
+    st = CScript() << OP_2 << OP_2 << OP_1 << ParseOption::OUTPUT_DATA << OP_PARSE
+                   << ((uint64_t)(GroupAuthorityFlags::AUTHORITY | GroupAuthorityFlags::MINT)) << OP_EQUALVERIFY;
+    vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
+    BOOST_CHECK(vfy);
+    BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+
+    // Extra tests for getting authority bits from PARSE since auths look like a negative number
+    uint64_t auth = (uint64_t)(GroupAuthorityFlags::AUTHORITY | GroupAuthorityFlags::MINT |
+                               GroupAuthorityFlags::SUBGROUP | GroupAuthorityFlags::BATON);
+    txTo.vout[2].scriptPubKey = ScriptTemplateOutput(tHash, argsHash, ToByteVector(visibleArgs), grp1, auth);
+    txTo.vout[2].type = CTxOut::TEMPLATE;
+    sis = ScriptImportedStateSig(&txTo, 0, txFrom.vout[0].nValue, flags);
+
+    st = CScript() << OP_2 << OP_2 << OP_1 << ParseOption::OUTPUT_DATA << OP_PARSE
+                   << ((uint64_t)(GroupAuthorityFlags::MINT)) << OP_AND << OP_0NOTEQUAL << OP_VERIFY;
+    vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
+    BOOST_CHECK(vfy);
+    BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+
+    st = CScript() << OP_2 << OP_2 << OP_1 << ParseOption::OUTPUT_DATA << OP_PARSE
+                   << ((uint64_t)(GroupAuthorityFlags::MINT)) << OP_AND << OP_BIN2NUM << OP_0 << OP_GREATERTHAN
+                   << OP_VERIFY;
+    vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
+    BOOST_CHECK(vfy);
+    BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+
+    // If treated as a number, its negative
+    st = CScript() << OP_2 << OP_2 << OP_1 << ParseOption::OUTPUT_DATA << OP_PARSE << OP_BIN2NUM << OP_0 << OP_LESSTHAN
+                   << OP_VERIFY;
+    vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
+    BOOST_CHECK(vfy);
+    BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+
+    // If treated as a big number, its negative
+    st = CScript() << OP_2 << OP_2 << OP_1 << ParseOption::OUTPUT_DATA << OP_PARSE << OP_BIN2BIGNUM << OP_0
+                   << OP_LESSTHAN << OP_VERIFY;
+    vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
+    BOOST_CHECK(vfy);
+    BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+
+    // We can trick the bignum into a postive bitfield by appending an empty sign byte
+    st = CScript() << OP_2 << OP_2 << OP_1 << ParseOption::OUTPUT_DATA << OP_PARSE << OP_0 << OP_1 << OP_NUM2BIN
+                   << OP_CAT << OP_BIN2BIGNUM << OP_0 << OP_GREATERTHAN << OP_VERIFY;
+    vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
+    BOOST_CHECK(vfy);
+    BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
 }
 
 
@@ -3381,7 +3450,7 @@ BOOST_AUTO_TEST_CASE(script_jump)
 
     st = CScript() << validsig.data() << message.data() << ToByteVector(keys.pubkey0) << OP_CHECKDATASIG << OP_DROP;
     st << st.size() + 3 << OP_JUMP; // jump back to the beginning
-    printf("%s\n", ScriptToAsmStr(st).c_str());
+    // printf("%s\n", ScriptToAsmStr(st).c_str());
     vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
     BOOST_CHECK(!vfy);
     BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_SIGCHECKS_LIMIT_EXCEEDED, ScriptErrorString(err));
@@ -3442,6 +3511,19 @@ BOOST_AUTO_TEST_CASE(script_jump)
     BOOST_CHECK(vfy);
     // no jump
     st = CScript() << OP_1 << OP_0 << OP_BIN2BIGNUM << OP_JUMP << OP_DROP;
+    vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
+    BOOST_CHECK(vfy);
+
+    // jumps within a not-taken if don't happen
+    st = CScript() << OP_0 << OP_IF << 100 << OP_JUMP << OP_ENDIF;
+    vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
+    BOOST_CHECK(vfy);
+    // jumps within a not-taken if don't happen
+    st = CScript() << OP_1 << OP_NOTIF << 100 << OP_JUMP << OP_ENDIF;
+    vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
+    BOOST_CHECK(vfy);
+    // jumps within a not-taken else don't happen
+    st = CScript() << OP_1 << OP_IF << OP_NOP << OP_ELSE << 100 << OP_JUMP << OP_ENDIF;
     vfy = VerifyTemplate(st, empty, empty, flags, tops, sops, sis, &err, &trk);
     BOOST_CHECK(vfy);
 

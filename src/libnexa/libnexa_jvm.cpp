@@ -173,6 +173,11 @@ jbyteArray makeJByteArray(JNIEnv *env, std::vector<unsigned char> &buf)
 
 extern "C" JNIEXPORT jboolean JNICALL Java_org_nexa_libnexakotlin_Native_initializeLibNexa(JNIEnv *env, jobject ths)
 {
+    /* For debugging when running in systems that squelch logs coming from shared libs
+    FILE *f = fopen("/tmp/libnexa.log", "a");
+    fprintf(f, "----- CUSTOM LIBNEXA.SO VERSION -----\nn\n\n");
+    fclose(f);
+    */
     // A chain selection parameter should be part of every libnexa API, but the underlying code still
     // requires a default to be set so pick Nexa as the default.
     SelectParams("nexa");
