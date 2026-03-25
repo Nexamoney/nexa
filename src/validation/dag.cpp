@@ -473,6 +473,9 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
                 }
                 else
                 {
+                    // Set the processed flag
+                    newNode->fProcessed = true;
+
                     // Set the tree pointer for the grove to the best tree in the grove
                     tailstormForest.SetDagCoinsTip();
                 }
@@ -480,9 +483,6 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
 
             cvCommitQ.notify_all();
         }
-
-        // Set the processed flag
-        newNode->fProcessed = true;
 
         return true;
     }
@@ -1594,8 +1594,6 @@ void CTailstormForest::GenerateDagData(CTailstormGroveRef grove)
     auto chainparams = Params();
     auto &tree = grove->tree;
     {
-        uint32_t nSequenceId = 0;
-
         // Get the exclusion set for this dag which is use to pass to connect block and allow
         // processing to continue without a missing inputs error begin returned. This exlusion set is needed
         // because mapDagTxns, which is also used to skip processing a transaction twice,
@@ -1617,6 +1615,7 @@ void CTailstormForest::GenerateDagData(CTailstormGroveRef grove)
         std::vector<std::pair<uint256, CTreeNodeRef> > vSortedDag(tree->dag.begin(), tree->dag.end());
         std::sort(vSortedDag.begin(), vSortedDag.end(),
             [](const auto &a, const auto &b) { return a.second->nSequenceId < b.second->nSequenceId; });
+        uint32_t nSequenceId = 0;
         for (auto it = vSortedDag.begin(); it != vSortedDag.end(); it++)
         {
             nSequenceId++;
@@ -1661,7 +1660,11 @@ void CTailstormForest::GenerateDagData(CTailstormGroveRef grove)
                 tree->dag.erase(treenode->hash);
                 grove->mapGroveNodes.erase(treenode->hash);
                 nSequenceId--;
+                treenode->fProcessed = false;
+                treenode->nSequenceId = 0;
                 AddSubblockOrphan(treenode);
+                LOG(DAG, "%s():  Unable to process subblock while generating data: %s", __func__,
+                    treenode->hash.ToString());
             }
         }
     }
@@ -1696,7 +1699,8 @@ void CTailstormForest::SetDagCoinsTip()
         if (nTreeChainWork > nMaxChainWork)
         {
             nMaxChainWork = nTreeChainWork;
-            _pcoinsDag = grove->tree->view;
+            if (grove->tree->view)
+                _pcoinsDag = grove->tree->view;
         }
     }
 
