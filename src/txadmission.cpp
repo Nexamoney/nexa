@@ -1058,6 +1058,9 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
         CAmount nValueOut = 0;
         CAmount nFees = 0;
         CAmount nModifiedFees = 0;
+        double dPriority = 0.0;
+        bool fSpendsCoinbase = false;
+        CAmount inChainInputValue;
         {
             READLOCK(pool.cs_txmempool);
             CCoinsViewCache *ptip = fTailstormEnabled ? tailstormForest.pcoinsDag : pcoinsTip;
@@ -1205,52 +1208,50 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
             // Search either id or idem for a user-applied priority modifier
             pool._ApplyDeltas(id, nPriorityDummy, nModifiedFees);
             pool._ApplyDeltas(idem, nPriorityDummy, nModifiedFees);
-        }
 
-        // Check for non-standard pay-to-script-hash in inputs
-        if (fRequireStandard && !AreInputsStandard(tx, view))
-        {
-            if (debugger)
+            // Check for non-standard pay-to-script-hash in inputs
+            if (fRequireStandard && !AreInputsStandard(tx, view))
             {
-                debugger->AddInvalidReason("bad-txns-nonstandard-inputs");
-                debugger->standard = false;
-                // if we require standard and this tx is not standard, we can not
-                // mine now or in the future either
-                debugger->mineable = false;
-                debugger->futureMineable = false;
+                if (debugger)
+                {
+                    debugger->AddInvalidReason("bad-txns-nonstandard-inputs");
+                    debugger->standard = false;
+                    // if we require standard and this tx is not standard, we can not
+                    // mine now or in the future either
+                    debugger->mineable = false;
+                    debugger->futureMineable = false;
+                }
+                else
+                {
+                    return state.Invalid(false, REJECT_NONSTANDARD, "bad-txns-nonstandard-inputs");
+                }
             }
-            else
-            {
-                return state.Invalid(false, REJECT_NONSTANDARD, "bad-txns-nonstandard-inputs");
-            }
-        }
 
-        // Get the priority
-        //
-        // And, keep track of transactions that spend a coinbase, which we re-scan
-        // during reorgs to ensure COINBASE_MATURITY is still met.
-        CAmount inChainInputValue;
-        bool fSpendsCoinbase = false;
-        double dPriority = view.GetPriority(*tx, chainActive.Height(), inChainInputValue, fSpendsCoinbase);
-        // Check that input script constraints are satisfied
-        unsigned char sighashType = 0;
-        if (!CheckInputs(tx, state, view, coinstip, true, flags, true, &resourceTracker, chainparams, nullptr,
-                &sighashType, debugger))
-        {
-            if (state.GetDebugMessage() == "")
-                state.SetDebugMessage("CheckConsumedInputs failed");
+            // Get the priority
+            //
+            // And, keep track of transactions that spend a coinbase, which we re-scan
+            // during reorgs to ensure COINBASE_MATURITY is still met.
+            dPriority = view.GetPriority(*tx, chainActive.Height(), inChainInputValue, fSpendsCoinbase);
+            // Check that input script constraints are satisfied
+            unsigned char sighashType = 0;
+            if (!CheckInputs(tx, state, view, coinstip, true, flags, true, &resourceTracker, chainparams, nullptr,
+                    &sighashType, debugger))
+            {
+                if (state.GetDebugMessage() == "")
+                    state.SetDebugMessage("CheckConsumedInputs failed");
 
-            if (debugger && debugger->InputsCheck1IsValid())
-            {
-                debugger->AddInvalidReason(state.GetDebugMessage());
-                debugger->mineable = false;
-                debugger->futureMineable = false;
-            }
-            else
-            {
-                LOG(MEMPOOL, "CheckConsumedInputs failed for tx: %s reason: %s\n", id.ToString(),
-                    state.GetDebugMessage());
-                return false;
+                if (debugger && debugger->InputsCheck1IsValid())
+                {
+                    debugger->AddInvalidReason(state.GetDebugMessage());
+                    debugger->mineable = false;
+                    debugger->futureMineable = false;
+                }
+                else
+                {
+                    LOG(MEMPOOL, "CheckConsumedInputs failed for tx: %s reason: %s\n", id.ToString(),
+                        state.GetDebugMessage());
+                    return false;
+                }
             }
         }
 
