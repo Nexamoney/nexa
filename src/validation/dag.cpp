@@ -263,8 +263,8 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
         return false;
 
     // Add to the tree
-    auto res = dag.emplace(newNode->hash, newNode);
-    if (res.second)
+    auto exists = dag.find(newNode->hash) != dag.end();
+    if (!exists) // We need to add it if it does not already exist
     {
         // Check if we're trying to insert into the tree of the current active summary block tip.
         // If not then we just return true but without setting the fProcessed flag. This way we keep
@@ -276,7 +276,9 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
         {
             // Alhough we haven't processed this block yet we later need to know
             // the sequence id.
-            newNode->nSequenceId = dag.size();
+            newNode->nSequenceId = dag.size() + 1;
+            DbgAssert(newNode->nSequenceId > 0, );
+            dag.emplace(newNode->hash, newNode);
             return true;
         }
 
@@ -388,7 +390,6 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
                 }
                 if (fHasDoubleSpentAncestor)
                 {
-                    dag.erase(newNode->hash);
                     LOG(DAG, "%s: Rejected - subbblock %s has a double spend in its ancestor tree: %s", __func__,
                         newNode->hash.ToString(), state.GetLogString());
                     return false;
@@ -409,7 +410,6 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
 
         if (!fOK)
         {
-            dag.erase(newNode->hash);
             LOG(DAG, "%s: subbblock %s failed to validate: %s", __func__, newNode->hash.ToString(),
                 state.GetLogString());
 
@@ -417,6 +417,14 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
         }
         else
         {
+            // Stop txadmission, and flush the commitQ, before we flush coin state, remove txn conflicts and
+            // set the active tree as well as pcoinsDag.
+            TxAdmissionPause txlock;
+
+            // Update the sequence id
+            newNode->nSequenceId = dag.size() + 1;
+            DbgAssert(newNode->nSequenceId > 0, );
+            dag.emplace(newNode->hash, newNode);
             // Update the map of all current dag transactions. This must be done before
             // we continue processing, especially is we have a double spend block and
             // we need to re-generate the dag data.
@@ -432,10 +440,6 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
                     mapInputs.emplace(input.prevout, ptx);
                 }
             }
-
-            // Stop txadmission, and flush the commitQ, before we flush coin state, remove txn conflicts and
-            // set the active tree as well as pcoinsDag.
-            TxAdmissionPause txlock;
 
             // After the subblock is validated without error we can flush coin state
             bool result = upperview.Flush();
@@ -457,9 +461,6 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
                     mempool._removeConflicts(*tx, txConflicted);
                 }
             }
-
-            // Update the sequence id
-            newNode->nSequenceId = dag.size();
 
             CTailstormGroveRef grove = nullptr;
             if (tailstormForest.GetGrove(*(pindexSummaryRoot->phashBlock), grove))
