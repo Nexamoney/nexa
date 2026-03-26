@@ -431,7 +431,7 @@ CTweak<bool> fastBlockTemplate("mining.fastBlockTemplate",
 
 
 CTweakRef<uint64_t> miningForkTime("consensus.fork2Time",
-    "Time in seconds since the epoch to initiate the Nexa Fork1 protocol upgrade.  A "
+    "Time in seconds since the epoch to initiate the Nexa Fork2 protocol upgrade.  A "
     "setting of 0 will turn on the fork at the appropriate time.",
     &nMiningForkTime,
     &ForkTimeValidator);

@@ -26,6 +26,7 @@
 - [gettxpooldescendants](commands/gettxpooldescendants.md) txid (verbose)
 - [gettxpoolentry](commands/gettxpoolentry.md) txid
 - [gettxpoolinfo](commands/gettxpoolinfo.md)
+- [rollbackchain](commands/rollbackchain.md)
 - [saveorphanpool](commands/saveorphanpool.md)
 - [savetxpool](commands/savetxpool.md)
 - [scantokens](commands/scantokens.md) <action> ( <scanobjects> )
