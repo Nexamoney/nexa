@@ -156,19 +156,37 @@ protected:
 
     CCoinsViewCache *_pcoinsTip = nullptr;
 
+    // coins cache view for the this grove backed by _pcoinsTip
+    CCoinsViewCache *view = nullptr;
+
+
 protected:
     bool InitializeTree(CTreeNodeRef newNode, CCoinsViewCache *coinsCache);
     bool InsertIntoTree(CTreeNodeRef newNode);
 
+public:
     CTailstormGrove(CCoinsViewCache *coinsCache)
     {
         CTailstormTree temp;
         tree = std::make_shared<CTailstormTree>(temp);
 
         _pcoinsTip = coinsCache;
+        view = new CCoinsViewCache(coinsCache);
+        view->SetBestBlock(roothash);
         assert(_pcoinsTip);
+        assert(view);
     }
 
+    ~CTailstormGrove()
+    {
+        if (!tree && view)
+        {
+            delete view;
+            view = nullptr;
+        }
+    }
+
+protected:
     void Clear();
 
     bool Insert(CTreeNodeRef newNode);

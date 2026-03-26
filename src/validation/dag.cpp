@@ -476,7 +476,7 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
                     // Set the processed flag
                     newNode->fProcessed = true;
 
-                    // Set the tree pointer for the grove to the best tree in the grove
+                    // Set pcoinsDag to the best dag in the Forest.
                     tailstormForest.SetDagCoinsTip();
                 }
             }
@@ -503,16 +503,8 @@ bool CTailstormGrove::InitializeTree(CTreeNodeRef newNode, CCoinsViewCache *coin
 
     roothash = newNode->subblock->hashPrevBlock;
 
-    // In case we attempted to initialize before and failed
-    if (tree->view)
-    {
-        delete tree->view;
-        tree->view = nullptr;
-    }
-
     tree->_pcoinsTip = coinsCache;
-    tree->view = new CCoinsViewCache(coinsCache);
-    tree->view->SetBestBlock(roothash);
+    tree->view = view;
     tree->pindexSummaryRoot = LookupBlockIndex(roothash);
     assert(tree->pindexSummaryRoot);
 
@@ -1503,6 +1495,9 @@ void CTailstormForest::CheckForReorg()
             setAllGroves.insert(mi.second);
 
         // Get the chainwork of the current chainactive tip plus all the subblocks in it's dag
+        //
+        // The chainwork includes "all" subblocks for the full dag, so uncles as well as dag blocks.
+        // We also need to include any unprocessed or unconnected subblocks.
         std::set<CTreeNodeRef> tipdag;
         GetFullDagFor(*chainTip->phashBlock, tipdag);
         for (auto node : tipdag)
@@ -1678,6 +1673,9 @@ void CTailstormForest::SetDagCoinsTip()
     DbgAssert(
         txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("Do not have corral pause during activate best tree"));
 
+    if (!chainActive.Tip())
+        return;
+
     // Cycle through all the trees of each grove and find the chainWork
     CCoinsViewCache *_pcoinsDag = pcoinsTip;
     arith_uint256 nMaxChainWork = chainActive.Tip()->chainWork();
@@ -1699,8 +1697,9 @@ void CTailstormForest::SetDagCoinsTip()
         if (nTreeChainWork > nMaxChainWork)
         {
             nMaxChainWork = nTreeChainWork;
-            if (grove->tree->view)
-                _pcoinsDag = grove->tree->view;
+            DbgAssert(grove->view, );
+            if (grove->view)
+                _pcoinsDag = grove->view;
         }
     }
 
@@ -1907,6 +1906,7 @@ void CTailstormForest::Check()
         nAllGroveNodes += grove->mapGroveNodes.size();
         assert(grove->tree);
         assert(grove->_pcoinsTip);
+        assert(grove->view);
         assert(!grove->roothash.IsNull());
         assert(grove->nRootHeight > 0);
 
