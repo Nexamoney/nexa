@@ -3829,9 +3829,10 @@ bool ConnectTip(CValidationState &state,
         LOCK(tailstormForest.cs_forest); // maintain locking order
         TxAdmissionPause txlock;
 
-        // Flush coin state
+        // Flush coin state and set coins tip
         bool result = view.Flush();
         assert(result);
+        tailstormForest.SetDagCoinsTip();
         LOG(BENCH, "      - Flush Coins %.3fms\n", GetStopwatchMicros() - nStart);
 
         // Remove transactions from the mempool, both those confirmed in the block and conflicting transactions.
