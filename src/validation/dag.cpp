@@ -655,6 +655,7 @@ bool CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
         ConstCBlockRef pblock = newNode->subblock;
         const CBlockHeader header = pblock->GetBlockHeader();
         uint32_t nSequenceId = newNode->nSequenceId;
+        DbgAssert(nSequenceId > 0, );
         uiInterface.NotifyBlockTipDag(false, newNode->dagHeight, nSequenceId, header, true);
 
         // Update the uncles map with any "new" uncles that may have arrived.
@@ -893,7 +894,7 @@ bool CTailstormForest::_Insert(ConstCBlockRef subblock)
         // which has an entry in mapAllNodes but not yet in mapAllGroves.
     }
 
-    // Insert elements into a new grove or and already existing grove.
+    // Insert elements into a new grove or an already existing grove.
     auto mi = mapAllGroves.find(subblock->hashPrevBlock);
     if (mi != mapAllGroves.end())
     {
@@ -927,6 +928,8 @@ bool CTailstormForest::_Insert(ConstCBlockRef subblock)
         LOG(DAG, "%s(): trying to add subblock to already existing grove %s", __func__, newNode->hash.ToString());
         if (mi->second->Insert(newNode))
         {
+            // The insertion must have given it a sequence id
+            DbgAssert(newNode->nSequenceId > 0, );
             mapAllGroves.emplace(newNode->hash, mi->second);
 
             LOG(DAG, "%s(): added subblock %s to existing grove %s with subblock dagHeight %d", __func__,
@@ -1677,8 +1680,8 @@ void CTailstormForest::SetDagCoinsTip()
         return;
 
     // Cycle through all the trees of each grove and find the chainWork
-    CCoinsViewCache *_pcoinsDag = pcoinsTip;
     arith_uint256 nMaxChainWork = chainActive.Tip()->chainWork();
+    bestGrove = nullptr;
 
     // Find all groves
     std::set<CTailstormGroveRef> setAllGroves;
@@ -1698,21 +1701,9 @@ void CTailstormForest::SetDagCoinsTip()
         {
             nMaxChainWork = nTreeChainWork;
             DbgAssert(grove->view, );
-            if (grove->view)
-                _pcoinsDag = grove->view;
+            bestGrove = grove;
         }
     }
-
-    SetDagCoinsTip(_pcoinsDag);
-}
-
-void CTailstormForest::SetDagCoinsTip(CCoinsViewCache *coinsCache)
-{
-    AssertLockHeld(tailstormForest.cs_forest);
-    DbgAssert(
-        txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("Do not have corral pause during activate best tree"));
-
-    pcoinsDag = coinsCache;
 }
 
 void CTailstormForest::SetDagActiveTip(CTreeNodeRef treenode)

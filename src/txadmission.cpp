@@ -1063,7 +1063,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
         CAmount inChainInputValue;
         {
             READLOCK(pool.cs_txmempool);
-            CCoinsViewCache *ptip = fTailstormEnabled ? tailstormForest.pcoinsDag : pcoinsTip;
+            CCoinsViewCache *ptip = fTailstormEnabled ? tailstormForest.bestGroveCoins() : pcoinsTip;
             CCoinsViewMemPool viewMemPool(ptip, mempool);
             view.SetBackend(viewMemPool);
             coinstip.SetBackend(*ptip);
@@ -1583,7 +1583,7 @@ bool CheckSequenceLocks(const CTransactionRef tx, int flags, LockPoints *lp, boo
     else
     {
         // ptip contains the UTXO set for chainActive.Tip() or the tailstorm dag tip
-        CCoinsViewCache *ptip = fTailstormEnabled ? tailstormForest.pcoinsDag : pcoinsTip;
+        CCoinsViewCache *ptip = fTailstormEnabled ? tailstormForest.bestGroveCoins() : pcoinsTip;
         CCoinsViewMemPool tmpView(ptip, mempool);
         CCoinsViewMemPool &viewMemPool = tmpView;
         std::vector<int> prevheights;

@@ -49,6 +49,9 @@ class CTreeNode
 public:
     uint256 hash; // the subblock hash that is this node
     uint32_t dagHeight = 0;
+    // nSequenceId is the order of arrival/insertion of this node into the tree it gets inserted into.
+    // If 0, this node is not in a tree.
+    // Within the tree, this is used to recover the order in which the subblock was received.
     uint32_t nSequenceId = 0;
     bool fProcessed = false;
     bool fUncle = false; // is this a subblock (uncle) from the previous summary block
@@ -167,8 +170,7 @@ protected:
 public:
     CTailstormGrove(CCoinsViewCache *coinsCache)
     {
-        CTailstormTree temp;
-        tree = std::make_shared<CTailstormTree>(temp);
+        tree = std::make_shared<CTailstormTree>();
 
         _pcoinsTip = coinsCache;
         view = new CCoinsViewCache(coinsCache);
@@ -243,11 +245,19 @@ public:
     // NOTE: pcoinsDag is protected by txAdmissionPause().  You must
     // have taken a Corral, either a TX_PAUSE or TX_PROCESSING before using this
     // pointer.
-    CCoinsViewCache *pcoinsDag = nullptr;
+    CCoinsViewCache *bestGroveCoins()
+    {
+        if (bestGrove == nullptr)
+            return _pcoinsTip;
+        else
+            return bestGrove->view;
+    }
 
 protected:
     // The frequency used for sanity checking the dag
     uint32_t nCheckFrequency = 0;
+    // The best known grove (most cumulative work) in the forest
+    CTailstormGroveRef bestGrove;
 
 public:
     CTailstormForest() {}
@@ -339,7 +349,6 @@ public:
 
     //! Set the coins tip for the active dag
     void SetDagCoinsTip();
-    void SetDagCoinsTip(CCoinsViewCache *coinsCache);
 
     //! Atomically set the dag active tip
     void SetDagActiveTip(CTreeNodeRef treenode);
