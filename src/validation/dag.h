@@ -135,7 +135,8 @@ public:
     }
 
 protected:
-    bool Insert(CTreeNodeRef new_node);
+    // Returns new_node if inserted, the existing node if it was already inserted, or nullptr if insertion failed
+    CTreeNodeRef Insert(CTreeNodeRef new_node);
 };
 
 // All datamembers are protected by cs_forest

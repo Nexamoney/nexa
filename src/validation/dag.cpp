@@ -257,17 +257,17 @@ std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &setBestDag,
 }
 
 // Tailstorm Tree
-bool CTailstormTree::Insert(CTreeNodeRef newNode)
+CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
 {
     AssertLockHeld(tailstormForest.cs_forest);
 
     DbgAssert(newNode->subblock != nullptr, );
     if (!newNode->subblock)
-        return false;
+        return CTreeNodeRef();
 
     // Add to the tree
-    auto exists = dag.find(newNode->hash) != dag.end();
-    if (!exists) // We need to add it if it does not already exist
+    auto element = dag.find(newNode->hash);
+    if (element == dag.end()) // We need to add it if it does not already exist
     {
         // Check if we're trying to insert into the tree of the current active summary block tip.
         // If not then we just return true but without setting the fProcessed flag. This way we keep
@@ -282,7 +282,7 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
             newNode->nSequenceId = dag.size() + 1;
             DbgAssert(newNode->nSequenceId > 0, );
             dag.emplace(newNode->hash, newNode);
-            return true;
+            return newNode;
         }
 
         bool fMissingOrSpent = false;
@@ -395,7 +395,7 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
                 {
                     LOG(DAG, "%s: Rejected - subbblock %s has a double spend in its ancestor tree: %s", __func__,
                         newNode->hash.ToString(), state.GetLogString());
-                    return false;
+                    return CTreeNodeRef();
                 }
                 else
                 {
@@ -416,7 +416,7 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
             LOG(DAG, "%s: subbblock %s failed to validate: %s", __func__, newNode->hash.ToString(),
                 state.GetLogString());
 
-            return false;
+            return CTreeNodeRef();
         }
         else
         {
@@ -487,10 +487,10 @@ bool CTailstormTree::Insert(CTreeNodeRef newNode)
             cvCommitQ.notify_all();
         }
 
-        return true;
+        return newNode;
     }
 
-    return true; // must return true because we already have it and don't want it deleted from the grove
+    return element->second; // must return true because we already have it and don't want it deleted from the grove
 }
 
 // Tailstorm Grove
@@ -513,7 +513,8 @@ bool CTailstormGrove::InitializeTree(CTreeNodeRef newNode, CCoinsViewCache *coin
 
     nRootHeight = tree->pindexSummaryRoot->height();
 
-    return tree->Insert(newNode);
+    newNode = tree->Insert(newNode);
+    return newNode != nullptr;
 }
 
 void CTailstormGrove::Clear()
@@ -574,13 +575,15 @@ bool CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
             }
             else
             {
-                if (!tree->Insert(newNode))
+                auto tmp = tree->Insert(newNode);
+                if (tmp == nullptr)
                 {
                     mapGroveNodes.erase(newNode->hash);
                     tailstormForest.AddSubblockOrphan(newNode);
                     LOG(DAG, "%s(): Initialize Tree: adding orphan to unused nodes", __func__);
                     return false;
                 }
+                newNode = tmp;
                 LOG(DAG, "%s(): Initialize Tree: completed insert into tree for %s", __func__,
                     newNode->hash.ToString());
             }
@@ -642,9 +645,11 @@ bool CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
                 }
 
                 // Insert new node into tree
-                if (tree->Insert(newNode))
+                auto tmp = tree->Insert(newNode);
+                if (tmp != nullptr)
                 {
                     fAddedSubblock = true;
+                    newNode = tmp;
                     LOG(DAG, "%s(): completed insert into tree dagsize %ld for %s", __func__, tree->dag.size(),
                         newNode->hash.ToString());
                 }
