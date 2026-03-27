@@ -228,22 +228,25 @@ std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &setBestDag,
 
             // Anything left in the map needs to have all it's descendants chains also removed.
             // Find all the descendants and add them to the exclusion set.
-            const auto pDoubleSpend = mapDagTxns[mi.first];
-            std::set<CTransactionRef> descendants;
-            descendants.insert(pDoubleSpend);
-
-            while (!descendants.empty())
+            if (mapDagTxns.count(mi.first))
             {
-                auto ptx = *descendants.begin();
-                descendants.erase(ptx);
-                for (unsigned int j = 0; j < ptx->vout.size(); j++)
+                const auto pDoubleSpend = mapDagTxns[mi.first];
+                std::set<CTransactionRef> descendants;
+                descendants.insert(pDoubleSpend);
+
+                while (!descendants.empty())
                 {
-                    const auto &outpoint = ptx->OutpointAt(j);
-                    if (mapInputs.count(outpoint))
+                    auto ptx = *descendants.begin();
+                    descendants.erase(ptx);
+                    for (unsigned int j = 0; j < ptx->vout.size(); j++)
                     {
-                        auto pNewDescendant = mapInputs[outpoint];
-                        descendants.insert(pNewDescendant);
-                        setTxnExclusions.insert(pNewDescendant->GetId());
+                        const auto &outpoint = ptx->OutpointAt(j);
+                        if (mapInputs.count(outpoint))
+                        {
+                            auto pNewDescendant = mapInputs[outpoint];
+                            descendants.insert(pNewDescendant);
+                            setTxnExclusions.insert(pNewDescendant->GetId());
+                        }
                     }
                 }
             }
