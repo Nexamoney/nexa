@@ -1383,7 +1383,6 @@ bool AppInit2(Config &config)
                     LOCK(tailstormForest.cs_forest);
                     TxAdmissionPause txlock;
                     tailstormForest.SetBackend(pcoinsTip);
-                    tailstormForest.SetDagCoinsTip(pcoinsTip);
                 }
 
                 if (fTxIndex)
