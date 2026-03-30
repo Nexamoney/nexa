@@ -30,7 +30,7 @@ bool IsFork1Pending(const CBlockIndex *pindexTip)
     return !IsFork1Activated(pindexTip) && (pindexTip->GetMedianTimePast() >= (int64_t)FORK1_ACTIVATION_TIME);
 }
 
-bool IsFork2Activated(const CBlockIndex *pindexTip)
+bool IsUpgrade2Activated(const CBlockIndex *pindexTip)
 {
     if ((pindexTip == nullptr) || (pindexTip->pprev == nullptr))
     {
@@ -49,7 +49,7 @@ bool IsFork2Activated(const CBlockIndex *pindexTip)
     return false;
 }
 
-bool IsFork2Pending(const CBlockIndex *pindexTip)
+bool IsUpgrade2Pending(const CBlockIndex *pindexTip)
 {
     if (pindexTip == nullptr)
     {
@@ -60,7 +60,7 @@ bool IsFork2Pending(const CBlockIndex *pindexTip)
     {
         return true;
     }
-    if (!IsFork2Activated(pindexTip) && (pindexTip->GetMedianTimePast() >= (int64_t)miningForkTime.Value()))
+    if (!IsUpgrade2Activated(pindexTip) && (pindexTip->GetMedianTimePast() >= (int64_t)miningForkTime.Value()))
     {
         return true;
     }

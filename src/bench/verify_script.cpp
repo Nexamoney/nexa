@@ -186,7 +186,7 @@ static void ScriptVerifySig(benchmark::State &state)
 
 static ScriptImportedState SetupTemplateEval()
 {
-    static const unsigned int flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    static const unsigned int flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
 
     CScript satisfy;
     satisfy << OP_NOP;
@@ -209,7 +209,7 @@ static ScriptImportedState SetupTemplateEval()
 // modified to measure performance of other types of scripts.
 static void ScriptInfiniteLoop(benchmark::State &state)
 {
-    static const unsigned int flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    static const unsigned int flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     auto trk = ScriptMachineResourceTracker();
     auto tops = MAX_OPS_PER_SCRIPT_TEMPLATE;
     auto sops = MAX_OPS_PER_SCRIPT;
@@ -230,7 +230,7 @@ static void ScriptInfiniteLoop(benchmark::State &state)
 // modified to measure performance of other types of scripts.
 static void ScriptInfiniteBignum(benchmark::State &state)
 {
-    static const unsigned int flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    static const unsigned int flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     auto trk = ScriptMachineResourceTracker();
     auto tops = MAX_OPS_PER_SCRIPT_TEMPLATE;
     auto sops = MAX_OPS_PER_SCRIPT;
@@ -271,7 +271,7 @@ static void ScriptInfiniteSigcheck(benchmark::State &state)
     const ECCVerifyHandle verify_handle;
     ECC_Start();
     KeyData keys;
-    static const unsigned int flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    static const unsigned int flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     auto trk = ScriptMachineResourceTracker();
     auto tops = MAX_OPS_PER_SCRIPT_TEMPLATE;
     auto sops = MAX_OPS_PER_SCRIPT;

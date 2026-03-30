@@ -37,7 +37,7 @@ BOOST_FIXTURE_TEST_SUITE(scriptresource_tests, BasicTestingSetup)
 
 void CheckScriptResources(const CScript &script, unsigned int expectedMaxStack, const std::string &errLog)
 {
-    const uint32_t flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    const uint32_t flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     ScriptImportedState sis;
     ScriptMachine sm(flags, sis, std::numeric_limits<unsigned int>::max(), std::numeric_limits<unsigned int>::max());
     sm.maxScriptSize = MAX_SCRIPT_TEMPLATE_SIZE;

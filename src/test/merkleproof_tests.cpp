@@ -739,7 +739,7 @@ static void CheckPass(uint32_t flags, const Stack &original_stack, const CScript
 
 BOOST_AUTO_TEST_CASE(merkleProofScripts)
 {
-    auto flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     VchType one(32);
     one[0] = 1;
     VchType two(32);
@@ -849,7 +849,7 @@ BOOST_AUTO_TEST_CASE(merkleProofScripts)
 // Negative tests for bad proofs
 BOOST_AUTO_TEST_CASE(merkleProofNegative)
 {
-    auto flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     VchType one(32);
     one[0] = 1;
     VchType two(32);
@@ -902,7 +902,7 @@ BOOST_AUTO_TEST_CASE(merkleProofNegative)
 // Negative tests for bad opcode args
 BOOST_AUTO_TEST_CASE(merkleOpcodeNegative)
 {
-    auto flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     VchType one(32);
     one[0] = 1;
     VchType two(32);
@@ -965,7 +965,7 @@ BOOST_AUTO_TEST_CASE(merkleOpcodeNegative)
 
 BOOST_AUTO_TEST_CASE(merkleMultiProofScripts)
 {
-    auto flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     VchType one(32);
     one[0] = 1;
     VchType two(32);
@@ -1051,7 +1051,7 @@ VchType buildProofSubTree(int depth)
 
 BOOST_AUTO_TEST_CASE(merkleProofLimits)
 {
-    auto flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     VchType one(32);
     one[0] = 1;
     VchType two(32);

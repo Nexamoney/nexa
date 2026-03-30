@@ -1403,7 +1403,7 @@ void basicFunctionsTest(uint32_t scriptFlags)
 BOOST_AUTO_TEST_CASE(grouptoken_basicfunctions)
 {
     basicFunctionsTest(STANDARD_SCRIPT_VERIFY_FLAGS);
-    basicFunctionsTest(POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS);
+    basicFunctionsTest(POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS);
 }
 #endif
 

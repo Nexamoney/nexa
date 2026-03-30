@@ -48,7 +48,7 @@ class TxnCloneTest(BitcoinTestFramework):
         txidem1 = self.nodes[0].sendfrom("foo", node1_address, 40, 0)
 
         # Construct a clone of tx1, to be malleated
-
+        waitFor(waitTime, lambda:  self.nodes[0].getrawtransaction(txidem1))
         tx1hex = self.nodes[0].getrawtransaction(txidem1)
         tx1json = self.nodes[0].gettransaction(txidem1)
         tx1id = tx1json["txid"]

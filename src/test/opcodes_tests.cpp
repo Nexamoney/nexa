@@ -19,7 +19,8 @@ const unsigned int largeScriptElementSize = 520;
 
 BOOST_FIXTURE_TEST_SUITE(opcodes_tests, BasicTestingSetup)
 
-std::array<uint32_t, 3> flagset{{0, STANDARD_SCRIPT_VERIFY_FLAGS, MANDATORY_SCRIPT_VERIFY_FLAGS}};
+std::array<uint32_t, 3> flagset{
+    {STANDARD_SCRIPT_VERIFY_FLAGS, MANDATORY_SCRIPT_VERIFY_FLAGS, POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS}};
 
 /**
  * General utility functions to check for script passing/failing.
@@ -73,6 +74,11 @@ static void CheckErrorForAllFlags(const stacktype &original_stack, const CScript
 static void CheckOpError(const stacktype &original_stack, opcodetype op, ScriptError expected_error)
 {
     CheckErrorForAllFlags(original_stack, CScript() << op, expected_error);
+}
+
+static void CheckOpError(const stacktype &original_stack, CScript &script, ScriptError expected_error)
+{
+    CheckErrorForAllFlags(original_stack, script, expected_error);
 }
 
 static void CheckAllBitwiseOpErrors(const stacktype &stack, ScriptError expected_error)
@@ -485,20 +491,34 @@ BOOST_AUTO_TEST_CASE(string_opcodes_test)
 
         CheckStringOp(a, b, n);
 
-        // One more char and we are oversize.
+        // This was the max size prior to fork1 (520 bytes) but now we need to dup and cat a bunch of times
+        // to get it above the 1MB limit
         valtype extraA = a;
         extraA.push_back(0xaf);
 
         valtype extraB = b;
         extraB.push_back(0xad);
+        CheckOpError({extraA, b},
+            CScript() << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT
+                      << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP
+                      << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT
+                      << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP
+                      << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT
+                      << OP_DUP,
+            SCRIPT_ERR_STACK_BYTES);
+        CheckOpError({a, extraB},
+            CScript() << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT
+                      << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP
+                      << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT,
+            SCRIPT_ERR_STACK_BYTES);
 
-        CheckOpError({extraA, b}, OP_CAT, SCRIPT_ERR_PUSH_SIZE);
-        CheckOpError({a, extraB}, OP_CAT, SCRIPT_ERR_PUSH_SIZE);
-        CheckOpError({extraA, extraB}, OP_CAT, SCRIPT_ERR_PUSH_SIZE);
-
-        CheckWorks(POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS, {extraA, b}, OP_CAT);
-        CheckWorks(POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS, {a, extraB}, OP_CAT);
-        CheckWorks(POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS, {extraA, extraB}, OP_CAT);
+        CheckWorks(MANDATORY_SCRIPT_VERIFY_FLAGS, {extraA, b},
+            CScript() << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT
+                      << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP
+                      << OP_CAT << OP_DUP << OP_CAT);
+        CheckWorks(MANDATORY_SCRIPT_VERIFY_FLAGS, {extraA, b}, OP_CAT);
+        CheckWorks(MANDATORY_SCRIPT_VERIFY_FLAGS, {a, extraB}, OP_CAT);
+        CheckWorks(MANDATORY_SCRIPT_VERIFY_FLAGS, {extraA, extraB}, OP_CAT);
     }
 
     // Check error conditions.
@@ -607,8 +627,7 @@ BOOST_AUTO_TEST_CASE(type_conversion_test)
     CheckTypeConversionOp(largezero, {});
 
     // convert 0 to a 521 byte binary sign-magnitude representation
-    CheckNum2BinError({{}, {0x09, 0x02}}, SCRIPT_ERR_PUSH_SIZE); // {0x09, 0x02} is a byte vec that decoded to 521
-    CheckWorks(POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS, {{}, {0x09, 0x02}}, OP_NUM2BIN);
+    CheckWorks(MANDATORY_SCRIPT_VERIFY_FLAGS, {{}, {0x09, 0x02}}, OP_NUM2BIN);
 
     // Check that the requested encoding is not possible (number is too big for 3 bytes)
     CheckNum2BinError({{0xab, 0xcd, 0xef, 0x80}, {0x03}}, SCRIPT_ERR_IMPOSSIBLE_ENCODING);

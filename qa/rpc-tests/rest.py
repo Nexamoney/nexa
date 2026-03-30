@@ -78,7 +78,8 @@ class RESTTest (BitcoinTestFramework):
         self.sync_all()
         bb_hash = self.nodes[0].getbestblockhash()
 
-        waitFor(waitTime, lambda: self.nodes[1].getbalance() == Decimal("100000")) #balance now should be 0.1 on node 1
+        waitFor(waitTime, lambda: self.nodes[1].getbalance() == Decimal("100000"),
+                onError=lambda: f"Balance: {self.nodes[1].getbalance()}, expected: 100000.00") #balance now should be 0.1 on node 1
 
         # load the latest 0.1 tx over the REST API
         json_string = http_get_call(url.hostname, url.port, '/rest/tx/'+txid+self.FORMAT_SEPARATOR+"json")
@@ -158,6 +159,7 @@ class RESTTest (BitcoinTestFramework):
 
         # do a tx and don't sync
         txid = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), 100000)
+        waitFor(waitTime, lambda: not ("not found" in http_get_call(url.hostname, url.port, '/rest/tx/'+txid+self.FORMAT_SEPARATOR+"json")))
         json_string = http_get_call(url.hostname, url.port, '/rest/tx/'+txid+self.FORMAT_SEPARATOR+"json")
         json_obj = json.loads(json_string)
         outpoint = json_obj['vin'][0]['outpoint'] # get the vin to later check for utxo (should be spent by then)

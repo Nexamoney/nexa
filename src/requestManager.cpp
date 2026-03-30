@@ -499,7 +499,8 @@ bool CUnknownObj::AddSource(CNodeRef &noderef, const CInv &_obj)
     // node is not in the request list
     if (std::find_if(availableFrom.begin(), availableFrom.end(), MatchCNodeRequestData(noderef)) == availableFrom.end())
     {
-        LOG(REQ, "AddSource %s is available at %s.\n", _obj.ToString(), noderef.get()->GetLogName());
+        // spams the logs
+        // LOG(REQ, "AddSource %s is available at %s.\n", _obj.ToString(), noderef.get()->GetLogName());
 
         bool fAdded = false;
         CNodeRequestData req(noderef);

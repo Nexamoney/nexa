@@ -163,10 +163,10 @@ class NoConfigValue:
     def __init__(self):
         pass
 
-def waitFor(timeout, fn, onError="timeout in waitFor", sleepAmt=1.0):
-    """  Repeatedly calls fn while it returns None or False, raising an assert after timeout in seconds.  If fn returns non None/False, return that result
+def waitFor(timeoutSec, fn, onError="timeout in waitFor", sleepAmt=1.0):
+    """  Repeatedly calls fn while it returns None or False, raising an assert after timeoutSec in seconds.  If fn returns non None/False, return that result
     """
-    timeout = float(timeout)
+    timeout = float(timeoutSec)
     while 1:
         jsonExcept = ""
         try:
@@ -185,10 +185,10 @@ def waitFor(timeout, fn, onError="timeout in waitFor", sleepAmt=1.0):
         time.sleep(sleepAmt)
         timeout -= sleepAmt
 
-async def waitForAsync(timeout, fn, onError="timeout in waitFor", sleepAmt=1.0):
-    """  Repeatedly calls fn while it returns None, raising an assert after timeout.  If fn returns non None, return that result
+async def waitForAsync(timeoutSec, fn, onError="timeout in waitFor", sleepAmt=1.0):
+    """  Repeatedly calls fn while it returns None, raising an assert after timeoutSec (in seconds).  If fn returns non None, return that result
     """
-    timeout = float(timeout)
+    timeout = float(timeoutSec)
     while 1:
         result = await fn()
         if not (result is None or result is False):

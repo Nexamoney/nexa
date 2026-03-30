@@ -196,7 +196,7 @@ uint64_t CalculateNextMaxBlockSize(CBlockIndex *pindexPrev, uint64_t nBlockSize)
     // block possible (100Kb), because a subblock must be able to contain at least the largest transaction possible.
     // This means that if tailstorm_k is great than 4 then the nextmaxblocksize will be greater than the 2Mb size
     // currently configured. For example, if tailstorm_k is 120, then the nextmaxblocksize must be 12Mb (120 x 100Kb).
-    if (IsFork2Pending(pindexPrev) || IsFork2Activated(pindexPrev))
+    if (IsUpgrade2Pending(pindexPrev) || IsUpgrade2Activated(pindexPrev))
     {
         nNextMaxBlockSize =
             std::max(nNextMaxBlockSize, Params().GetConsensus().tailstorm_k * DEFAULT_NEXT_MAX_BLOCK_SIZE);

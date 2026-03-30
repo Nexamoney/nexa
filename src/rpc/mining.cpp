@@ -286,7 +286,7 @@ UniValue getmininginfo(const UniValue &params, bool fHelp)
         obj.pushKV("currentblocktx", (uint64_t)nLastBlockTx);
     }
     obj.pushKV("currentmaxblocksize", pindex->GetNextMaxBlockSize());
-    if (IsFork2Pending(pindex) || IsFork2Activated(pindex))
+    if (IsUpgrade2Pending(pindex) || IsUpgrade2Activated(pindex))
     {
         obj.pushKV("currentmaxsubblocksize",
             std::max(DEFAULT_NEXT_MAX_BLOCK_SIZE, pindex->GetNextMaxBlockSize() / Params().GetConsensus().tailstorm_k));
@@ -485,7 +485,7 @@ static UniValue MkFullMiningCandidateJson(const std::set<std::string> &setClient
         entry.pushKV("depends", deps);
 
         entry.pushKV("fee", (tx.GetValueIn() - tx.GetValueOut()));
-        if (!IsFork2Pending(chaintip) && !IsFork2Activated(chaintip))
+        if (!IsUpgrade2Pending(chaintip) && !IsUpgrade2Activated(chaintip))
         {
             int index_in_template = i - 1;
             entry.pushKV("sigchecks", pblocktemplate->vTxSigOps[index_in_template]);
@@ -539,7 +539,7 @@ static UniValue MkFullMiningCandidateJson(const std::set<std::string> &setClient
     result.pushKV("mutable", aMutable);
     result.pushKV("noncerange", "00000000ffffffff");
 
-    if (!IsFork2Pending(chaintip) && !IsFork2Activated(chaintip))
+    if (!IsUpgrade2Pending(chaintip) && !IsUpgrade2Activated(chaintip))
     {
         result.pushKV("sigchecklimit", GetMaxBlockSigChecks(pindexPrev->GetNextMaxBlockSize()));
         result.pushKV("sigchecktotal", sigcheckTotal);

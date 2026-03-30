@@ -98,7 +98,7 @@ BOOST_AUTO_TEST_CASE(GetSigOpCount)
 {
     testScriptFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
     TestGetSigOpCount();
-    testScriptFlags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    testScriptFlags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     TestGetSigOpCount();
 }
 
