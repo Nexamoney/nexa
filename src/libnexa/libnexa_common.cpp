@@ -142,6 +142,8 @@ CChainParams *GetChainParams(ChainSelector chainSelector)
         return &Params(CBaseChainParams::TESTNET);
     else if (chainSelector == AddrBlockchainRegtest)
         return &Params(CBaseChainParams::REGTEST);
+    else if (chainSelector == AddrBlockchainStormtest)
+        return &Params(CBaseChainParams::STORMTEST);
     else if (chainSelector == AddrBlockchainBCH)
         return &Params(CBaseChainParams::LEGACY_UNIT_TESTS);
     else if (chainSelector == AddrBlockchainBchTestnet)

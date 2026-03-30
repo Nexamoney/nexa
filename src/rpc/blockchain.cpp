@@ -1698,15 +1698,15 @@ UniValue getblockchaininfo(const UniValue &params, bool fHelp)
     bool forking = nMiningForkTime > 0;
     if (forking)
     {
-        obj.pushKV("forktime", (int64_t)nMiningForkTime);
-        obj.pushKV("forkactive", IsFork2Activated(tip)); // true of blocks belong to [x-1,+inf)
-        obj.pushKV("forkenforcednextblock", IsFork2Pending(tip)); // true only if block is x-1
+        obj.pushKV("upgradetime", (int64_t)nMiningForkTime);
+        obj.pushKV("upgradeactive", IsUpgrade2Activated(tip)); // true of blocks belong to [x-1,+inf)
+        obj.pushKV("upgradeenforcednextblock", IsUpgrade2Pending(tip)); // true only if block is x-1
     }
     else
     {
-        obj.pushKV("forktime", "N/A");
-        obj.pushKV("forkactive", "N/A");
-        obj.pushKV("forkenforcednextblock", "N/A");
+        obj.pushKV("upgradetime", "N/A");
+        obj.pushKV("upgradeactive", "N/A");
+        obj.pushKV("upgradeenforcednextblock", "N/A");
     }
     obj.pushKV("verificationprogress", Checkpoints::GuessVerificationProgress(tip, !fCheckpointsEnabled));
     obj.pushKV("initialblockdownload", IsInitialBlockDownload());

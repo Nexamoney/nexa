@@ -733,7 +733,8 @@ void testScript(const CScript &s, bool expectedRet, bool expectedStackTF, Script
     if (expectedRet)
     {
         BOOST_CHECK(sm.getStack().size() == 1);
-        BOOST_CHECK(((bool)sm.getStack()[0]) == expectedStackTF);
+        bool result = ((bool)sm.getStack()[0]);
+        BOOST_CHECK(result == expectedStackTF);
     }
     else
     {
@@ -768,172 +769,161 @@ void testScriptU(bool upgraded, const CScript &s, bool expectedStackTF)
 void testScript(const CScript &s, bool expectedStackTF) { testScript(s, true, expectedStackTF, SCRIPT_ERR_OK); }
 void testScript(const CScript &s, ScriptError expectedError) { testScript(s, false, false, expectedError); }
 
-void bignumscript(uint32_t flags, bool upgraded)
+void bignumscript(uint32_t flags, bool upgrade1, bool upgrade2)
 {
     testScriptFlags = flags;
 
-    bool trueIfUpgraded = upgraded;
-
     // Check IF
-    testScriptU(upgraded, CScript() << bns(100) << OP_BIN2BIGNUM << OP_IF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF,
-        trueIfUpgraded);
-    testScriptU(upgraded,
-        CScript() << OP_10 << OP_NEGATE << OP_BIN2BIGNUM << OP_IF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF,
-        trueIfUpgraded);
     testScriptU(
-        upgraded, CScript() << bns(0) << OP_BIN2BIGNUM << OP_IF << OP_0 << OP_ELSE << OP_1 << OP_ENDIF, trueIfUpgraded);
+        upgrade1, CScript() << bns(100) << OP_BIN2BIGNUM << OP_IF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF, upgrade1);
+    testScriptU(upgrade1,
+        CScript() << OP_10 << OP_NEGATE << OP_BIN2BIGNUM << OP_IF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF, upgrade1);
+    testScriptU(
+        upgrade1, CScript() << bns(0) << OP_BIN2BIGNUM << OP_IF << OP_0 << OP_ELSE << OP_1 << OP_ENDIF, upgrade1);
 
     // Check NOTIF
-    testScriptU(upgraded, CScript() << bns(100) << OP_BIN2BIGNUM << OP_NOTIF << OP_0 << OP_ELSE << OP_1 << OP_ENDIF,
-        trueIfUpgraded);
-    testScriptU(upgraded, CScript() << bns(0) << OP_BIN2BIGNUM << OP_NOTIF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF,
-        trueIfUpgraded);
-    testScriptU(upgraded, CScript() << bns(0) << OP_BIN2BIGNUM << OP_NOTIF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF,
-        trueIfUpgraded);
+    testScriptU(
+        upgrade1, CScript() << bns(100) << OP_BIN2BIGNUM << OP_NOTIF << OP_0 << OP_ELSE << OP_1 << OP_ENDIF, upgrade1);
+    testScriptU(
+        upgrade1, CScript() << bns(0) << OP_BIN2BIGNUM << OP_NOTIF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF, upgrade1);
+    testScriptU(
+        upgrade1, CScript() << bns(0) << OP_BIN2BIGNUM << OP_NOTIF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF, upgrade1);
 
     // Check VERIFY
-    testScriptU(upgraded, CScript() << bns(100) << OP_BIN2BIGNUM << OP_VERIFY << OP_1, trueIfUpgraded);
-    if (upgraded)
+    testScriptU(upgrade1, CScript() << bns(100) << OP_BIN2BIGNUM << OP_VERIFY << OP_1, upgrade1);
+    if (upgrade1)
         testScript(CScript() << bns(0) << OP_BIN2BIGNUM << OP_VERIFY << OP_1, SCRIPT_ERR_VERIFY);
     else
         testScript(CScript() << bns(0) << OP_BIN2BIGNUM << OP_VERIFY << OP_1, SCRIPT_ERR_BAD_OPERATION_ON_TYPE);
 
     // Check IFDUP
-    testScriptU(
-        upgraded, CScript() << bns(100) << OP_BIN2BIGNUM << OP_IFDUP << OP_DROP << OP_DROP << OP_1, trueIfUpgraded);
-    testScriptU(upgraded, CScript() << bns(0) << OP_BIN2BIGNUM << OP_IFDUP << OP_DEPTH << OP_NIP, trueIfUpgraded);
+    testScriptU(upgrade1, CScript() << bns(100) << OP_BIN2BIGNUM << OP_IFDUP << OP_DROP << OP_DROP << OP_1, upgrade1);
+    testScriptU(upgrade1, CScript() << bns(0) << OP_BIN2BIGNUM << OP_IFDUP << OP_DEPTH << OP_NIP, upgrade1);
 
     // Check 1ADD
-    testScriptU(upgraded,
+    testScriptU(upgrade1,
         CScript() << bns(100) << OP_BIN2BIGNUM << OP_1ADD << OP_4 << OP_NUM2BIN << OP_BIN2NUM << 101 << OP_NUMEQUAL,
-        trueIfUpgraded);
-    testScriptU(upgraded, CScript() << bns(100) << OP_BIN2BIGNUM << OP_1ADD << 101 << OP_NUMEQUAL, trueIfUpgraded);
+        upgrade1);
+    testScriptU(upgrade1, CScript() << bns(100) << OP_BIN2BIGNUM << OP_1ADD << 101 << OP_NUMEQUAL, upgrade1);
 
     // Check 1SUB
     // << OP_NUM2BIN << OP_BIN2NUM make it into a canonical scriptnum
-    testScriptU(upgraded,
+    testScriptU(upgrade1,
         CScript() << bns(100) << OP_BIN2BIGNUM << OP_1SUB << OP_4 << OP_NUM2BIN << OP_BIN2NUM << 99 << OP_NUMEQUAL,
-        trueIfUpgraded);
-    testScriptU(upgraded, CScript() << bns(100) << OP_BIN2BIGNUM << OP_1SUB << 99 << OP_NUMEQUAL, trueIfUpgraded);
+        upgrade1);
+    testScriptU(upgrade1, CScript() << bns(100) << OP_BIN2BIGNUM << OP_1SUB << 99 << OP_NUMEQUAL, upgrade1);
 
     // Check NEGATE
-    testScriptU(upgraded,
+    testScriptU(upgrade1,
         CScript() << bns(100) << OP_DUP << OP_BIN2BIGNUM << OP_NEGATE << OP_SWAP << OP_BIN2NUM << OP_NEGATE
                   << OP_NUMEQUAL,
-        trueIfUpgraded);
-    testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_NEGATE << OP_10 << OP_NEGATE << OP_NUMEQUAL,
-        trueIfUpgraded);
-    testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_DUP << OP_NEGATE << OP_NEGATE << OP_NUMEQUAL,
-        trueIfUpgraded);
+        upgrade1);
+    testScriptU(
+        upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_NEGATE << OP_10 << OP_NEGATE << OP_NUMEQUAL, upgrade1);
+    testScriptU(
+        upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_DUP << OP_NEGATE << OP_NEGATE << OP_NUMEQUAL, upgrade1);
 
     // Check ABS
 
-    testScriptU(upgraded,
+    testScriptU(upgrade1,
         CScript() << bns(100) << OP_DUP << OP_BIN2BIGNUM << OP_NEGATE << OP_ABS << OP_SWAP << OP_BIN2NUM << OP_NUMEQUAL,
-        trueIfUpgraded);
-    testScriptU(upgraded,
-        CScript() << bns(100) << OP_DUP << OP_BIN2BIGNUM << OP_ABS << OP_SWAP << OP_BIN2NUM << OP_NUMEQUAL,
-        trueIfUpgraded);
-    testScriptU(
-        upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_NEGATE << OP_ABS << OP_10 << OP_NUMEQUAL, trueIfUpgraded);
-    testScriptU(
-        upgraded, CScript() << OP_10 << OP_NEGATE << OP_BIN2BIGNUM << OP_ABS << OP_10 << OP_NUMEQUAL, trueIfUpgraded);
-    testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_ABS << OP_10 << OP_NUMEQUAL, trueIfUpgraded);
+        upgrade1);
+    testScriptU(upgrade1,
+        CScript() << bns(100) << OP_DUP << OP_BIN2BIGNUM << OP_ABS << OP_SWAP << OP_BIN2NUM << OP_NUMEQUAL, upgrade1);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_NEGATE << OP_ABS << OP_10 << OP_NUMEQUAL, upgrade1);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_NEGATE << OP_BIN2BIGNUM << OP_ABS << OP_10 << OP_NUMEQUAL, upgrade1);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_ABS << OP_10 << OP_NUMEQUAL, upgrade1);
 
 
     // Check NOT
-    testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_NOT, false);
-    testScriptU(upgraded, CScript() << OP_10 << OP_NEGATE << OP_BIN2BIGNUM << OP_NOT, false);
-    testScriptU(upgraded, CScript() << OP_0 << OP_BIN2BIGNUM << OP_NOT, trueIfUpgraded);
-    testScriptU(upgraded, CScript() << bns(100) << OP_BIN2BIGNUM << OP_NOT << OP_NOT, trueIfUpgraded);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_NOT, false);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_NEGATE << OP_BIN2BIGNUM << OP_NOT, false);
+    testScriptU(upgrade1, CScript() << OP_0 << OP_BIN2BIGNUM << OP_NOT, upgrade1);
+    testScriptU(upgrade1, CScript() << bns(100) << OP_BIN2BIGNUM << OP_NOT << OP_NOT, upgrade1);
 
     // Check 0NOTEQUAL
-    testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_0NOTEQUAL, trueIfUpgraded);
-    testScriptU(upgraded, CScript() << OP_10 << OP_NEGATE << OP_BIN2BIGNUM << OP_0NOTEQUAL, trueIfUpgraded);
-    testScriptU(upgraded, CScript() << OP_0 << OP_BIN2BIGNUM << OP_0NOTEQUAL, false);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_0NOTEQUAL, upgrade1);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_NEGATE << OP_BIN2BIGNUM << OP_0NOTEQUAL, upgrade1);
+    testScriptU(upgrade1, CScript() << OP_0 << OP_BIN2BIGNUM << OP_0NOTEQUAL, false);
 
     // check WITHIN
-    testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_10 << OP_11 << OP_WITHIN, trueIfUpgraded);
-    testScriptU(upgraded, CScript() << OP_10 << OP_10 << OP_BIN2BIGNUM << OP_11 << OP_WITHIN, trueIfUpgraded);
-    testScriptU(upgraded, CScript() << OP_10 << OP_10 << OP_11 << OP_BIN2BIGNUM << OP_WITHIN, trueIfUpgraded);
-    testScriptU(upgraded,
-        CScript() << OP_10 << OP_BIN2BIGNUM << OP_10 << OP_BIN2BIGNUM << OP_11 << OP_BIN2BIGNUM << OP_WITHIN,
-        trueIfUpgraded);
-    testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_10 << OP_10 << OP_WITHIN, false);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_10 << OP_11 << OP_WITHIN, upgrade1);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_10 << OP_BIN2BIGNUM << OP_11 << OP_WITHIN, upgrade1);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_10 << OP_11 << OP_BIN2BIGNUM << OP_WITHIN, upgrade1);
+    testScriptU(upgrade1,
+        CScript() << OP_10 << OP_BIN2BIGNUM << OP_10 << OP_BIN2BIGNUM << OP_11 << OP_BIN2BIGNUM << OP_WITHIN, upgrade1);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_10 << OP_10 << OP_WITHIN, false);
 
-    testScriptU(upgraded,
+    testScriptU(upgrade1,
         CScript() << OP_10 << OP_BIN2BIGNUM << OP_NEGATE << OP_10 << OP_BIN2BIGNUM << OP_NEGATE << OP_11
                   << OP_BIN2BIGNUM << OP_NEGATE << OP_WITHIN,
         false);
-    testScriptU(upgraded,
+    testScriptU(upgrade1,
         CScript() << OP_10 << OP_BIN2BIGNUM << OP_NEGATE << OP_10 << OP_BIN2BIGNUM << OP_NEGATE << OP_9 << OP_BIN2BIGNUM
                   << OP_NEGATE << OP_WITHIN,
-        trueIfUpgraded);
+        upgrade1);
 
     // Check operation order for all non-commutative ops and verify consistency with int operations
     // check SUB
     testScript(CScript() << OP_10 << OP_4 << OP_SUB << OP_6 << OP_NUMEQUAL, true);
-    testScript(
-        CScript() << OP_10 << OP_BIN2BIGNUM << OP_4 << OP_BIN2BIGNUM << OP_SUB << OP_6 << OP_NUMEQUAL, trueIfUpgraded);
-    testScript(CScript() << OP_10 << OP_4 << OP_BIN2BIGNUM << OP_SUB << OP_6 << OP_NUMEQUAL, trueIfUpgraded);
-    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_4 << OP_SUB << OP_6 << OP_NUMEQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_4 << OP_BIN2BIGNUM << OP_SUB << OP_6 << OP_NUMEQUAL, upgrade2);
+    testScript(CScript() << OP_10 << OP_4 << OP_BIN2BIGNUM << OP_SUB << OP_6 << OP_NUMEQUAL, upgrade2);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_4 << OP_SUB << OP_6 << OP_NUMEQUAL, upgrade2);
 
     // check DIV
     testScript(CScript() << OP_10 << OP_2 << OP_DIV << OP_5 << OP_NUMEQUAL, true);
-    testScript(
-        CScript() << OP_10 << OP_BIN2BIGNUM << OP_2 << OP_BIN2BIGNUM << OP_DIV << OP_5 << OP_NUMEQUAL, trueIfUpgraded);
-    testScript(CScript() << OP_10 << OP_2 << OP_BIN2BIGNUM << OP_DIV << OP_5 << OP_NUMEQUAL, trueIfUpgraded);
-    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_2 << OP_DIV << OP_5 << OP_NUMEQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_2 << OP_BIN2BIGNUM << OP_DIV << OP_5 << OP_NUMEQUAL, upgrade2);
+    testScript(CScript() << OP_10 << OP_2 << OP_BIN2BIGNUM << OP_DIV << OP_5 << OP_NUMEQUAL, upgrade2);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_2 << OP_DIV << OP_5 << OP_NUMEQUAL, upgrade2);
 
     // check MOD (10 mod 3 == 1)   should not be: (3 mod 10 == 3)
     testScript(CScript() << OP_10 << OP_3 << OP_MOD << OP_1 << OP_NUMEQUAL, true);
-    testScript(
-        CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_MOD << OP_1 << OP_NUMEQUAL, trueIfUpgraded);
-    testScript(CScript() << OP_10 << OP_3 << OP_BIN2BIGNUM << OP_MOD << OP_1 << OP_NUMEQUAL, trueIfUpgraded);
-    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_MOD << OP_1 << OP_NUMEQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_MOD << OP_1 << OP_NUMEQUAL, upgrade2);
+    testScript(CScript() << OP_10 << OP_3 << OP_BIN2BIGNUM << OP_MOD << OP_1 << OP_NUMEQUAL, upgrade2);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_MOD << OP_1 << OP_NUMEQUAL, upgrade2);
 
     // check GREATERTHAN
     testScript(CScript() << OP_10 << OP_3 << OP_GREATERTHAN, true);
-    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHAN, trueIfUpgraded);
-    testScript(CScript() << OP_10 << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHAN, trueIfUpgraded);
-    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_GREATERTHAN, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHAN, upgrade2);
+    testScript(CScript() << OP_10 << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHAN, upgrade2);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_GREATERTHAN, upgrade2);
     // check GREATERTHANOREQUAL
     testScript(CScript() << OP_10 << OP_3 << OP_GREATERTHANOREQUAL, true);
-    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHANOREQUAL, trueIfUpgraded);
-    testScript(CScript() << OP_10 << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHANOREQUAL, trueIfUpgraded);
-    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_GREATERTHANOREQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHANOREQUAL, upgrade2);
+    testScript(CScript() << OP_10 << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHANOREQUAL, upgrade2);
+    testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_GREATERTHANOREQUAL, upgrade2);
 
     // check LESSTHAN
     testScript(CScript() << OP_1 << OP_3 << OP_LESSTHAN, true);
-    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_LESSTHAN, trueIfUpgraded);
-    testScript(CScript() << OP_1 << OP_3 << OP_BIN2BIGNUM << OP_LESSTHAN, trueIfUpgraded);
-    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_LESSTHAN, trueIfUpgraded);
+    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_LESSTHAN, upgrade2);
+    testScript(CScript() << OP_1 << OP_3 << OP_BIN2BIGNUM << OP_LESSTHAN, upgrade2);
+    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_LESSTHAN, upgrade2);
     // check LESSTHANOREQUAL
     testScript(CScript() << OP_1 << OP_3 << OP_LESSTHANOREQUAL, true);
-    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_LESSTHANOREQUAL, trueIfUpgraded);
-    testScript(CScript() << OP_1 << OP_3 << OP_BIN2BIGNUM << OP_LESSTHANOREQUAL, trueIfUpgraded);
-    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_LESSTHANOREQUAL, trueIfUpgraded);
+    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_LESSTHANOREQUAL, upgrade2);
+    testScript(CScript() << OP_1 << OP_3 << OP_BIN2BIGNUM << OP_LESSTHANOREQUAL, upgrade2);
+    testScript(CScript() << OP_1 << OP_BIN2BIGNUM << OP_3 << OP_LESSTHANOREQUAL, upgrade2);
 
 
     // check OR
-    testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_1 << OP_OR << OP_11 << OP_NUMEQUAL, trueIfUpgraded);
-    testScriptU(upgraded,
+    testScriptU(upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_1 << OP_OR << OP_11 << OP_NUMEQUAL, upgrade1);
+    testScriptU(upgrade1,
         CScript() << bns(0xa5a5a5a5a5) << OP_BIN2BIGNUM << bns(0x5a5a5a) << OP_BIN2BIGNUM << OP_OR << bns(0xa5a5ffffff)
                   << OP_BIN2BIGNUM << OP_NUMEQUAL,
-        trueIfUpgraded);
+        upgrade1);
     // ORing negative bignums is disallowed
-    auto bigNumNegativeBitOpErr = upgraded ? SCRIPT_ERR_INVALID_NUMBER_RANGE : SCRIPT_ERR_BAD_OPERATION_ON_TYPE;
+    auto bigNumNegativeBitOpErr = upgrade1 ? SCRIPT_ERR_INVALID_NUMBER_RANGE : SCRIPT_ERR_BAD_OPERATION_ON_TYPE;
     testScript(
         CScript() << OP_1 << OP_NEGATE << OP_BIN2BIGNUM << OP_1 << OP_OR << OP_DROP << OP_1, bigNumNegativeBitOpErr);
     testScript(
         CScript() << OP_1 << OP_BIN2BIGNUM << OP_1 << OP_NEGATE << OP_OR << OP_DROP << OP_1, bigNumNegativeBitOpErr);
 
     // check AND
-    testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_9 << OP_AND << OP_8 << OP_NUMEQUAL, trueIfUpgraded);
-    testScriptU(upgraded,
+    testScriptU(upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_9 << OP_AND << OP_8 << OP_NUMEQUAL, upgrade1);
+    testScriptU(upgrade1,
         CScript() << bns(0xa5a5a5a5a5) << OP_BIN2BIGNUM << bns(0x5a5aff) << OP_BIN2BIGNUM << OP_AND << bns(0xa5)
                   << OP_BIN2BIGNUM << OP_NUMEQUAL,
-        trueIfUpgraded);
+        upgrade1);
     // ANDing negative bignums is disallowed
     testScript(
         CScript() << OP_1 << OP_NEGATE << OP_BIN2BIGNUM << OP_1 << OP_AND << OP_DROP << OP_1, bigNumNegativeBitOpErr);
@@ -941,14 +931,14 @@ void bignumscript(uint32_t flags, bool upgraded)
         CScript() << OP_1 << OP_BIN2BIGNUM << OP_1 << OP_NEGATE << OP_AND << OP_DROP << OP_1, bigNumNegativeBitOpErr);
 
     // check xor
-    testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_9 << OP_XOR << OP_3 << OP_NUMEQUAL, trueIfUpgraded);
-    testScriptU(upgraded, CScript() << OP_10 << OP_BIN2BIGNUM << OP_9 << OP_BIN2BIGNUM << OP_XOR << OP_3 << OP_NUMEQUAL,
-        trueIfUpgraded);
-    testScriptU(upgraded, CScript() << OP_10 << OP_9 << OP_BIN2BIGNUM << OP_XOR << OP_3 << OP_NUMEQUAL, trueIfUpgraded);
-    testScriptU(upgraded,
+    testScriptU(upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_9 << OP_XOR << OP_3 << OP_NUMEQUAL, upgrade1);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_BIN2BIGNUM << OP_9 << OP_BIN2BIGNUM << OP_XOR << OP_3 << OP_NUMEQUAL,
+        upgrade1);
+    testScriptU(upgrade1, CScript() << OP_10 << OP_9 << OP_BIN2BIGNUM << OP_XOR << OP_3 << OP_NUMEQUAL, upgrade1);
+    testScriptU(upgrade1,
         CScript() << bns(0xa5a5a5a5a5) << OP_BIN2BIGNUM << bns(0x5a5aff) << OP_BIN2BIGNUM << OP_XOR << bns(0xa5a5ffff5a)
                   << OP_BIN2BIGNUM << OP_NUMEQUAL,
-        trueIfUpgraded);
+        upgrade1);
     // XORing negative bignums is disallowed
     testScript(
         CScript() << OP_1 << OP_NEGATE << OP_BIN2BIGNUM << OP_1 << OP_XOR << OP_DROP << OP_1, bigNumNegativeBitOpErr);
@@ -1073,8 +1063,8 @@ void bignumscript(uint32_t flags, bool upgraded)
 
 BOOST_AUTO_TEST_CASE(bignumscript_test)
 {
-    bignumscript(MANDATORY_SCRIPT_VERIFY_FLAGS, false);
-    bignumscript(POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS, true);
+    bignumscript(MANDATORY_SCRIPT_VERIFY_FLAGS, true, false);
+    bignumscript(POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS, true, true);
 }
 
 BOOST_AUTO_TEST_CASE(abs_test)

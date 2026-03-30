@@ -459,6 +459,7 @@ class GroupTokensTest (BitcoinTestFramework):
         self.sync_all()  # node 2 has to be able to see the group new tx that node 0 made
         waitFor(waitTime, lambda: self.nodes[2].token("balance", grp2Id)['balance_satoshis'] == 0)
         tx = self.nodes[2].token("mint", grp2Id, mint2_0, 1000)
+        waitFor(waitTime, lambda: self.nodes[2].getrawtransaction(tx))
         txjson = self.nodes[2].decoderawtransaction(self.nodes[2].getrawtransaction(tx))
 
         tx = self.nodes[2].token("mint", grp2Id, mint0_0, 100)
@@ -606,11 +607,12 @@ class GroupTokensTest (BitcoinTestFramework):
         try:
             self.nodes[0].token("mint", grp0Id, p2pkh_address, 310, mint1_0, 20, mint2_0, 30)
         except JSONRPCException as e:
-            print(e.error["message"])
+            # print(e.error["message"])
             assert("destination address must be script template" in e.error["message"])
 
         # test multiple destinations
         self.nodes[0].token("mint", grp0Id, mint0_0, 310, mint1_0, 20, mint2_0, 30)
+        waitFor(waitTime, lambda: self.nodes[0].token("balance", grp0Id)['balance_satoshis'] == 310)
         self.nodes[0].token("send", grp0Id, mint1_0, 100, mint2_0, 200)
         self.sync_all()
         waitFor(waitTime, lambda: self.nodes[0].token("balance", grp0Id)['balance_satoshis'] == 10)
@@ -1117,9 +1119,9 @@ class GroupTokensTest (BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[2].token("authority", "count", authGrpId4)["rescript"] == "1")
         waitFor(waitTime, lambda: self.nodes[2].token("authority", "count", authGrpId4)["subgroup"] == "1")
 
-        self.nodes[2].token("authority","create", authGrpId4, addr2, "MELT", "NOCHILD")
-        self.nodes[2].token("authority","create", authGrpId4, addr2, "MINT", "NOCHILD")
-        self.nodes[2].token("authority","create", authGrpId4, addr2, "RESCRiPT", "NOCHILD")
+        waitFor(waitTime, lambda: self.nodes[2].token("authority","create", authGrpId4, addr2, "MELT", "NOCHILD"))
+        waitFor(waitTime, lambda: self.nodes[2].token("authority","create", authGrpId4, addr2, "MINT", "NOCHILD"))
+        waitFor(waitTime, lambda: self.nodes[2].token("authority","create", authGrpId4, addr2, "RESCRiPT", "NOCHILD"))
         waitFor(waitTime, lambda: self.nodes[2].gettxpoolinfo()["size"] == 3)
         self.nodes[2].generate(1) # must mine a block for tracking to update
         waitFor(waitTime, lambda: self.nodes[2].token("authority", "count", authGrpId4)["mint"] == "2")
@@ -1198,10 +1200,10 @@ class GroupTokensTest (BitcoinTestFramework):
         sub0Addr3 = self.nodes[0].getnewaddress()
         sub3 = self.nodes[0].token("subgroup", t["groupIdentifier"], "subgroupdata3")
         self.nodes[0].token("mint", sub3, sub0Addr1, 1000)
-        self.nodes[0].token("mint", sub3, sub0Addr2, 2000)
-        self.nodes[0].token("melt", sub3, 400)
-        self.nodes[0].token("melt", sub3, 100)
-        self.nodes[0].token("mint", sub3, sub0Addr3, 1000)
+        waitFor(waitTime, lambda: self.nodes[0].token("mint", sub3, sub0Addr2, 2000))
+        waitFor(waitTime, lambda: self.nodes[0].token("melt", sub3, 400))
+        waitFor(waitTime, lambda: self.nodes[0].token("melt", sub3, 100))
+        waitFor(waitTime, lambda: self.nodes[0].token("mint", sub3, sub0Addr3, 1000))
         waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 5)
         self.nodes[0].generate(1) #genesis not updated until block  mined.
         sync_wallet(10, self.nodes[0])

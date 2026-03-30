@@ -204,13 +204,13 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
     {
         return state.DoS(100, error("%s: bad miner data version", __func__), REJECT_INVALID, "bad-miner-data-version");
     }
-    if (!IsFork2Pending(pindexPrev) && !IsFork2Activated(pindexPrev) && (block.NumSubblocks() > 0))
+    if (!IsUpgrade2Pending(pindexPrev) && !IsUpgrade2Activated(pindexPrev) && (block.NumSubblocks() > 0))
     {
         return state.DoS(100, error("%s: premature miner data use", __func__), REJECT_INVALID, "bad-miner-data");
     }
 
     // Once the fork is activated then old style legacy blocks are no longer accepted.
-    if (IsFork2Activated(pindexPrev) && fSummaryBlock && !IsTailstormSummaryBlock(block))
+    if (IsUpgrade2Activated(pindexPrev) && fSummaryBlock && !IsTailstormSummaryBlock(block))
     {
         return state.DoS(
             100, error("%s: legacy block type no longer valid", __func__), REJECT_INVALID, "bad-block-invalid");
@@ -552,7 +552,7 @@ CBlockIndex *AddToBlockIndex(const CChainParams &chainparams, const CBlockHeader
             // and not the pprev.  This is important for the tailstorm fork because the summary block
             // max size needs to be adjusted when the fork goes pending and not after otherwise it
             // could be possible that the subblocks mined during this period won't fit into the first summary block.
-            if (IsFork2Pending(pindexNew) || IsFork2Activated(pindexNew))
+            if (IsUpgrade2Pending(pindexNew) || IsUpgrade2Activated(pindexNew))
             {
                 pindexNew->nNextMaxBlockSize = CalculateNextMaxBlockSize(pindexNew, block.size);
             }
@@ -945,7 +945,7 @@ bool LoadBlockIndexDB()
         return true;
     }
     chainActive.SetTip(pBestIndexOnStartup);
-    if (IsFork2Pending(chainActive.Tip()) || IsFork2Activated(chainActive.Tip()))
+    if (IsUpgrade2Pending(chainActive.Tip()) || IsUpgrade2Activated(chainActive.Tip()))
     {
         fTailstormEnabled.store(true);
     }
@@ -2465,9 +2465,9 @@ uint32_t GetBlockScriptFlags(const CBlockIndex *pindex, const Consensus::Params 
 {
     uint32_t flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
 
-    if (pindex && IsFork1Activated(pindex))
+    if (pindex && IsUpgrade2Activated(pindex))
     {
-        flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+        flags = POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS;
     }
 
     return flags;
@@ -3152,8 +3152,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
         }
 
         // Validate we are within sigcheck limits.
-        // Stop checking sigops when Fork2 becomes active.
-        if (!IsFork2Activated(pindex))
+        // Stop checking sigops when Upgrade2 becomes active.
+        if (!IsUpgrade2Activated(pindex))
         {
             uint64_t blockSigChecks = 0;
             for (const auto &t : txResourceTracker) // its ok to add the coinbase sigchecks because they must be 0
@@ -3576,7 +3576,7 @@ void UpdateTip(CBlockIndex *pindexNew)
         // so that invalid txes are dropped
         ResubmitTransactions(nullptr);
     }
-    if (IsFork2Pending(pindexNew))
+    if (IsUpgrade2Pending(pindexNew))
     {
         fTailstormEnabled.store(true);
 

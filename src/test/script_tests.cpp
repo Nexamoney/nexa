@@ -55,8 +55,7 @@ public:
 // Uncomment if you want to output updated JSON tests.
 #define UPDATE_JSON_TESTS
 
-static const unsigned int flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
-static const unsigned int flagsFork1 = MANDATORY_SCRIPT_VERIFY_FLAGS | SCRIPT_FORK1_OPCODES;
+static const unsigned int flags = POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS;
 
 UniValue read_json(const std::string &jsondata)
 {
@@ -2974,10 +2973,6 @@ void ExpectedScriptTemplateFailure(const ScriptError error,
     auto vfy = VerifyTemplate(
         templat, args, satisfier, flags, MAX_OPS_PER_SCRIPT_TEMPLATE, MAX_OPS_PER_SCRIPT, sis, &err, &tracker);
     BOOST_CHECK(!vfy);
-    if (vfy)
-    {
-        printf("success should have failed");
-    }
     BOOST_CHECK_MESSAGE(err == error, ScriptErrorString(err));
 }
 
@@ -3593,19 +3588,6 @@ BOOST_AUTO_TEST_CASE(script_registers)
     CScript store_and_load_from_register = CScript() << 10 << 1 << OP_STORE << 1 << OP_LOAD;
     CScript store_and_load_from_register_multibyte = CScript() << 0x4c024f5a << 1 << OP_STORE << 1 << OP_LOAD;
 
-    // without the fork flags, use of the OP_LOAD and OP_STORE opcodes should fail
-    CheckError(flags, {}, store_neg_script_register, SCRIPT_ERR_BAD_OPCODE);
-    CheckError(flags, {}, store_too_high_script_register, SCRIPT_ERR_BAD_OPCODE);
-    CheckError(flags, {}, load_neg_script_register, SCRIPT_ERR_BAD_OPCODE);
-    CheckError(flags, {}, load_too_high_script_register, SCRIPT_ERR_BAD_OPCODE);
-    CheckError(flags, {}, load_from_register, SCRIPT_ERR_BAD_OPCODE);
-    CheckError(flags, {}, store_to_register, SCRIPT_ERR_BAD_OPCODE);
-    CheckError(flags, {}, store_to_register_multibyte, SCRIPT_ERR_BAD_OPCODE);
-    CheckError(flags, {}, store_and_load_from_register, SCRIPT_ERR_BAD_OPCODE);
-    CheckError(flags, {}, store_and_load_from_register_multibyte, SCRIPT_ERR_BAD_OPCODE);
-
-    // enable the OP_LOAD and OP_STORE opcodes
-    flags = flags | SCRIPT_FORK1_OPCODES;
     // can not store to a negative index register
     CheckError(flags, {}, store_neg_script_register, SCRIPT_ERR_INVALID_REGISTER);
     // can not store to a register index higher than the register count

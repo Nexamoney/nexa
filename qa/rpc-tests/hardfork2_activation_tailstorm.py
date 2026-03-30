@@ -69,9 +69,9 @@ class TailstormActivationTest(BitcoinTestFramework):
         self.setforktime(activationtime)
 
         blockchaininfo = self.nodes[0].getblockchaininfo()
-        assert_equal(blockchaininfo['forktime'], activationtime)
-        assert_equal(blockchaininfo['forkactive'], False)
-        assert_equal(blockchaininfo['forkenforcednextblock'], False)
+        assert_equal(blockchaininfo['upgradetime'], activationtime)
+        assert_equal(blockchaininfo['upgradeactive'], False)
+        assert_equal(blockchaininfo['upgradeenforcednextblock'], False)
         assert_greater_than(activationtime, blockchaininfo['mediantime'])
 
         # Mine just up to the hard fork activation (activationtime will still be greater than mediantime).
@@ -85,8 +85,8 @@ class TailstormActivationTest(BitcoinTestFramework):
             assert_not_equal(commitment_before['headerCommitment'], self.nodes[0].getminingcandidate()['headerCommitment']);
 
             blockchaininfo = self.nodes[0].getblockchaininfo()
-            assert_equal(blockchaininfo['forkactive'], False)
-            assert_equal(blockchaininfo['forkenforcednextblock'], False)
+            assert_equal(blockchaininfo['upgradeactive'], False)
+            assert_equal(blockchaininfo['upgradeenforcednextblock'], False)
             assert_greater_than(activationtime, blockchaininfo['mediantime']) # activationtime > mediantime
             try:
                 tailstorminfo = self.nodes[0].gettailstorminfo()
@@ -119,14 +119,14 @@ class TailstormActivationTest(BitcoinTestFramework):
 
         legacy_block_hash0 = self.nodes[0].generate(1)
         blockchaininfo = self.nodes[0].getblockchaininfo()
-        assert_equal(blockchaininfo['forkactive'], False)
-        assert_equal(blockchaininfo['forkenforcednextblock'], True)
+        assert_equal(blockchaininfo['upgradeactive'], False)
+        assert_equal(blockchaininfo['upgradeenforcednextblock'], True)
         assert_equal(activationtime, blockchaininfo['mediantime']) # when median time is >= activationtime
 
         legacy_block_hash1 = self.nodes[1].generate(1)
         blockchaininfo = self.nodes[0].getblockchaininfo()
-        assert_equal(blockchaininfo['forkactive'], False)
-        assert_equal(blockchaininfo['forkenforcednextblock'], True)
+        assert_equal(blockchaininfo['upgradeactive'], False)
+        assert_equal(blockchaininfo['upgradeenforcednextblock'], True)
         assert_equal(activationtime, blockchaininfo['mediantime']) # when median time is >= activationtime
 
         # when fork is pending on next block, check mininginfo was enabled for subblocks and also the
@@ -140,12 +140,12 @@ class TailstormActivationTest(BitcoinTestFramework):
 
         # also check node 1 for pending status
         blockchaininfo1 = self.nodes[1].getblockchaininfo()
-        assert_equal(blockchaininfo1['forkactive'], False)
-        assert_equal(blockchaininfo1['forkenforcednextblock'], True)
+        assert_equal(blockchaininfo1['upgradeactive'], False)
+        assert_equal(blockchaininfo1['upgradeenforcednextblock'], True)
         assert_equal(activationtime, blockchaininfo1['mediantime']) # when median time is >= activationtime
 
         ### Now we start generating subblocks. One on each node.
-        logging.info("Start Generating first subblocks when fork is pending")
+        logging.info("Start Generating first subblocks when upgrade is pending")
         subblock_hash = self.nodes[0].generate(1)
         tailstorminfo = self.nodes[0].gettailstorminfo()
         assert_equal(tailstorminfo['chaintip'], blockchaininfo['bestblockhash'])
@@ -183,7 +183,7 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 1)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['uncles'] == 0)
 
-        # Continue generating subblocks (both peers should now be on same fork with same best dag)
+        # Continue generating subblocks (both peers should now be on same upgrade with same best dag)
         # Also, get the mining commitment and make sure it changes after a subblock is mined
         commitment_before0 = self.nodes[0].getminingcandidate()
         commitment_before1 = self.nodes[1].getminingcandidate()
@@ -223,8 +223,8 @@ class TailstormActivationTest(BitcoinTestFramework):
         logging.info("Generate first summary block")
         self.nodes[0].generate(1)
         blockchaininfo = self.nodes[0].getblockchaininfo()
-        assert_equal(blockchaininfo['forkactive'], True)
-        assert_equal(blockchaininfo['forkenforcednextblock'], False)
+        assert_equal(blockchaininfo['upgradeactive'], True)
+        assert_equal(blockchaininfo['upgradeenforcednextblock'], False)
         tailstorminfo = self.nodes[0].gettailstorminfo()
         assert_equal(tailstorminfo['chaintip'], blockchaininfo['bestblockhash'])
         assert_equal(tailstorminfo['dagtip'], blockchaininfo['bestblockhash'])
@@ -248,8 +248,8 @@ class TailstormActivationTest(BitcoinTestFramework):
         mocktime = mocktime + 30
         self.setmocktime(mocktime)
         subblock_hash = self.nodes[0].generate(1)
-        assert_equal(blockchaininfo['forkactive'], True)
-        assert_equal(blockchaininfo['forkenforcednextblock'], False)
+        assert_equal(blockchaininfo['upgradeactive'], True)
+        assert_equal(blockchaininfo['upgradeenforcednextblock'], False)
         assert_greater_than(blockchaininfo['mediantime'], activationtime)
         tailstorminfo = self.nodes[0].gettailstorminfo()
         assert_equal(tailstorminfo['chaintip'], blockchaininfo['bestblockhash'])

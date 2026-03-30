@@ -109,8 +109,8 @@ std::vector<unsigned char> vch(const CScript &script) { return ToByteVector(scri
 
 BOOST_AUTO_TEST_CASE(verifywellknown)
 {
-    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
-    auto fork1flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS; // upgrade 1 retroactively applied to entire blockchain
+    auto fork1flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     ScriptError error;
     auto nogroup = OP_0;
     bool ret;
@@ -142,13 +142,14 @@ BOOST_AUTO_TEST_CASE(verifywellknown)
         BOOST_CHECK(ck.lastSig == fakeSig);
         BOOST_CHECK(ck.lastPubKey == fakeAddr.pubkey);
 
+        // Even though OP_RETURN in inputs and outputs was activated in upgrade1, its possible to retroactively
+        // apply it to the entire blockchain, so we now don't check the negative case and just check using
+        // the mandatory flages.
+
         // check input with OP_RETURN extra data
         CScript satisfierR = CScript() << fakeSig << OP_RETURN << 123 << 456;
-
         txin = (CScript() << vch(hashedArgs)) + satisfierR;
-        ret = VerifyScript(txin, txout, flags, sis, &error, &tracker);
-        BOOST_CHECK(!ret);
-        ret = VerifyScript(txin, txout, fork1flags, sisf1, &error, &tracker);
+        ret = VerifyScript(txin, txout, flags, sisf1, &error, &tracker);
         BOOST_CHECK(ret);
         // make sure that the expect script ran by checking the number of sigchecks it should have done,
         // and that the sig and pubkey are correct.
@@ -159,9 +160,7 @@ BOOST_AUTO_TEST_CASE(verifywellknown)
         // check output with OP_RETURN extra data
         txout = CScript(ScriptType::TEMPLATE)
                 << nogroup << P2PKT_ID << hash256(hashedArgs) << OP_RETURN << hash256(hashedArgs);
-        ret = VerifyScript(txin, txout, flags, sis, &error, &tracker);
-        BOOST_CHECK(!ret);
-        ret = VerifyScript(txin, txout, fork1flags, sisf1, &error, &tracker);
+        ret = VerifyScript(txin, txout, flags, sisf1, &error, &tracker);
         BOOST_CHECK(ret);
         // make sure that the expect script ran by checking the number of sigchecks it should have done,
         // and that the sig and pubkey are correct.
@@ -213,15 +212,18 @@ BOOST_AUTO_TEST_CASE(verifywellknown)
 BOOST_AUTO_TEST_CASE(verifytemplate)
 {
     auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
-    auto flagsf1 = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    auto flagsu1 = MANDATORY_SCRIPT_VERIFY_FLAGS; // upgrade 1 retroactively applied to entire chain
+    auto flagsu2 = POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS;
     ScriptError error;
     ScriptMachineResourceTracker tracker;
 
     AlwaysGoodSignatureChecker ck(flags);
     ScriptImportedState sis(&ck);
     // fork 1 context
-    AlwaysGoodSignatureChecker ckf1(flagsf1);
-    ScriptImportedState sisf1(&ckf1);
+    AlwaysGoodSignatureChecker ckf1(flagsu1);
+    ScriptImportedState sisu1(&ckf1);
+    AlwaysGoodSignatureChecker cku2(flagsu2);
+    ScriptImportedState sisu2(&cku2);
 
     auto nogroup = OP_0;
     bool ret;
@@ -242,20 +244,28 @@ BOOST_AUTO_TEST_CASE(verifytemplate)
 
         ret = VerifyTemplate(templat, constraint, satisfier, flags, 100, 0, sis, &error, &tracker);
         BOOST_CHECK(ret == true);
-        // All fail because fork1 not triggered
+        // pass because upgrade1 retroactively triggered
         ret = VerifyTemplate(templat, constraintR, satisfier, flags, 100, 0, sis, &error, &tracker);
-        BOOST_CHECK(!ret);
+        BOOST_CHECK(ret);
         ret = VerifyTemplate(templat, constraint, satisfierR, flags, 100, 0, sis, &error, &tracker);
-        BOOST_CHECK(!ret);
+        BOOST_CHECK(ret);
         ret = VerifyTemplate(templat, constraintR, satisfierR, flags, 100, 0, sis, &error, &tracker);
-        BOOST_CHECK(!ret);
+        BOOST_CHECK(ret);
 
-        // Pass because fork1 triggered
-        ret = VerifyTemplate(templat, constraintR, satisfier, flagsf1, 100, 0, sisf1, &error, &tracker);
+        // Pass because upgrade1 triggered
+        ret = VerifyTemplate(templat, constraintR, satisfier, flagsu1, 100, 0, sisu1, &error, &tracker);
         BOOST_CHECK(ret == true);
-        ret = VerifyTemplate(templat, constraint, satisfierR, flagsf1, 100, 0, sisf1, &error, &tracker);
+        ret = VerifyTemplate(templat, constraint, satisfierR, flagsu1, 100, 0, sisu1, &error, &tracker);
         BOOST_CHECK(ret == true);
-        ret = VerifyTemplate(templat, constraintR, satisfierR, flagsf1, 100, 0, sisf1, &error, &tracker);
+        ret = VerifyTemplate(templat, constraintR, satisfierR, flagsu1, 100, 0, sisu1, &error, &tracker);
+        BOOST_CHECK(ret == true);
+
+        // Pass because nothing in upgrade2 broke this
+        ret = VerifyTemplate(templat, constraintR, satisfier, flagsu2, 100, 0, sisu2, &error, &tracker);
+        BOOST_CHECK(ret == true);
+        ret = VerifyTemplate(templat, constraint, satisfierR, flagsu2, 100, 0, sisu2, &error, &tracker);
+        BOOST_CHECK(ret == true);
+        ret = VerifyTemplate(templat, constraintR, satisfierR, flagsu2, 100, 0, sisu2, &error, &tracker);
         BOOST_CHECK(ret == true);
 
         // Bad scripts should fail
@@ -264,13 +274,13 @@ BOOST_AUTO_TEST_CASE(verifytemplate)
         ret = VerifyTemplate(templat, badConstraint, satisfier, flags, 100, 0, sis, &error, &tracker);
         BOOST_CHECK(!ret);
         // Bad scripts with extra data should also fail
-        ret = VerifyTemplate(templat, constraint, badSatisfierR, flagsf1, 100, 0, sisf1, &error, &tracker);
+        ret = VerifyTemplate(templat, constraint, badSatisfierR, flagsu1, 100, 0, sisu1, &error, &tracker);
         BOOST_CHECK(!ret);
-        ret = VerifyTemplate(templat, badConstraintR, satisfier, flagsf1, 100, 0, sisf1, &error, &tracker);
+        ret = VerifyTemplate(templat, badConstraintR, satisfier, flagsu1, 100, 0, sisu1, &error, &tracker);
         BOOST_CHECK(!ret);
         // If the op_return magically replaces the real push, this will be 10-9 so work true, otherwise 10-10 so false
         ret = VerifyTemplate(
-            templat, badConstraintR, CScript() << OP_10 << OP_RETURN << OP_9, flagsf1, 100, 0, sisf1, &error, &tracker);
+            templat, badConstraintR, CScript() << OP_10 << OP_RETURN << OP_9, flagsu1, 100, 0, sisu1, &error, &tracker);
         BOOST_CHECK(!ret);
 
         // Now wrap these scripts into scriptSig and scriptPubKeys
@@ -297,10 +307,10 @@ BOOST_AUTO_TEST_CASE(verifytemplate)
         ret = IsStandard(tmplVisArgs, whichtype);
         BOOST_CHECK(ret == true);
 
-        ret = VerifyScript(scriptSigVisArgsR, tmplVisArgs, flagsf1, sisf1, &error, &tracker);
+        ret = VerifyScript(scriptSigVisArgsR, tmplVisArgs, flagsu1, sisu1, &error, &tracker);
         BOOST_CHECK(ret == true);
 
-        ret = VerifyScript(scriptSigVisArgsR, tmplVisArgsR, flagsf1, sisf1, &error, &tracker);
+        ret = VerifyScript(scriptSigVisArgsR, tmplVisArgsR, flagsu1, sisu1, &error, &tracker);
         BOOST_CHECK(ret == true);
         ret = IsStandard(tmplVisArgsR, whichtype);
         BOOST_CHECK(ret == true);

@@ -9,6 +9,7 @@
 #include "blockrelay/graphene.h"
 #include "blockstorage/blockstorage.h"
 #include "chainparams.h"
+#include "core_io.h"
 #include "dosman.h"
 #include "net.h"
 #include "pow.h"
@@ -55,6 +56,10 @@ bool CScriptCheck::operator()()
     if (!VerifyScript(scriptSig, scriptPubKey, nFlags, sis, &error, &smRes))
     {
         LOG(SCRIPT, "Script Error: %s\n", ScriptErrorString(error));
+        LOG(SCRIPT, " Hex:\n  Satisfier Args: %s\n  Template Script: %s\n  Flags: %lx", scriptSig.GetHex(),
+            scriptPubKey.GetHex(), nFlags);
+        LOG(SCRIPT, " Asm:\n  Satisfier Args: %s\n  Template Script: %s\n", ScriptToAsmStr(scriptSig, true),
+            ScriptToAsmStr(scriptPubKey, false));
         return false;
     }
     if (resourceTracker)

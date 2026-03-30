@@ -78,7 +78,8 @@ typedef enum
     AddrBlockchainRegtest = 3,
     AddrBlockchainBCH = 4,
     AddrBlockchainBchTestnet = 5,
-    AddrBlockchainBchRegtest = 6
+    AddrBlockchainBchRegtest = 6,
+    AddrBlockchainStormtest = 7
 } ChainSelector;
 
 class PubkeyExtractor

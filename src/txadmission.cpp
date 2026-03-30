@@ -963,9 +963,9 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
     uint32_t flags = STANDARD_SCRIPT_VERIFY_FLAGS;
 
     CBlockIndex *tip = chainActive.Tip();
-    if (IsFork1Activated(tip) || IsFork1Pending(tip))
+    if (IsUpgrade2Activated(tip) || IsUpgrade2Pending(tip))
     {
-        flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+        flags = POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS;
     }
 
     // Only accept nLockTime-using transactions that can be mined in the next

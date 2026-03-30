@@ -128,7 +128,7 @@ BOOST_AUTO_TEST_CASE(op_reversebytes_random_and_palindrome)
         SCRIPT_VERIFY_NONE,
         STANDARD_SCRIPT_VERIFY_FLAGS,
         MANDATORY_SCRIPT_VERIFY_FLAGS,
-        POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS,
+        POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS,
     });
     for (uint32_t flagindex = 0; flagindex < 32; ++flagindex)
     {

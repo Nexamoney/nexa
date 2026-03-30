@@ -29,9 +29,9 @@ bool IsFork1Pending(const CBlockIndex *pindexTip);
  * x = first block where the new consensus rules are enforced
  **/
 
-bool IsFork2Activated(const CBlockIndex *pindexTip);
+bool IsUpgrade2Activated(const CBlockIndex *pindexTip);
 
 /* Check if the next block will enable fork1 */
-bool IsFork2Pending(const CBlockIndex *pindexTip);
+bool IsUpgrade2Pending(const CBlockIndex *pindexTip);
 
 #endif
