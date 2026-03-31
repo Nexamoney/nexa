@@ -608,7 +608,8 @@ bool CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
                     auto iter_tree = tree->dag.find(prevhash);
                     if (iter_tree == tree->dag.end())
                     {
-                        LOG(DAG, "%s(): Did not find prevhash %s in dag: ", __func__, prevhash.ToString());
+                        LOG(DAG, "%s(): Did not find prevhash %s in dag for %s: ", __func__, prevhash.ToString(),
+                            newNode->hash.ToString());
                         fHavePrevSubblocks = false;
                         break;
                         ;
@@ -956,7 +957,17 @@ bool CTailstormForest::_Insert(ConstCBlockRef subblock)
         // At this point we need to know if this block connects to a past
         // Summary Block or if it really is an orphan.
         auto pindex = LookupBlockIndex(subblock->hashPrevBlock);
-        if (pindex && pindex->IsLinked() && !mapSummaryBlocksUnlinked.count(subblock->hashPrevBlock))
+
+        bool fHavePrevGrove = false;
+        if (pindex)
+        {
+            CTailstormGroveRef dummyGrove = nullptr;
+            fHavePrevGrove = GetGrove(*(pindex->pprev->phashBlock), dummyGrove);
+        }
+        if (pindex && (pindex->height() == chainActive.Height()))
+            fHavePrevGrove = true;
+
+        if (pindex && pindex->IsLinked() && fHavePrevGrove)
         {
             // Make sure the height of this subblock is 1 more that the previous summary block
             if (subblock->height != pindex->height() + 1)
@@ -1076,6 +1087,25 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
     std::set<uint256> setAllLinked;
     while (true)
     {
+        // Make sure to remove any blocks from the summary block orphan map that are already connected before
+        // we process the subblock orphans since the connecting subblock orphans depends on whether there
+        // exists a connected summary block.
+        for (auto iter = mapSummaryBlocksUnlinked.begin(); iter != mapSummaryBlocksUnlinked.end();)
+        {
+            CTailstormGroveRef grove = nullptr;
+            const ConstCBlockRef &pblock = iter->second;
+            bool fBlockAlreadyConnected = GetGrove(pblock->GetHash(), grove);
+            if (fBlockAlreadyConnected)
+            {
+                iter = mapSummaryBlocksUnlinked.erase(iter);
+            }
+            else
+            {
+                iter++;
+            }
+        }
+
+        // Process subblock orphans
         std::set<uint256> setLinked;
         for (auto iter = mapNodesUnlinked.begin(); iter != mapNodesUnlinked.end();)
         {
@@ -1123,6 +1153,7 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
         // NOTE: we don't add the summary block to setLinked because block processing doesn't
         // finish in this thread so we can't be sure it's linked.  It will instead get announced
         // once the block successfully connects to the blockchain.
+        bool fLinkedASummaryBlock = false;
         for (auto iter2 = mapSummaryBlocksUnlinked.begin(); iter2 != mapSummaryBlocksUnlinked.end();)
         {
             const ConstCBlockRef pblock = iter2->second;
@@ -1183,8 +1214,8 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
                     // beginning again. While theoretically it could be a very small performance
                     // hit, in reality it's unlikely there will even be any other entries in the map
                     // to process anyway.
-                    iter2 = mapSummaryBlocksUnlinked.begin();
-                    continue;
+                    fLinkedASummaryBlock = true;
+                    break;
                 }
                 else
                 {
@@ -1206,7 +1237,7 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
         {
             setAllLinked.insert(setLinked.begin(), setLinked.end());
         }
-        else
+        else if (!fLinkedASummaryBlock)
         {
             break;
         }
@@ -1508,7 +1539,6 @@ void CTailstormForest::CheckForReorg()
         // Get the chainwork of the current chainactive tip plus all the subblocks in it's dag
         //
         // The chainwork includes "all" subblocks for the full dag, so uncles as well as dag blocks.
-        // We also need to include any unprocessed or unconnected subblocks.
         std::set<CTreeNodeRef> tipdag;
         GetFullDagFor(*chainTip->phashBlock, tipdag);
         for (auto node : tipdag)

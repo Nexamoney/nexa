@@ -2849,8 +2849,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     // scoped lock to ensure the scriptqueue is free and available.
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && PV->ThreadCount() ? pScriptQueue : nullptr);
 
-    // Initialize a PV session.
-    if (!PV->Initialize(this_id, pindex, fParallel))
+    // Indicate that block validation has begun.
+    if (!PV->BeginValidation(this_id, pindex, fParallel))
         return false;
 
     /*********************************************************************************************
