@@ -438,7 +438,8 @@ build-ubuntu-rostrum:
         - cd build
         # remove cache file to see if it catch new CXX and CC env
         - ../configure --prefix=$PWD/../depends/x86_64-linux-gnu > /dev/null
-
+        - cd .. && git clone https://gitlab.com/nexa/rostrum.git
+        - cd ./rostrum && git pull && git checkout 14d560823bccd8f9208fc90a0f94fdd9b34f8bd0 && cd ../build
         - make rostrum
 
     dependencies:

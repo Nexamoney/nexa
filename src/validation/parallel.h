@@ -184,8 +184,8 @@ public:
     /** Number of block validation threads currently validating a block */
     unsigned int NumBlocksValidating() { return numBlocksValidating.load(); }
 
-    /** Initialize a PV session */
-    bool Initialize(const boost::thread::id this_id, const CBlockIndex *pindex, const bool fParallel);
+    /** Start validation of a block */
+    bool BeginValidation(const boost::thread::id this_id, const CBlockIndex *pindex, const bool fParallel);
 
     /** Cleanup PV threads after one has finished and won the validation race */
     void Cleanup(const ConstCBlockRef pblock, CBlockIndex *pindex);

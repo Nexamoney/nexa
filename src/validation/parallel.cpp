@@ -34,6 +34,7 @@ using namespace std;
 
 // see at doc/bu-parallel-validation.md to get the details
 static const unsigned int nScriptCheckQueues = 4;
+static const unsigned int nDagScriptCheckQueues = 1;
 
 std::unique_ptr<CParallelValidation> PV;
 
@@ -110,7 +111,7 @@ CParallelValidation::CParallelValidation() : nThreads(0), semThreadCount(nScript
 
     // Create each script check queue with all associated threads.
     LOGA("Launching %d ScriptQueues each using %d threads for script verification\n", nScriptCheckQueues, nThreads);
-    while (QueueCount() < nScriptCheckQueues)
+    while (QueueCount() < (nScriptCheckQueues + nDagScriptCheckQueues))
     {
         auto queue = new CCheckQueue<CScriptCheck>(128);
         for (unsigned int i = 1; i <= nThreads; i++)
@@ -140,7 +141,9 @@ unsigned int CParallelValidation::QueueCount()
     return vQueues.size();
 }
 
-bool CParallelValidation::Initialize(const boost::thread::id this_id, const CBlockIndex *pindex, const bool fParallel)
+bool CParallelValidation::BeginValidation(const boost::thread::id this_id,
+    const CBlockIndex *pindex,
+    const bool fParallel)
 {
     if (fParallel)
     {
