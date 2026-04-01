@@ -42,7 +42,8 @@ public:
         ALL = 0,
         FIRSTN = 1,
         TWO = 2,
-        LAST_VALID = TWO, // end indicator
+        RETARGETABLE_RANGE = 3,
+        LAST_VALID = RETARGETABLE_RANGE, // end indicator
     };
 
 protected: // tests need direct access
@@ -84,9 +85,19 @@ public:
         return fromBytes(sig, 0);
     }
 
-    /** Anyone can pay signs only the current input, so other entities can add addtl inputs to complete the partial tx
+    /** Anyone can pay signs only the current input, so other entities can add addtl inputs to complete the partial tx.
+        This is the old Bitcoin name for signing just the current input, it does not make tons of sense.
+        @Deprecated use withThisInput()
      */
     SigHashType &withAnyoneCanPay()
+    {
+        inp = Input::THISIN;
+        inpData.resize(0);
+        return *this;
+    }
+    /** Signs the current input.
+     */
+    SigHashType &withThisInput()
     {
         inp = Input::THISIN;
         inpData.resize(0);
@@ -127,6 +138,8 @@ public:
         return false;
     }
     bool hasAll() const { return ((inp == SigHashType::Input::ALL) && (out == SigHashType::Output::ALL)); }
+
+    bool hasRangedOutputs() const { return out == SigHashType::Output::RETARGETABLE_RANGE; }
 
     // set this sighashtype to the type that generates the longest sighashtype in bytes
     // (for use in calculating tx fees by tx length estimation).
@@ -174,6 +187,16 @@ public:
         outData.resize(2);
         outData[0] = a;
         outData[1] = b;
+        return *this;
+    }
+
+    SigHashType &withRangedOutputs(uint8_t start, uint8_t count)
+    {
+        valid = true;
+        out = SigHashType::Output::RETARGETABLE_RANGE;
+        outData.resize(2);
+        outData[0] = start;
+        outData[1] = count;
         return *this;
     }
 

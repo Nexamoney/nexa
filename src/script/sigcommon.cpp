@@ -60,6 +60,17 @@ uint256 GetOutputsHash(const SatoshiTransaction &txTo)
     return ss.GetHash();
 }
 
+uint256 GetOutputsHash(const CTransaction &txTo, size_t start, size_t end)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    for (unsigned int n = start; n <= end; n++)
+    {
+        ss << txTo.vout[n];
+    }
+    return ss.GetHash();
+}
+
+
 uint256 GetPrevoutHashOf(const CTransaction &txTo, unsigned int n)
 {
     CHashWriter ss(SER_GETHASH, 0);
@@ -441,6 +452,17 @@ bool SignatureHashNexaComponents(const CTransaction &txTo,
         hashOutputs = GetOutputsHash(txTo, count);
     }
     break;
+    case SigHashType::Output::RETARGETABLE_RANGE:
+    {
+        DbgAssert(sigHashType.outData.size() == 2, return false);
+        if (sigHashType.outData[0] >= voutSize) // start cannot be beyond the end
+            return false;
+        size_t end = ((size_t)sigHashType.outData[0]) + ((size_t)sigHashType.outData[1]);
+        if (end >= voutSize)
+            return false;
+        hashOutputs = GetOutputsHash(txTo, (size_t)sigHashType.outData[0], end);
+    }
+    break;
     case SigHashType::Output::ALL:
         hashOutputs = GetOutputsHash(txTo, voutSize);
         break;
@@ -474,6 +496,7 @@ bool SignatureHashNexa(const CScript &scriptCode,
         hashInputAmounts, hashOutputs, result, nHashedOut);
 }
 
+
 bool SignatureHashNexa(const CScript &scriptCode,
     uint8_t txVersion,
     uint32_t txLockTime,
@@ -485,25 +508,37 @@ bool SignatureHashNexa(const CScript &scriptCode,
     uint256 &result,
     size_t *nHashedOut)
 {
+    bool hasRanged = sigHashType.hasRangedOutputs();
     CHashWriter ss(SER_GETHASH, 0);
     // Version
     ss << txVersion;
     // Input prevouts/nSequence (none/all, depending on flags)
     ss << hashPrevouts;
+    p("prevouts: %s\n", hashPrevouts.GetHex().c_str());
     ss << hashInputAmounts;
+    p("inputAmounts: %s\n", hashInputAmounts.GetHex().c_str());
     ss << hashSequence;
-    ss << static_cast<const CScriptBase &>(scriptCode);
-    p("ScriptCode: %s\n", scriptCode.GetHex().c_str());
+    p("sequence: %s\n", hashSequence.GetHex().c_str());
+
+    if (!hasRanged) // removed in new sighashes because its redundant with the prevout
+    {
+        ss << static_cast<const CScriptBase &>(scriptCode);
+        p("ScriptCode: %s\n", scriptCode.GetHex().c_str());
+    }
 
     // Outputs (none/one/all, depending on flags)
     ss << hashOutputs;
+    p("outputs: %s\n", hashOutputs.GetHex().c_str());
     // Locktime
     ss << txLockTime;
     p("Locktime: %d\n", txLockTime);
 
     // Sighash type -- if the sighashtype is all, you MUST use the empty vector representation here.
-    ss << sigHashType;
-    p("sigHashType: %s\n", sigHashType.ToString().c_str());
+    if (!hasRanged) // removed in the retargetable range sighashes so that retargeting can happen
+    {
+        ss << sigHashType;
+        p("sigHashType: %s\n", sigHashType.ToString().c_str());
+    }
 
     p("Num bytes hashed: %d\n", (int)ss.GetNumBytesHashed());
     if (nHashedOut != nullptr)
@@ -550,7 +585,10 @@ SigHashType &SigHashType::fromSig(const std::vector<unsigned char> &sig)
 {
     size_t sigsz = sig.size();
     if (sigsz < 64)
+    {
+        invalidate();
         return *this; // invalid
+    }
     return fromBytes(sig, 64);
 }
 
@@ -594,7 +632,7 @@ SigHashType &SigHashType::fromBytes(const std::vector<unsigned char> &byteArray,
         outData[0] = byteArray[curPos];
         curPos++;
     }
-    else if (out == Output::TWO)
+    else if ((out == Output::TWO) || (out == Output::RETARGETABLE_RANGE))
     {
         if (sigsz <= curPos + 1)
             return invalidate(); // invalid
@@ -646,6 +684,14 @@ bool SigHashType::appendToSig(std::vector<unsigned char> &sig) const
     switch (out)
     {
     case SigHashType::Output::TWO:
+    {
+        DbgAssert(outData.size() == 2, );
+        assert(outData.size() > 1);
+        sig.push_back(outData[0]);
+        sig.push_back(outData[1]);
+    }
+    break;
+    case SigHashType::Output::RETARGETABLE_RANGE:
     {
         DbgAssert(outData.size() == 2, );
         assert(outData.size() > 1);
@@ -715,6 +761,9 @@ std::string SigHashType::ToString() const
         break;
     case Output::TWO:
         ret += std::to_string(outData[0]) + "_" + std::to_string(outData[1]) + "_OUT";
+        break;
+    case Output::RETARGETABLE_RANGE:
+        ret += "RANGED_OUT_at_" + std::to_string(outData[0]) + "_to_" + std::to_string(outData[0] + outData[1]);
         break;
     default:
         return std::string("INVALID");
