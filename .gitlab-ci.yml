@@ -42,11 +42,9 @@ stages:
 doc_tests:
     stage: documentation
     image: python:3.10.13
-    before_script:
-        - cd doc/rpc/
-        - pip3 install -r requirements.txt
     script:
-        - mkdocs build --verbose --site-dir test
+        - cd doc/rpc/
+        - ./run-docs-build.sh mkdocs build --verbose --site-dir test
     artifacts:
         paths:
           - test
@@ -56,11 +54,9 @@ doc_tests:
 pages:
     stage: documentation
     image: python:3.10.13
-    before_script:
-        - cd doc/rpc/
-        - pip3 install -r requirements.txt
     script:
-        - mkdocs build --verbose
+        - cd doc/rpc/
+        - ./run-docs-build.sh mkdocs build --verbose
         # gitlab pages needs the static website content to be stored in
         # a folder named `public` placed at the root dir of the project
         # (it doesn't need to be committedi thou)
