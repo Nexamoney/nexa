@@ -71,6 +71,11 @@ bool UpgradeBlockIndex();
 
 void CheckBlockIndex(const Consensus::Params &consensusParams);
 
+/** Clear the txpool and resubmit all transactions in it and in the passed block.
+    Used for a few exceptional conditions like switching forks.
+*/
+void ResubmitTransactions(const ConstCBlockRef pblock = nullptr);
+
 /**
  * Check whether all inputs of this transaction are valid (no double spends, scripts & sigs, amounts)
  * This does not modify the UTXO set. If pvChecks is not nullptr, script checks are pushed onto it

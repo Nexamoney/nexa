@@ -59,11 +59,14 @@ private:
     std::string strDebugMessage;
 
 public:
+    // If the validation failed due to a transaction, some details of that transaction are stored here
+    // for logging/debug.
     CAmount inAmount = -1;
     CAmount outAmount = -1;
     CAmount fee = -1;
     GroupBalanceMapRef groupState = nullptr;
-    int missingInput = -1;
+    int relevantInput = -1;
+    uint256 relevantTxid = uint256();
 
     CValidationState() : mode(MODE_VALID), nDoS(0), chRejectCode(0), corruptionPossible(false) {}
 

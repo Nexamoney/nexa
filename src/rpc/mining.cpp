@@ -912,7 +912,7 @@ protected:
 };
 
 
-UniValue SubmitBlock(ConstCBlockRef pblock)
+UniValue SubmitBlock(ConstCBlockRef pblock, CValidationState &state)
 {
     const uint256 blockhash = pblock->GetHash();
     bool fBlockPresent = false;
@@ -930,7 +930,6 @@ UniValue SubmitBlock(ConstCBlockRef pblock)
         }
     }
 
-    CValidationState state;
     submitblock_StateCatcher sc(blockhash);
     LOG(RPC, "Received block %s via RPC.\n", blockhash.ToString());
     bool fAccepted = false;
@@ -1031,7 +1030,8 @@ UniValue submitblock(const UniValue &params, bool fHelp)
     {
         throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Block decode failed");
     }
-    return SubmitBlock(pblock);
+    CValidationState state;
+    return SubmitBlock(pblock, state);
 }
 
 UniValue estimatefee(const UniValue &params, bool fHelp)
