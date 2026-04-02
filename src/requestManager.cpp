@@ -383,7 +383,7 @@ void CRequestManager::Rejected(const CInv &obj, CNode *from, unsigned char reaso
         item = mapTxnInfo.find(obj.hash);
         if (item == mapTxnInfo.end())
         {
-            LOG(REQ, "ReqMgr: Item already removed. Unknown txn rejected %s\n", obj.ToString().c_str());
+            LOG(REQ, "ReqMgr: Item already removed. Unknown txn rejected %s\n", obj.ToString());
             return;
         }
         if (item->second.outstandingReqs)
@@ -396,11 +396,34 @@ void CRequestManager::Rejected(const CInv &obj, CNode *from, unsigned char reaso
         item = mapBlkInfo.find(obj.hash);
         if (item == mapBlkInfo.end())
         {
-            LOG(REQ, "ReqMgr: Item already removed. Unknown block rejected %s\n", obj.ToString().c_str());
+            LOG(REQ | BLK, "ReqMgr: Item already removed. Unknown block rejected %s\n", obj.ToString());
             return;
         }
         if (item->second.outstandingReqs)
             item->second.outstandingReqs--;
+
+        auto nodeid = from->GetId();
+        MapBlocksInFlightErase(obj.hash, nodeid);
+        {
+            // Get a request manager nodestate pointer.
+            std::map<NodeId, CRequestManagerNodeState>::iterator it = mapRequestManagerNodeState.find(nodeid);
+            if (it != mapRequestManagerNodeState.end())
+            {
+                CRequestManagerNodeState *state = &it->second;
+
+                // remove the block from the in flight node state
+                for (auto iter = state->vBlocksInFlight.begin(); iter != state->vBlocksInFlight.end(); iter++)
+                {
+                    if (obj.hash == iter->hash)
+                    {
+                        state->vBlocksInFlight.erase(iter);
+                        LOG(REQ | BLK, "ReqMgr: Removed rejected block from node state %s\n", obj.ToString());
+                        break;
+                    }
+                }
+                state->nBlocksInFlight = state->vBlocksInFlight.size();
+            }
+        }
     }
 
     if (reason == REJECT_MALFORMED)
