@@ -33,6 +33,12 @@ static CTreeNodeRef FindDagTipNode(std::set<CTreeNodeRef> &dag)
     unsigned int bestHeight = 0;
     for (auto &node : dag)
     {
+        if (!node)
+        {
+            DbgAssert(node != nullptr, );
+            continue;
+        }
+
         if (node->fUncle)
             continue;
 
