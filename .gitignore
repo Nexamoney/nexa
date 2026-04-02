@@ -144,6 +144,7 @@ share/BitcoindComparisonTool.jar
 
 /doc/doxygen/
 /doc/Doxyfile
+/doc/rpc/venv
 
 libnexaconsensus.pc
 
