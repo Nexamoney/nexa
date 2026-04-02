@@ -22,7 +22,7 @@ BOOST_FIXTURE_TEST_SUITE(sighashtype_tests, BasicTestingSetup)
 
 static void CheckTransaction(CMutableTransaction &tx, CCoinsViewCache &coins, bool inputsOk = true)
 {
-    auto flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     auto params = Params();
 
     CValidationState state;
@@ -115,7 +115,7 @@ static std::vector<CMutableTransaction> SetupDummyInputs(CBasicKeyStore &keystor
 
 BOOST_AUTO_TEST_CASE(sighash_retargetable_tx_test)
 {
-    auto flags = POST_UPGRADE_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     auto params = Params();
     SigHashType range2 = SigHashType().withThisInput().withRangedOutputs(0, 1);
 
