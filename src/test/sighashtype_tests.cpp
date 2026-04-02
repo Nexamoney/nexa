@@ -20,9 +20,11 @@
 
 BOOST_FIXTURE_TEST_SUITE(sighashtype_tests, BasicTestingSetup)
 
-static void CheckTransaction(CMutableTransaction &tx, CCoinsViewCache &coins, bool inputsOk = true)
+static void CheckTransaction(CMutableTransaction &tx,
+    CCoinsViewCache &coins,
+    bool inputsOk = true,
+    uint32_t flags = POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS)
 {
-    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
     auto params = Params();
 
     CValidationState state;
@@ -43,7 +45,6 @@ static void CheckTransaction(CMutableTransaction &tx, CCoinsViewCache &coins, bo
     if (inputsOk)
         BOOST_CHECK(state.IsValid());
 }
-
 
 static void CheckSigHashType(SigHashType t,
     bool isDefined,
@@ -115,7 +116,7 @@ static std::vector<CMutableTransaction> SetupDummyInputs(CBasicKeyStore &keystor
 
 BOOST_AUTO_TEST_CASE(sighash_retargetable_tx_test)
 {
-    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
+    auto flags = POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS;
     auto params = Params();
     SigHashType range2 = SigHashType().withThisInput().withRangedOutputs(0, 1);
 
@@ -163,6 +164,9 @@ BOOST_AUTO_TEST_CASE(sighash_retargetable_tx_test)
         BOOST_CHECK(worked);
     }
 
+    // check that it doesn't work pre-activation
+    CheckTransaction(t1, coins, false, MANDATORY_SCRIPT_VERIFY_FLAGS);
+    // but does post activation
     CheckTransaction(t1, coins);
 
     // Now create another tx with retargetable range outputs
