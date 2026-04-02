@@ -166,7 +166,8 @@ protected:
 
 protected:
     bool InitializeTree(CTreeNodeRef newNode, CCoinsViewCache *coinsCache);
-    bool InsertIntoTree(CTreeNodeRef newNode);
+    // Returns nullptr if failed, newNode if inserted, or the existing node if already inserted
+    CTreeNodeRef InsertIntoTree(CTreeNodeRef newNode);
 
 public:
     CTailstormGrove(CCoinsViewCache *coinsCache)
@@ -192,7 +193,8 @@ public:
 protected:
     void Clear();
 
-    bool Insert(CTreeNodeRef newNode);
+    // Returns nullptr if failed, newNode if inserted, or the existing node if already inserted
+    CTreeNodeRef Insert(CTreeNodeRef newNode);
     bool GetBestDag(std::set<CTreeNodeRef> &dag,
         std::vector<std::map<uint256, CTreeNodeRef> > *vDoubleSpendTxns = nullptr,
         std::map<COutPoint, CTransactionRef> *mapInputs = nullptr);
@@ -277,8 +279,9 @@ public:
     size_t Size();
 
     //! Insert a new subblock into a grove
-    bool Insert(ConstCBlockRef subblock);
-    bool _Insert(ConstCBlockRef subblock);
+    bool Insert(const ConstCBlockRef &subblock);
+    bool _Insert(const ConstCBlockRef &subblock);
+    bool _Insert(CTreeNodeRef &newNode);
 
     //! Add or remove a summary block to the orphan map
     void AddSummaryBlockOrphan(ConstCBlockRef pblock);
@@ -286,6 +289,8 @@ public:
 
     //! Add a subblock orphan to the orphans map.
     void AddSubblockOrphan(CTreeNodeRef newNode);
+    //! Remove subblock orphan from the orphans map (if it is in there, otherwise no-op)
+    void RemoveSubblockOrphan(const ConstCBlockRef &pblock);
 
     //! Process all orphaned subblocks and summary blocks
     std::set<uint256> ProcessOrphans();
@@ -298,6 +303,9 @@ public:
 
     //! Find out whether the forst contains a treenode
     bool Contains(const uint256 &hash);
+
+    //! Get DAG internal information for display and debugging
+    UniValue GetInternals(UniValue &info);
 
     //! return a map of all tree nodes.
     std::map<uint256, CTreeNode> GetAllNodes();

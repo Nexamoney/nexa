@@ -137,7 +137,8 @@ void AcceptSubblock(ConstCBlockRef pblock)
         if (tailstormForest._Insert(pblock))
         {
             fCheckForReorg = true;
-
+            // If insertion was successful, this block is not an orphan (not unlinked).
+            tailstormForest.RemoveSubblockOrphan(pblock);
             // Process Orphans
             setToAnnounce = tailstormForest.ProcessOrphans();
             setToAnnounce.insert(pblock->GetHash());

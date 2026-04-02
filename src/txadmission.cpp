@@ -1064,6 +1064,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
         {
             READLOCK(pool.cs_txmempool);
             CCoinsViewCache *ptip = fTailstormEnabled ? tailstormForest.bestGroveCoins() : pcoinsTip;
+            assert(ptip);
             CCoinsViewMemPool viewMemPool(ptip, mempool);
             view.SetBackend(viewMemPool);
             coinstip.SetBackend(*ptip);
@@ -1096,7 +1097,8 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                             // but ignore whether its spent (read-only spent coins are still accessible in this block).
                             if (!coinstip.GetCoinFromDB(txin.prevout))
                             {
-                                state.missingInput = inIdx;
+                                state.relevantInput = inIdx;
+                                state.relevantTxid = tx->GetId();
                                 fMissingOrSpent = true;
                                 LOG(MEMPOOL, "read-only input-does-not-exist: %d:%s\n", inIdx,
                                     txin.prevout.hash.ToString());
@@ -1108,7 +1110,8 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                         vCoinsToUncache.push_back(txin.prevout);
                         if (!view.HaveCoin(txin.prevout))
                         {
-                            state.missingInput = inIdx;
+                            state.relevantInput = inIdx;
+                            state.relevantTxid = tx->GetId();
                             fMissingOrSpent = true;
                             LOG(MEMPOOL, "normal input-does-not-exist: %d:%s\n", inIdx, txin.prevout.hash.ToString());
                         }

@@ -2790,6 +2790,7 @@ UniValue tailstormInfoToJSON()
 
         int64_t nUnlinkedSubblocks = tailstormForest.GetUnlinkedSubblocks();
         int64_t nUnlinkedSummaryBlocks = tailstormForest.GetUnlinkedSummaryBlocks();
+        tailstormForest.GetInternals(ret);
 
         ret.pushKV("chaintip", tip->GetBlockHash().GetHex());
         ret.pushKV("dagtip", dagTipHash.GetHex());

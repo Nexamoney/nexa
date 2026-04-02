@@ -1436,7 +1436,25 @@ UniValue submitminingsolution(const UniValue &params, bool fHelp)
         throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "nonce too large");
     }
 
-    UniValue uvsub = SubmitBlock(block); // returns string on failure
+    CValidationState state;
+    UniValue uvsub = SubmitBlock(block, state); // returns string on failure
+
+    if (state.IsInvalid() && state.GetRejectCode() == REJECT_CONFLICT)
+    {
+        // This code clears out old mining candidates and resubmits all transactions to the txpool in case
+        // our own mining candidate is in conflict with the current DAG.  This is a very safe option for this
+        // exceptional condition.
+
+        // It is possible for our own candidate to have a conflict since the candidate may be stale
+        // (the blockchain state has moved forwards).
+        // But it should not be possible for the bad transaction to be in our txpool.
+        // TODO: write debug-mode code to detect whether the tx is in the pool and pause there for analysis.
+
+        LOGA("One of our own blocks had a conflicting transaction.  Resetting txpool!");
+        RmOldMiningCandidates(true); // Wipe out all mining candidates (probably has the conflicted tx in them)
+        ResubmitTransactions(block);
+    }
+
     // It worked so we need new solutions
     if (uvsub.empty())
     {

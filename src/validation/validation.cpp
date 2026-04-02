@@ -55,8 +55,6 @@ extern std::atomic<bool> forceTemplateRecalc;
 
 extern CCriticalSection cs_LastBlockFile;
 
-static void ResubmitTransactions(const ConstCBlockRef pblock = nullptr);
-
 class Hasher
 {
 private:
@@ -3029,6 +3027,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                                     tx.vin[j].prevout.GetHex());
                                 errCode = REJECT_CONFLICT;
                                 errStr = "bad-txns-inputs-missingorspent";
+                                state.relevantInput = j;
+                                state.relevantTxid = tx.GetId();
                                 break;
                             }
                             prevheights[j] = coin->height();
@@ -3041,6 +3041,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                                     tx.vin[j].amount);
                                 errCode = REJECT_INVALID;
                                 errStr = "bad-txns-input-amount-mismatch";
+                                state.relevantInput = j;
+                                state.relevantTxid = tx.GetId();
                                 break;
                             }
                         }
@@ -3368,8 +3370,6 @@ void InvalidBlockFound(CBlockIndex *pindex, const CValidationState &state)
     int nDoS = 0;
     if (state.IsInvalid(nDoS))
     {
-        assert(state.GetRejectCode() < REJECT_INTERNAL); // Blocks are never rejected with internal reject codes
-
         std::map<uint256, NodeId>::iterator it = mapBlockSource.find(pindex->GetBlockHash());
         if (it != mapBlockSource.end())
         {
@@ -3377,6 +3377,11 @@ void InvalidBlockFound(CBlockIndex *pindex, const CValidationState &state)
 
             if (node)
             {
+                // External blocks are never rejected with internal reject codes
+                // It is possible for an internal block to be rejected with bad-txns-inputs-missingorspent,
+                // specifically REJECT_CONFLICT, because the candidate being mined was stale.
+                assert(state.GetRejectCode() < REJECT_INTERNAL);
+
                 // TODO get the block request's msgCookie
                 node->PushMessage(NetMsgType::REJECT, (std::string)NetMsgType::BLOCK,
                     (unsigned char)state.GetRejectCode(), state.GetRejectReason().substr(0, MAX_REJECT_MESSAGE_LENGTH),
@@ -3638,7 +3643,7 @@ void UpdateTip(CBlockIndex *pindexNew)
         pcoinsTip->DynamicMemoryUsage() * (1.0 / (1 << 20)), pcoinsTip->GetCacheSize());
 }
 
-static void ResubmitTransactions(const ConstCBlockRef pblock)
+void ResubmitTransactions(const ConstCBlockRef pblock)
 {
     // To be very safe let's force everything in the mempool to be re-admitted.  This reduces this rare case
     // quickly to a very common operation mode.  If we do not do this, we must guarantee that all tx coming from
