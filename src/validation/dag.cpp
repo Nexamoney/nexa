@@ -831,24 +831,6 @@ void CTailstormForest::Clear()
     mapSummaryBlocksUnlinked.clear();
 }
 
-void CTailstormForest::ClearGrove(const uint256 &hash)
-{
-    LOCK(cs_forest);
-    LOG(DAG, "%s(): removing: grove %s", __func__, hash.ToString());
-    auto iter = mapAllGroves.find(hash);
-    if (iter != mapAllGroves.end())
-    {
-        if (iter->second != nullptr)
-        {
-            iter->second->Clear();
-            iter->second = nullptr;
-        }
-        mapAllGroves.erase(iter);
-    }
-
-    mapAllNodes.erase(hash);
-}
-
 void CTailstormForest::ClearByHeight(const uint32_t nPruneHeight)
 {
     AssertLockHeld(tailstormForest.cs_forest);
@@ -942,55 +924,6 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
     }
 
     // Insert elements into a new grove or an already existing grove.
-    auto mi = mapAllGroves.find(subblock->hashPrevBlock);
-    if (mi != mapAllGroves.end())
-    {
-        // Make sure the height of this subblock equals the prev subblock height.
-        auto &it = mi->second->tree;
-        {
-            // find the tree that has a subblock which it connects to.
-            if (it->dag.count(subblock->hashPrevBlock))
-            {
-                if (subblock->height != it->dag[subblock->hashPrevBlock]->subblock->height)
-                {
-                    LOG(DAG, "%s(): subblock height does not match previous subblock height %s", __func__,
-                        newNode->hash.ToString(), subblock->hashPrevBlock.ToString());
-                    return false;
-                }
-            }
-
-            // Check the chainwork when the subblock gets connected to a grove
-            auto expectedNbits = GetNextWorkRequired(it->pindexSummaryRoot, &(*subblock), Params().GetConsensus());
-            auto expectedChainWork =
-                ArithToUint256(it->pindexSummaryRoot->chainWork() + GetWorkForDifficultyBits(expectedNbits));
-            if (subblock->chainWork != expectedChainWork)
-            {
-                LOG(DAG, "%s: invalid chainwork - could not add subblock to grove", __func__);
-                return false;
-            }
-        }
-
-
-        // Insert subblock into already existing grove
-        LOG(DAG, "%s(): trying to add subblock to already existing grove %s", __func__, newNode->hash.ToString());
-        if (mi->second->Insert(newNode))
-        {
-            // The insertion must have given it a sequence id
-            DbgAssert(newNode->nSequenceId > 0, );
-            mapAllGroves.emplace(newNode->hash, mi->second);
-
-            LOG(DAG, "%s(): added subblock %s to existing grove %s with subblock dagHeight %d", __func__,
-                newNode->hash.ToString(), subblock->hashPrevBlock.ToString(), newNode->dagHeight);
-            fOK = true;
-        }
-        else
-        {
-            LOG(DAG, "%s(): FAILED to add subblock %s to existing grove %s", __func__, newNode->hash.ToString(),
-                subblock->hashPrevBlock.ToString());
-            return false;
-        }
-    }
-    else
     {
         // At this point we need to know if this block connects to a past
         // Summary Block or if it really is an orphan.

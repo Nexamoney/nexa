@@ -269,9 +269,6 @@ public:
     //! Clear all forest, grove and tree data structures.
     void Clear();
 
-    //! Clear a grove that has the passed hash in it.
-    void ClearGrove(const uint256 &hash);
-
     //! Trim the forest of any nodes <= nPruneHeight
     void ClearByHeight(const uint32_t nPruneHeight);
 
