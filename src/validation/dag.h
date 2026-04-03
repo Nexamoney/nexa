@@ -223,7 +223,7 @@ protected:
     std::map<uint256, CTreeNodeRef> mapAllNodes;
 
     // Used for finding which grove a subblock is in by hash
-    std::map<uint256, CTailstormGroveRef> mapAllGroves;
+    std::map<uint256, CTailstormGroveRef> mapAllGrovesByNode;
 
     // Contains all orphan nodes
     std::map<uint256, CTreeNodeRef> mapNodesUnlinked;
