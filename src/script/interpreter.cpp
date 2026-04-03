@@ -2832,6 +2832,9 @@ bool TransactionSignatureChecker::CheckSig(const vector<uint8_t> &vchSigIn,
     SigHashType sigHashType = GetSigHashType(vchSig);
     if (sigHashType.isInvalid())
         return false;
+    // Premature use of ranged outputs
+    if (sigHashType.hasRangedOutputs() && ((nFlags & SCRIPT_UPGRADE2_OPCODES) == 0))
+        return false;
     RemoveSigHashType(vchSig);
 
     uint256 sighash;
