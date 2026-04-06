@@ -1070,6 +1070,12 @@ if __name__ == '__main__':
     TailstormActivationTest().main()
 
 def Test():
+    for i in range(0,100):
+        TestOne()
+
+def TestOne():
+    global waitTime
+    waitTime = 15
     t = TailstormActivationTest()
     t.drop_to_pdb = True
     bitcoinConf = {
