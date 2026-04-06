@@ -283,8 +283,9 @@ public:
         consensus.nBlockSizeMultiplier = BLOCK_SIZE_MULTIPLIER;
         consensus.nNextMaxBlockSize = DEFAULT_NEXT_MAX_BLOCK_SIZE_FORK1;
 
-        consensus.tailstorm_k = 0;
+        consensus.tailstorm_k = TAILSTORM_K;
         consensus.tailstormEnforceDepth = 0;
+        assert(consensus.tailstorm_k >= 2);
 
         std::vector<unsigned char> nonce;
         std::vector<unsigned char> hardCodedNonce;
@@ -385,6 +386,7 @@ public:
 
         consensus.tailstorm_k = 4;
         consensus.tailstormEnforceDepth = DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS;
+        assert(consensus.tailstorm_k >= 2);
 
         std::vector<unsigned char> nonce;
         nonce.resize(1);
@@ -502,6 +504,7 @@ public:
 
         consensus.tailstorm_k = TAILSTORM_K;
         consensus.tailstormEnforceDepth = DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS;
+        assert(consensus.tailstorm_k >= 2);
 
         vFixedSeeds.clear();
         vSeeds.clear();
@@ -638,6 +641,7 @@ public:
 
         consensus.tailstorm_k = 8;
         consensus.tailstormEnforceDepth = DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS;
+        assert(consensus.tailstorm_k >= 2);
 
         vFixedSeeds.clear();
         vSeeds.clear();
@@ -748,6 +752,7 @@ public:
 
         consensus.tailstorm_k = TAILSTORM_K;
         consensus.tailstormEnforceDepth = DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS;
+        assert(consensus.tailstorm_k >= 2);
 
         vFixedSeeds.clear();
         vSeeds.clear();
