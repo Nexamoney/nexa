@@ -1452,7 +1452,10 @@ UniValue submitminingsolution(const UniValue &params, bool fHelp)
 
         LOGA("One of our own blocks had a conflicting transaction.  Resetting txpool!");
         RmOldMiningCandidates(true); // Wipe out all mining candidates (probably has the conflicted tx in them)
-        ResubmitTransactions(block);
+        {
+            TxAdmissionPause p;
+            ResubmitTransactions(block);
+        }
     }
 
     // It worked so we need new solutions
