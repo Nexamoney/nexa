@@ -9,7 +9,9 @@
 #include "crypto/sha512.h"
 #include "script/script.h"
 #include "script/standard.h"
+#include "ui_interface.h"
 #include "util.h"
+#include "utiltranslate.h"
 
 #include <string>
 #include <vector>
@@ -210,8 +212,8 @@ bool CCryptoKeyStore::Unlock(const CKeyingMaterial &vMasterKeyIn)
         }
         if (keyPass && keyFail)
         {
-            LOGA("The wallet is probably corrupted: Some keys decrypt but not all.\n");
-            assert(false);
+            LOGA("The wallet is probably corrupted: Some keys decrypt but not all.");
+            return InitError(_("The wallet is probably corrupted: Some keys decrypt but not all."));
         }
         if (keyFail || !keyPass)
             return false;
