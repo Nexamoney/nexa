@@ -511,10 +511,94 @@ uint32_t CParallelValidation::MaxWorkChainBeingProcessed()
     return nMaxWork;
 }
 
+void CParallelValidation::HandleBlockMessage(CNode *pfrom, const string &strCommand, ConstCBlockRef pblock)
+{
+    const CChainParams &chainparams = Params();
+    // Message consistency checking
+    // NOTE: consistency checking is handled by checkblock() which is called during
+    //       ProcessNewBlock() in HandleBlockMessage.
+    if (!PV->HandleBlockMessageHelper(pfrom, strCommand, pblock))
+    {
+        // The block MUST be either accepted or rejected (API call) into the request manager, it CANNOT
+        // just be dropped or the request manager will never be redownloaded.
+        CValidationState state;
+        CBlockIndex *pindex = nullptr;
+        CDiskBlockPos *dbp = nullptr;
+        {
+            // The block MUST be either accepted or rejected (API call) into the request manager, it CANNOT
+            // just be dropped or the request manager will never be redownloaded
+            LOG(DAG, "%s(): Did not get validation thread for %s - processing subblock", __func__,
+                pblock->GetHash().ToString());
+
+            // If processing accept block fails for a subblock the subblock will automatically go
+            // into the dag as an orphan.
+            LOCK(cs_main);
+            bool ret = ProcessAcceptBlock(pfrom, pblock, state, chainparams, &pindex, dbp);
+            if (!ret)
+            {
+                error("%s: ProcessAcceptBlock FAILED", __func__);
+                return;
+            }
+        }
+
+        // If we couldn't get a validation thread and this is a tailstorm subblock
+        // then we have to save it to dag map so it can be processed later as an
+        // orphan and if it's a summary block then just add it directly to the summary
+        // block orphan map.
+
+        if (IsTailstormSummaryBlock(pblock))
+        {
+            LOG(DAG, "%s(): Did not get validation thread for %s - storing summary block orphan", __func__,
+                pblock->GetHash().ToString());
+            tailstormForest.AddSummaryBlockOrphan(pblock);
+        }
+
+        // NOTE: even though at the end of HandleBlockMessage() the following code gets executed
+        // we have to run it again because now we have an orphan in the queue and we can run
+        // the connect block process with the dag's own set of script check queues and be assured that
+        // processing will complete.
+        //
+        // Check for any orphaned blocks or summary blocks and connected them if possible.
+        std::set<uint256> setToAnnounce;
+        {
+            LOCK(tailstormForest.cs_forest);
+            setToAnnounce = tailstormForest.ProcessOrphans();
+
+            // Check for subblocks to prune
+            PruneSubblocks(pblock);
+        }
+
+        // Announce accepted subblocks to other peers
+        {
+            LOCK(cs_vNodes);
+            for (const uint256 &_hash : setToAnnounce)
+            {
+                for (CNode *pnode : vNodes)
+                {
+                    pnode->PushSubblockHash(_hash);
+                }
+            }
+        }
+
+        // Check that we're on the best dag and if not then
+        // initiate a re-org over to the summary block that has
+        // the best dag connected to it.
+        //
+        // NOTE: you can not put this call to CheckForReorg() in the above
+        // code block where the cs_forest lock is taken. This will cause
+        // a lockorder issue with cs_main.
+        if (!setToAnnounce.empty())
+        {
+            tailstormForest.CheckForReorg();
+            tailstormForest.Check();
+        }
+    }
+}
+
 //  HandleBlockMessage launches a HandleBlockMessageThread.  And HandleBlockMessageThread processes each block and
 //  updates the UTXO if the block has been accepted and the tip updated. We cleanup and release the semaphore after
 //  the thread has finished.
-bool CParallelValidation::HandleBlockMessage(CNode *pfrom, const string &strCommand, ConstCBlockRef pblock)
+bool CParallelValidation::HandleBlockMessageHelper(CNode *pfrom, const string &strCommand, ConstCBlockRef pblock)
 {
     const uint256 &hash = pblock->GetHash();
 
@@ -522,11 +606,13 @@ bool CParallelValidation::HandleBlockMessage(CNode *pfrom, const string &strComm
     // prevents us from re-requesting the block during the time it is being processed.
     requester.ProcessingBlock(hash, pfrom);
 
-
     // Indicate that the block was fully received. At this point we have either a block or a fully reconstructed
     // thin type block but we still need to maintain a mapBlocksInFlight entry so that we don't re-request a
     // full block from the same node while the block is processing.
     thinrelay.BlockWasReceived(pfrom, hash);
+
+    if (tailstormForest.Contains(hash))
+        return true; // Already processed, nothing to do
 
     // NOTE: You must not have a cs_main or the cs_forest lock before you aquire the semaphore grant
     // or you can end up deadlocking

@@ -1999,7 +1999,7 @@ void CheckForkWarningConditions()
         if (pindexBestForkTip && pindexBestForkBase)
         {
             LOGA("%s: Warning: Large valid fork found\n  forking the chain at height %d (%s)\n  lasting to height "
-                 "%d (%s).\nChain state database corruption likely.\n",
+                 "%d (%s).\n  Chain state database corruption likely.\n",
                 __func__, pindexBestForkBase->height(), pindexBestForkBase->phashBlock->ToString(),
                 pindexBestForkTip->height(), pindexBestForkTip->phashBlock->ToString());
             fLargeWorkForkFound = true;
@@ -3673,6 +3673,8 @@ void ResubmitTransactions(const ConstCBlockRef pblock)
                     txd.nodeName = "rollback";
                     txd.msgCookie = 0;
                     EnqueueTxForAdmission(txd);
+                    LOG(MEMPOOL, "Enqueued block tx: idem: %s id: %s", ptx->GetIdem().ToString(),
+                        ptx->GetId().ToString());
                 }
             }
         }
@@ -3686,6 +3688,8 @@ void ResubmitTransactions(const ConstCBlockRef pblock)
                 txd.nodeName = "rollback";
                 txd.msgCookie = 0;
                 EnqueueTxForAdmission(txd);
+                LOG(MEMPOOL, "Enqueued txpool tx: idem: %s id: %s", txd.tx->GetIdem().ToString(),
+                    txd.tx->GetId().ToString());
             });
     }
 }
