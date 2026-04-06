@@ -12,10 +12,8 @@ GIT_REPO = "https://gitlab.com/nexa/{}.git".format(PROJECT_NAME)
 #
 # It is also possible to set GIT_BRANCH to None to run the latest `master`
 # of Rostrum. When set to None the EXPECT_HEAD hash check is disabled)
-GIT_BRANCH = "master"
-# FIXME to remove, because this is a temporary workaround to fix
-# https://gitlab.com/nexa/nexa/-/jobs/13710859391
-EXPECT_HEAD = "14d560823bccd8f9208fc90a0f94fdd9b34f8bd0"
+GIT_BRANCH = "v14.0.1"
+EXPECT_HEAD = "06b88a6d39a8b1a77a8e181dc0d583cda1e410c8"
 
 ROOT_DIR = os.path.realpath(
         os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
