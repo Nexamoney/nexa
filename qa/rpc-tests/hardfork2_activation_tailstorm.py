@@ -740,13 +740,13 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[0].getblockcount() == self.nodes[1].getblockcount())
 
 
-        ###### Test double spent subblocks.
-        logging.info("Double spend subblocks")
+        ###### Test double spent subblocks 1
+        logging.info("Double spend subblocks where ds is in a subblock of same dag height")
 
         # disconnect peers
         disconnect_all(self.nodes[0])
 
-        # create a two different transactions that spend the same output and send
+        # create two different transactions that spend the same output and send
         # to both peers.
         node1_address = self.nodes[1].getnewaddress("p2pkt", "from0")
         unspent = self.nodes[0].listunspent()
@@ -826,6 +826,9 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
 
+        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 3)
+        waitFor(waitTime, lambda: self.nodes[1].gettxpoolinfo()['size'] == 1)
+
         # connect peers. The nodes should share their subblocks but each peer
         # should be having a different best dag tip because the sequence ids differ.
         interconnect_nodes(self.nodes)
@@ -900,6 +903,123 @@ class TailstormActivationTest(BitcoinTestFramework):
                 assert(idem in summary_block['txidem'])
 
             assert(doublespend2_txidem not in summary_block['txidem'])
+
+        ###### Test double spent subblocks 2
+        logging.info("check we can not sneak a ds into the mempool when nodes are disconnected and reconnect")
+
+        # disconnect peers
+        disconnect_all(self.nodes[0])
+
+        # create two different transactions that spend the same output and send
+        # to both peers.
+        node1_address = self.nodes[1].getnewaddress("p2pkt", "from0")
+        unspent = self.nodes[0].listunspent()
+
+        doublespend_fee = Decimal('-20000')
+        doublespend_amt = unspent[0]["amount"] + unspent[1]["amount"] - Decimal("1000000.0")
+        rawtx_input_0 = {}
+        rawtx_input_0["outpoint"] = unspent[0]["outpoint"]
+        rawtx_input_0["amount"] = unspent[0]["amount"]
+        rawtx_input_1 = {}
+        rawtx_input_1["outpoint"] = unspent[1]["outpoint"]
+        rawtx_input_1["amount"] = unspent[1]["amount"]
+        inputs = [rawtx_input_0, rawtx_input_1]
+        change_address = self.nodes[0].getnewaddress("p2pkh")
+        outputs = {}
+        outputs[change_address] = Decimal("1000000.0") + doublespend_fee
+        rawtx2 = self.nodes[0].createrawtransaction(inputs, outputs)
+        doublespend2 = self.nodes[0].signrawtransaction(rawtx2)
+        doublespend2_outputs_node1 = outputs[change_address]
+        assert_equal(doublespend2["complete"], True)
+
+        # Change how we allocate the coins slightly
+        outputs[change_address] = outputs[change_address] - Decimal("500000.0")
+        # And build a doublespend
+        rawtx1 = self.nodes[0].createrawtransaction(inputs, outputs)
+        doublespend1 = self.nodes[0].signrawtransaction(rawtx1)
+        assert_equal(doublespend1["complete"], True)
+
+        # doublespends will have different idems because they change utxo state
+        # (as opposed to malleated tx, which have same idem, but different id)
+        assert doublespend1["txidem"] != doublespend2["txidem"], "transactions are not different"
+
+        # Now give doublespend1 to one side of the network
+        doublespend1_txidem = self.nodes[0].sendrawtransaction(doublespend1["hex"], True)
+        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 1)
+
+        # create a small chain of txns using the output of the first doublespend
+        txidem_ds1_chain = doublespend1_txidem
+        tx_amount_ds1_chain = outputs[change_address]
+        relayfee = 1000
+        txidem_array_node0 = []
+        for i in range(1, 3):
+          try:
+              outpoint = COutPoint().fromIdemAndIdx(txidem_ds1_chain, 0).rpcHex()
+              inputs = []
+              inputs.append({ "outpoint" : outpoint, "amount" : tx_amount_ds1_chain}) # references the prior tx created
+
+              txin_amount = tx_amount_ds1_chain
+              outputs = {}
+              tx_amount_ds1_chain = tx_amount_ds1_chain - relayfee
+              outputs[self.nodes[0].getnewaddress()] = Decimal(tx_amount_ds1_chain)
+              rawtx = self.nodes[0].createrawtransaction(inputs, outputs)
+              signed_tx = self.nodes[0].signrawtransaction(rawtx)["hex"]
+              txidem_ds1_chain = self.nodes[0].sendrawtransaction(signed_tx, False, "standard", True)
+              txidem_array_node0.append(txidem_ds1_chain)
+              logging.info("node0: created chained tx depth %d" % i)
+
+          except JSONRPCException as e: # an exception you don't catch is a testing error
+              print(str(e))
+              raise
+
+        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 3)
+
+        # mine a subblocks on both peers. One side of the double spend will be
+        # mined into a subblock on node 0, but node 1 will still have nothing.
+        subblock_hash_node0 = self.nodes[0].generate(1);
+        subblock_hash_node0 = self.nodes[0].generate(1);
+        subblock_hash_node1 = self.nodes[1].generate(1);
+        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 3)
+        waitFor(waitTime, lambda: self.nodes[1].gettxpoolinfo()['size'] == 0)
+
+        # Now give doublespend2 to other peer which will end up in the txpool
+        # of node 1 but won't be accepted in node 0's txpool.
+        doublespend2_txidem = self.nodes[1].sendrawtransaction(doublespend2["hex"], True)
+        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 3)
+        waitFor(waitTime, lambda: self.nodes[1].gettxpoolinfo()['size'] == 1)
+
+        node0_ds_hash = subblock_hash_node0[0];
+        node1_ds_hash = subblock_hash_node1[0];
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 2)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 1)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 11)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 16)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
+
+        # connect peers. The nodes should share their subblocks and txns but each peer
+        # should be having a different best dag tip because the sequence ids differ and
+        # the conflicts on node1 should have been removed.
+        interconnect_nodes(self.nodes)
+
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 3)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 12)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 18)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
+
+        # check for conflicts in the txpool.  Node 0 will still have it's txns because
+        # of a lack of conflicts however on node1 the conflicting transaction would have been removed!
+        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 3)
+        waitFor(waitTime, lambda: self.nodes[1].gettxpoolinfo()['size'] == 0) #ds got removed after reconnect because of node0's subblock conflicts
+
+        # Mine the summary block on node 1: both peers should end up on the same node0 chaintip.
+        summary_hash = self.nodes[1].generate(1);
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['chaintip'] == summary_hash[0])
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['chaintip'] == summary_hash[0])
+        self.sync_all()
+
 
         ##### The dag should now continue to grow in size beyond the height neeeded to check summary
         #     block validity. So check that after a while the dag size doesn't change as we mined more
