@@ -536,7 +536,7 @@ void CParallelValidation::HandleBlockMessage(CNode *pfrom, const string &strComm
             bool ret = ProcessAcceptBlock(pfrom, pblock, state, chainparams, &pindex, dbp);
             if (!ret)
             {
-                error("%s: ProcessAcceptBlock FAILED", __func__);
+                error("%s: ProcessAcceptBlock FAILED for %s", __func__, pblock->GetHash().ToString());
                 return;
             }
         }
@@ -611,8 +611,12 @@ bool CParallelValidation::HandleBlockMessageHelper(CNode *pfrom, const string &s
     // full block from the same node while the block is processing.
     thinrelay.BlockWasReceived(pfrom, hash);
 
-    if (tailstormForest.Contains(hash))
-        return true; // Already processed, nothing to do
+    if (tailstormForest.Contains(hash)) // Already processed, nothing to do
+    {
+        requester.MarkBlockAsReceived(hash, pfrom);
+        requester.Accepted(CInv(MSG_BLOCK, hash), pfrom);
+        return true;
+    }
 
     // NOTE: You must not have a cs_main or the cs_forest lock before you aquire the semaphore grant
     // or you can end up deadlocking
