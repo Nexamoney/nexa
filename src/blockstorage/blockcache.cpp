@@ -74,9 +74,10 @@ void CBlockCache::_TrimCache()
         auto mi = cache.begin();
         while (mi != cache.end())
         {
-            LOG(IBD, "Cache item height %d nMinheight %d\n", mi->second.nHeight, nMinHeight);
             if (mi->second.nHeight <= nMinHeight)
             {
+                LOG(IBD, "Cache item height %d nMinheight %d, uncaching %s\n", mi->second.nHeight, nMinHeight,
+                    mi->second.pblock->GetHash().ToString());
                 nBytesCache -= mi->second.pblock->GetBlockSize();
                 mi = cache.erase(mi);
             }

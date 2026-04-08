@@ -243,8 +243,12 @@ public:
     uint32_t MaxWorkChainBeingProcessed();
 
     /** Process a block message */
-    bool HandleBlockMessage(CNode *pfrom, const std::string &strCommand, ConstCBlockRef pblock);
+    void HandleBlockMessage(CNode *pfrom, const std::string &strCommand, ConstCBlockRef pblock);
 
+protected:
+    bool HandleBlockMessageHelper(CNode *pfrom, const std::string &strCommand, ConstCBlockRef pblock);
+
+public:
     /** The number of script validation threads */
     unsigned int ThreadCount() { return nThreads; }
     /** The number of script check queues */
