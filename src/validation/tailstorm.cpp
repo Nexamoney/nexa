@@ -95,11 +95,10 @@ void PruneSubblocks(ConstCBlockRef pblock)
         // of summary blocks up to the enforce depth.
         if (pindexBestHeader != nullptr)
         {
+            auto tsEnforce = Params().GetConsensus().tailstormEnforceDepth;
             const uint32_t nBlockHeight =
                 std::max((uint32_t)pindexBestHeader->height(), pblock->GetBlockHeader().height);
-            const uint32_t nHeightToPrune = nBlockHeight > DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS ?
-                                                nBlockHeight - DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS - 1 :
-                                                0;
+            const uint32_t nHeightToPrune = nBlockHeight > tsEnforce ? nBlockHeight - tsEnforce - 1 : 0;
 
             LOCK(tailstormForest.cs_forest);
             tailstormForest.ClearByHeight(nHeightToPrune);
@@ -107,21 +106,11 @@ void PruneSubblocks(ConstCBlockRef pblock)
     }
 }
 
-bool IsSummaryBlock(ConstCBlockRef pblock) { return IsSummaryBlock(*pblock); }
-bool IsSummaryBlock(const CBlock &block)
-{
-    if (GetMinerDataVersion(block.minerData) != DEFAULT_MINER_DATA_SUBBLOCK_VERSION)
-    {
-        return true;
-    }
-    return false;
-}
+bool IsSummaryBlock(ConstCBlockRef pblock) { return pblock->IsSummaryBlock(); }
+bool IsSummaryBlock(const CBlock &block) { return block.IsSummaryBlock(); }
 
-bool IsTailstormSummaryBlock(ConstCBlockRef pblock) { return IsTailstormSummaryBlock(*pblock); }
-bool IsTailstormSummaryBlock(const CBlock &block)
-{
-    return (GetMinerDataVersion(block.minerData) == DEFAULT_MINER_DATA_SUMMARYBLOCK_VERSION);
-}
+bool IsTailstormSummaryBlock(ConstCBlockRef pblock) { return pblock->IsTailstormSummaryBlock(); }
+bool IsTailstormSummaryBlock(const CBlock &block) { return block.IsTailstormSummaryBlock(); }
 
 void AcceptSubblock(ConstCBlockRef pblock)
 {
@@ -151,21 +140,6 @@ void AcceptSubblock(ConstCBlockRef pblock)
         {
             LOG(DAG, "Insert subblock failed : %s\n", pblock->GetHash().ToString());
             return;
-        }
-    }
-
-    // Announce accepted subblocks to other peers after
-    // they've been successfully connected to the dag.
-    // (We don't announce them if they end up in the orphan map).
-    if (!setToAnnounce.empty())
-    {
-        LOCK(cs_vNodes);
-        for (const uint256 &_hash : setToAnnounce)
-        {
-            for (CNode *pnode : vNodes)
-            {
-                pnode->PushSubblockHash(_hash);
-            }
         }
     }
 
@@ -262,6 +236,29 @@ std::set<uint256> GetPrevHashes(const CBlockHeader &header)
         setPrevHashes.insert(header.hashPrevBlock);
     }
     else
+    {
+        // Add the prev hashes from the miner data.  Only subblocks will
+        // return with anything. For summary blocks there is only one prev
+        // hash which is included above.
+        auto vHashes = ParseSubblockMinerData(header.minerData);
+        if (!vHashes.empty())
+        {
+            setPrevHashes.insert(vHashes.begin(), vHashes.end());
+        }
+        else
+        {
+            // Special case for the first subblock in a dag.  It will point back to the
+            // previous "Summary" block.
+            setPrevHashes.insert(header.hashPrevBlock);
+        }
+    }
+    return setPrevHashes;
+}
+
+std::set<uint256> GetSubblockHashes(const CBlockHeader &header)
+{
+    std::set<uint256> setPrevHashes;
+    if (GetMinerDataVersion(header.minerData) == DEFAULT_MINER_DATA_SUBBLOCK_VERSION)
     {
         // Add the prev hashes from the miner data.  Only subblocks will
         // return with anything. For summary blocks there is only one prev

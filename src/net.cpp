@@ -499,7 +499,7 @@ CNode *ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure
     return nullptr;
 }
 
-void CNode::CloseSocketDisconnect()
+void CNode::CloseSocketDisconnect(const std::string &reason)
 {
     // if this is an outbound node that was not added via addenode then decrement the counter.
     if (fAutoOutbound)
@@ -508,7 +508,7 @@ void CNode::CloseSocketDisconnect()
     fDisconnect = true;
     if (hSocket != INVALID_SOCKET)
     {
-        LOG(NET, "disconnecting peer %s\n", GetLogName());
+        LOG(NET, "disconnecting peer %s, %s\n", GetLogName(), reason);
         CloseSocket(hSocket);
     }
 
@@ -1324,7 +1324,7 @@ void CleanupDisconnectedNodes()
                 pnode->grantOutbound.Release();
 
                 // close socket and cleanup
-                pnode->CloseSocketDisconnect();
+                pnode->CloseSocketDisconnect("disconnected from us");
 
                 // Release this one reference.
                 pnode->Release();
@@ -2953,7 +2953,7 @@ void NetCleanup()
             }
             pnode->nSendSize.store(0);
             // Now close communications with the other node
-            pnode->CloseSocketDisconnect();
+            pnode->CloseSocketDisconnect("networking cleanup");
         }
         for (ListenSocket &hListenSocket : vhListenSocket)
         {

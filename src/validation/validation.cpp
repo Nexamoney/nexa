@@ -331,10 +331,13 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
     if (pindexPrev && (block.GetBlockTime() <= pindexPrev->GetMedianTimePast()))
     {
         if (fSummaryBlock)
-            return state.Invalid(error("%s: block's timestamp is too early", __func__), REJECT_INVALID, "time-too-old");
+            return state.Invalid(error("%s: block's timestamp is too early, time %d must be > %d", __func__,
+                                     block.GetBlockTime(), pindexPrev->GetMedianTimePast()),
+                REJECT_INVALID, "time-too-old");
         else
-            return state.Invalid(
-                error("%s: subblock's timestamp is too early", __func__), REJECT_INVALID, "time-too-old");
+            return state.Invalid(error("%s: subblock's timestamp is too early, time %d must be > %d", __func__,
+                                     block.GetBlockTime(), pindexPrev->GetMedianTimePast()),
+                REJECT_INVALID, "time-too-old");
     }
 
     return true;
@@ -490,7 +493,6 @@ void PruneBlockIndexCandidates()
 CBlockIndex *AddToBlockIndex(const CChainParams &chainparams, const CBlockHeader &block)
 {
     AssertLockHeld(cs_main);
-    const auto &conparams = chainparams.GetConsensus();
 
     // Construct a new block index object.
     // Block height, size and chainwork are automatically assigned on object instantiation.
@@ -522,20 +524,7 @@ CBlockIndex *AddToBlockIndex(const CChainParams &chainparams, const CBlockHeader
         bool fSummaryBlock = IsSummaryBlock(block);
         if (fSummaryBlock)
         {
-            arith_uint256 work;
-            if (GetMinerDataVersion(block.minerData) == 0)
-            {
-                // This is a non-tailstorm legacy block
-                work = GetBlockWork(*pindexNew);
-            }
-            else
-            {
-                work = GetWorkForDifficultyBits(block.nBits);
-                if (conparams.tailstorm_k > 0)
-                {
-                    work *= conparams.tailstorm_k;
-                }
-            }
+            arith_uint256 work = block.GetBlockWork();
             auto expectedWork = (pindexNew->pprev ? pindexNew->pprev->chainWork() : 0) + work;
             if (pindexNew->chainWork() != expectedWork)
             {
@@ -766,8 +755,9 @@ bool LoadBlockIndexDB()
                         pindex->nStatus &= ~BLOCK_LINKED;
                     }
                 }
-                else
+                else // Set up the genesis block
                 {
+                    assert(pindex->height() == 0);
                     pindex->nChainTx = pindex->txCount();
                     pindex->nStatus |= BLOCK_LINKED;
                 }
@@ -789,8 +779,9 @@ bool LoadBlockIndexDB()
                         }
                     }
                 }
-                else
+                else // Set up the genesis block
                 {
+                    assert(pindex->height() == 0);
                     pindex->nStatus |= BLOCK_LINKED;
                 }
             }
@@ -2225,6 +2216,8 @@ bool ReceivedBlockTransactions(ConstCBlockRef pblock,
 
     if (pindexNew->pprev == nullptr || pindexNew->pprev->IsLinked())
     {
+        if (pindexNew->pprev == nullptr)
+            assert(pindexNew->height() == 0); // genesis block
         // If pindexNew is the genesis block or all parents are BLOCK_VALID_TRANSACTIONS.
         std::deque<CBlockIndex *> queue;
         queue.push_back(pindexNew);
@@ -2254,10 +2247,12 @@ bool ReceivedBlockTransactions(ConstCBlockRef pblock,
                 mapBlocksUnlinked.erase(it);
             }
             pindex->nStatus |= BLOCK_LINKED;
+            LOG(PARALLEL, "Block %d:%s is linked\n", pindex->height(), pindex->phashBlock->ToString());
         }
     }
     else
     {
+        LOG(PARALLEL, "Block %d:%s is not linked\n", pindexNew->height(), pindexNew->phashBlock->ToString());
         if (pindexNew->pprev && pindexNew->pprev->IsValid(BLOCK_VALID_TREE))
         {
             mapBlocksUnlinked.insert(std::make_pair(pindexNew->pprev, pindexNew));
@@ -2302,7 +2297,7 @@ static bool AcceptBlock(ConstCBlockRef pblock,
             READLOCK(cs_mapBlockIndex);
             fAlreadyHave = pindex->nStatus & BLOCK_HAVE_DATA;
         }
-        bool fHasMoreWork = (chainActive.Tip() ? pindex->chainWork() > chainActive.Tip()->chainWork() : true);
+        bool fHasEnoughWork = (chainActive.Tip() ? pindex->chainWork() >= chainActive.Tip()->chainWork() : true);
         // Blocks that are too out-of-order needlessly limit the effectiveness of
         // pruning, because pruning will not delete block files that contain any
         // blocks which are too close in height to the tip.  Apply this test
@@ -2321,8 +2316,8 @@ static bool AcceptBlock(ConstCBlockRef pblock,
         {
             if (pindex->processed())
                 return true; // This is a previously-processed block that was pruned
-            if (!fHasMoreWork)
-                return true; // Don't process less-work chains
+            if (!fHasEnoughWork)
+                return true; // Don't process chains with a lot less work
             if (fTooFarAhead)
                 return true; // Block height is too high
         }
@@ -2365,6 +2360,7 @@ static bool AcceptBlock(ConstCBlockRef pblock,
     else
     {
         int nHeight = pindex->height();
+        LOG(PARALLEL, "Writing block %d:%s to disk\n", nHeight, pindex->phashBlock->ToString());
         // Write block to history file
         try
         {
@@ -2398,6 +2394,7 @@ static bool AcceptBlock(ConstCBlockRef pblock,
         {
             FlushStateToDisk(state, FLUSH_STATE_NONE); // we just allocated more disk space for block files
         }
+        // wait for a subblock to come: AcceptSummaryBlock(pblock);
     }
     return true;
 }
@@ -2665,6 +2662,19 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
     if (IsInitialSyncComplete() && IsTailstormSummaryBlock(pblock))
     {
         auto ret = ParseSummaryBlockMinerData(pblock->minerData);
+
+        // If you do not include any uncles, you must set the uncle nbits to 0
+        if ((ret.nUncles == 0) && (ret.nBitsUncle != 0))
+        {
+            return state.DoS(
+                100, error("ProcessNewBlock(): incorrect miner data"), REJECT_INVALID, "bad-uncle-difficulty");
+        }
+        // If you do not include any subblock, you must set the subblock nbits to 0
+        if ((ret.nSubblocks == 0) && (ret.nBitsSubblock != 0))
+        {
+            return state.DoS(
+                100, error("ProcessNewBlock(): incorrect miner data"), REJECT_INVALID, "bad-subblock-difficulty");
+        }
 
         if ((ret.vSubblockProofs.size() != chainparams.GetConsensus().tailstorm_k - 1) &&
             (ret.vSubblockProofs.size() != (ret.nUncles + ret.nSubblocks)))
@@ -3171,7 +3181,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
             }
 
             LOG(BENCH, "Number of SigChecks performed in block: %d\n", blockSigChecks);
-            uint64_t maxSigChecksAllowed = GetMaxBlockSigChecks(pindex->pprev->GetNextMaxBlockSize());
+            uint64_t maxSigChecksAllowed = GetMaxBlockSigChecks(
+                (pindex->pprev) ? pindex->pprev->GetNextMaxBlockSize() : chainparams.GetConsensus().nNextMaxBlockSize);
             if (blockSigChecks > maxSigChecksAllowed)
             {
                 return state.DoS(
@@ -3962,9 +3973,10 @@ static void CheckForkWarningConditionsOnNewFork(CBlockIndex *pindexNewForkTip)
     // or a chain that is entirely longer than ours and invalid (note that this should be detected by both)
     // We define it this way because it allows us to only store the highest fork tip (+ base) which meets
     // the 7-block condition and from this always have the most-likely-to-cause-warning fork
+
     if (pfork &&
         (!pindexBestForkTip || (pindexBestForkTip && pindexNewForkTip->height() > pindexBestForkTip->height())) &&
-        pindexNewForkTip->chainWork() - pfork->chainWork() > (GetBlockWork(*pfork) * 7) &&
+        pindexNewForkTip->chainWork() - pfork->chainWork() > (pfork->GetBlockWork() * 7) &&
         chainActive.Height() - pindexNewForkTip->height() < 72)
     {
         pindexBestForkTip = pindexNewForkTip;
@@ -4493,9 +4505,9 @@ bool ProcessNewBlock(CValidationState &state,
 
         LOG(BENCH,
             "ProcessNewBlock success, time: %d, block: %s, len: %d, numTx: %d, maxVin: %llu, maxVout: %llu, "
-            "maxTx:%llu\n",
+            "maxTx:%llu, linked?:%s\n",
             end - start, pblock->GetHash().ToString(), pblock->GetBlockSize(), pblock->vtx.size(), maxVin, maxVout,
-            maxTxSizeLocal);
+            maxTxSizeLocal, (pindex) ? (pindex->IsLinked() ? "yes" : "no") : "no index!");
         LOG(BENCH, "MaxVin tx: %s, vin: %llu, vout: %llu, len: %d\n", txIn.GetId().ToString(), txIn.vin.size(),
             txIn.vout.size(), ::GetSerializeSize(txIn, SER_NETWORK, PROTOCOL_VERSION));
         LOG(BENCH, "MaxVout tx: %s, vin: %llu, vout: %llu, len: %d\n", txOut.GetId().ToString(), txOut.vin.size(),
@@ -4504,8 +4516,22 @@ bool ProcessNewBlock(CValidationState &state,
             txLen.vout.size(), ::GetSerializeSize(txLen, SER_NETWORK, PROTOCOL_VERSION));
     }
 
-    LOCK(cs_blockvalidationtime);
-    nBlockValidationTime << (end - start);
+    {
+        LOCK(cs_blockvalidationtime);
+        nBlockValidationTime << (end - start);
+    }
+
+    // Announce accepted block to other peers
+    {
+        LOCK(cs_vNodes);
+        for (CNode *pnode : vNodes)
+        {
+            // Summary blocks are posted when connected to the active chain
+            if (!pblock->IsSummaryBlock())
+                pnode->PushSubblockHash(pblock->GetHash());
+        }
+    }
+
     return true;
 }
 

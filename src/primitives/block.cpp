@@ -207,3 +207,38 @@ uint8_t GetMinerDataVersion(const std::vector<unsigned char> &data)
     ds >> minerDataVersion;
     return minerDataVersion;
 }
+
+bool CBlockHeader::IsSummaryBlock() const
+{
+    if (GetMinerDataVersion(minerData) != DEFAULT_MINER_DATA_SUBBLOCK_VERSION)
+    {
+        return true;
+    }
+    return false;
+}
+
+bool CBlockHeader::IsTailstormSummaryBlock() const
+{
+    if (GetMinerDataVersion(minerData) == DEFAULT_MINER_DATA_SUMMARYBLOCK_VERSION)
+    {
+        return true;
+    }
+    return false;
+}
+
+arith_uint256 CBlockHeader::GetBlockWork() const
+{
+    arith_uint256 work = GetWorkForDifficultyBits(nBits);
+    if (IsTailstormSummaryBlock()) // Tailstorm block, include subblocks in work.
+    {
+        CSummaryBlockMinerData tsData = ParseSummaryBlockMinerData(minerData);
+        if (tsData.nUncles > 0)
+        {
+            arith_uint256 uncleWork = GetWorkForDifficultyBits(tsData.nBitsUncle);
+            work += uncleWork * tsData.nUncles;
+        }
+        arith_uint256 subblockWork = GetWorkForDifficultyBits(tsData.nBitsSubblock);
+        work += subblockWork * tsData.nSubblocks;
+    }
+    return work;
+}

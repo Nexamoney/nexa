@@ -568,18 +568,6 @@ void CParallelValidation::HandleBlockMessage(CNode *pfrom, const string &strComm
             PruneSubblocks(pblock);
         }
 
-        // Announce accepted subblocks to other peers
-        {
-            LOCK(cs_vNodes);
-            for (const uint256 &_hash : setToAnnounce)
-            {
-                for (CNode *pnode : vNodes)
-                {
-                    pnode->PushSubblockHash(_hash);
-                }
-            }
-        }
-
         // Check that we're on the best dag and if not then
         // initiate a re-org over to the summary block that has
         // the best dag connected to it.
@@ -604,11 +592,6 @@ bool CParallelValidation::HandleBlockMessageHelper(CNode *pfrom, const string &s
     // Indicate that the block was received and is about to be processed. Setting the processing flag
     // prevents us from re-requesting the block during the time it is being processed.
     requester.ProcessingBlock(hash, pfrom);
-
-    // Indicate that the block was fully received. At this point we have either a block or a fully reconstructed
-    // thin type block but we still need to maintain a mapBlocksInFlight entry so that we don't re-request a
-    // full block from the same node while the block is processing.
-    thinrelay.BlockWasReceived(pfrom, hash);
 
     if (tailstormForest.Contains(hash)) // Already processed, nothing to do
     {
@@ -806,18 +789,6 @@ void HandleBlockMessageThread(CNodeRef noderef, const string strCommand, ConstCB
 
             // Check for subblocks to prune
             PruneSubblocks(pblock);
-        }
-
-        // Announce accepted subblocks to other peers
-        {
-            LOCK(cs_vNodes);
-            for (const uint256 &_hash : setToAnnounce)
-            {
-                for (CNode *pnode : vNodes)
-                {
-                    pnode->PushSubblockHash(_hash);
-                }
-            }
         }
 
         // Check that we're on the best dag and if not then

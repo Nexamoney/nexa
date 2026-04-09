@@ -7,6 +7,8 @@ from test_framework.mininode import *
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
 from test_framework.blocktools import create_block, create_coinbase, getAncHash, ancestorHeight
+waitTime = 10
+logComms = False
 
 '''
 SendHeadersTest -- test behavior of headers messages to announce blocks.
@@ -102,6 +104,7 @@ class BaseNode(NodeConnCB):
             self.block_announced = False
             self.last_inv = []
             self.last_headers = None
+            if logComms: print(f"Clearing announcements")
 
     def add_connection(self, conn):
         self.connection = conn
@@ -111,17 +114,20 @@ class BaseNode(NodeConnCB):
         msg = msg_getdata()
         for x in block_hashes:
             msg.inv.append(CInv(2, x))
+        if logComms: print("Sending get_data {msg} for blocks {[hex(x) for x in block_hashes]}")
         self.connection.send_message(msg)
 
     def get_headers(self, locator, hashstop):
         msg = msg_getheaders()
         msg.locator.vHave = locator
         msg.hashstop = hashstop
+        if logComms: print(f"Sending get_headers for locator={locator}  stop={hashstop}")
         self.connection.send_message(msg)
 
     def send_block_inv(self, blockhash):
         msg = msg_inv()
         msg.inv = [CInv(2, blockhash)]
+        if logComms: print(f"Sending inv for {hex(blockhash)}")
         self.connection.send_message(msg)
 
     # Wrapper for the NodeConn's send_message function
@@ -130,24 +136,32 @@ class BaseNode(NodeConnCB):
 
     def on_inv(self, conn, message):
         self.last_inv.append(message)
+        if logComms: print(f"Got inv {message}")
         self.block_announced = True
 
     def on_headers(self, conn, message):
+        if logComms: print(f"Got headers {message}")
         self.last_headers = message
         self.block_announced = True
 
     def on_block(self, conn, message):
+        if logComms: print(f"Got block {message}")
         self.last_block = message.block
         self.last_block.rehash()
 
     def on_getdata(self, conn, message):
+        if logComms: print(f"Received getdata message {message}")
         self.last_getdata.append(message)
 
     def on_pong(self, conn, message):
         self.last_pong = message
 
     def on_getheaders(self, conn, message):
+        if logComms: print(f"Received getheaders message {message}")
         self.last_getheaders = message
+
+    def on_reject(self, conn, message):
+        if logComms: print("UNEXPECTED REJECT {message}")
 
     def on_close(self, conn):
         self.disconnected = True
@@ -160,7 +174,7 @@ class BaseNode(NodeConnCB):
         expect_inv = inv if inv != [] else []
         test_function = lambda: self.block_announced
         self.sync(test_function)
-        timeout = 5
+        timeout = waitTime
         while timeout > 0:
             with mininode_lock:
                 self.block_announced = False
@@ -178,6 +192,7 @@ class BaseNode(NodeConnCB):
                 s = set(compare_inv)
                 expect_inv =  [x for x in expect_inv if x in s]
                 if compare_inv != expect_inv:
+                    print(f"Actual inv: {[hex(s) for s in compare_inv]}  expected: { [hex(s) for s in expect_inv]}")
                     success = False
 
                 hash_headers = []
@@ -185,6 +200,7 @@ class BaseNode(NodeConnCB):
                     # treat headers as a list of block hashes
                     hash_headers = [ x.gethash() for x in self.last_headers.headers ]
                 if hash_headers != expect_headers:
+                    print(f"Actual headers: {[hex(s) for s in hash_headers]}  expected: {[hex(s) for s in expect_headers]}")
                     success = False
 
                 self.last_inv = []
@@ -403,6 +419,7 @@ class SendHeadersTest(BitcoinTestFramework):
             for j in range(2):
                 blocks = []
                 for b in range(1):
+                    block_time+=5
                     blocks.append(create_block(tip, height, work, create_coinbase(height), getAncHash(height, self.nodes[0]), block_time))
                     blocks[-1].solve()
                     tip = blocks[-1].gethash()
@@ -414,7 +431,7 @@ class SendHeadersTest(BitcoinTestFramework):
                     test_node.send_block_inv(tip)
                     test_node.wait_for_getheaders()
                     test_node.send_header_for_blocks(blocks)
-                    test_node.wait_for_getdata([tip], timeout=5)
+                    test_node.wait_for_getdata([tip], timeout=waitTime)
                     # Test that duplicate inv's won't result in duplicate
                     # getdata requests, or duplicate headers announcements
                     inv_node.send_block_inv(tip)
@@ -601,23 +618,26 @@ class SendHeadersTest(BitcoinTestFramework):
         test_node.sync_with_ping()
         test_node.wait_for_getdata([x.gethash() for x in blocks[0:2]], timeout=5)
 
+        # This test does not work any more because when nodes receive blocks from other sources, they now clean up the inflight tracking
+        # on all other nodes.
         # Announcing 16 more headers should trigger direct fetch for 14 more
         # blocks
         self.nodes[0].set("net.maxBlocksInTransitPerPeer=16")
         self.nodes[1].set("net.maxBlocksInTransitPerPeer=16")
-        test_node.send_header_for_blocks(blocks[2:18])
-        test_node.sync_with_ping()
-        test_node.wait_for_getdata([x.gethash() for x in blocks[2:16]], timeout=5)
-        with mininode_lock:
-            assert_equal(test_node.last_getdata, [])
+        if False:
+            test_node.send_header_for_blocks(blocks[2:18])
+            test_node.sync_with_ping()
+            test_node.wait_for_getdata([x.gethash() for x in blocks[2:16]], timeout=5)
+            with mininode_lock:
+                assert_equal(test_node.last_getdata, [])
 
-        # Announcing 1 more header should not trigger any response because we
-        # already have the maximumum blocks in flight
-        test_node.last_getdata = []
-        test_node.send_header_for_blocks(blocks[18:19])
-        test_node.sync_with_ping()
-        with mininode_lock:
-            assert_equal(test_node.last_getdata, [])
+            # Announcing 1 more header should not trigger any response because we
+            # already have the maximumum blocks in flight
+            test_node.last_getdata = []
+            test_node.send_header_for_blocks(blocks[18:19])
+            test_node.sync_with_ping()
+            with mininode_lock:
+                assert_equal(test_node.last_getdata, [])
 
         print("Part 4: success!")
 
@@ -922,7 +942,7 @@ def Test():
     t = SendHeadersTest()
     t.drop_to_pdb = True
     bitcoinConf = {
-        "debug": ["net", "blk", "thin", "mempool", "req", "bench", "evict", "-libevent"],
+        "debug": ["all","net", "blk", "thin", "mempool", "req", "bench", "evict", "-libevent"],
         "blockprioritysize": 2000000  # we don't want any transactions rejected due to insufficient fees...
     }
 

@@ -82,6 +82,7 @@ public:
     bool AreTooManyBlocksInFlight();
     bool IsBlockInFlight(CNode *pfrom, const std::string thinType, const uint256 &hash);
     void BlockWasReceived(CNode *pfrom, const uint256 &hash);
+    void BlockWasAborted(const uint256 &hash);
     bool AddBlockInFlight(CNode *pfrom, const uint256 &hash, const std::string thinType);
     void ClearBlockInFlight(NodeId id, const uint256 &hash);
     void ClearAllBlocksInFlight(NodeId id);

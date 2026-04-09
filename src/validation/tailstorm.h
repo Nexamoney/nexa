@@ -42,7 +42,16 @@ std::vector<uint8_t> GenerateMinerData(const uint32_t tailstorm_k,
     const std::set<CTreeNodeRef> &setBestDag,
     const uint256 &prevOfprevhash);
 
-/** Get a vector of all prev hashes that this block references (subblocks could have more than one). */
+/** Get a vector of all prev hashes that this block references (subblocks could have more than one).
+    If a subblock is passed, and its an immediate child of a summary block, the summary block is returned.
+    Otherwise its the set of parent subblocks.
+    if a summary block is passed, its the previous summary block.
+ */
 std::set<uint256> GetPrevHashes(const CBlockHeader &header);
+
+/** Get a vector of all subblock hashes that this subblock references (subblocks could have more than one).
+    Returns the empty set for summary blocks.
+ */
+std::set<uint256> GetSubblockHashes(const CBlockHeader &header);
 
 #endif

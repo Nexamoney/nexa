@@ -471,9 +471,10 @@ public:
             return nextMaxBlockSize.Value();
         return nNextMaxBlockSize;
     }
+    // Gets the work in this block including subblocks if this is a tailstorm summary block
+    arith_uint256 GetBlockWork() const;
 };
 
-arith_uint256 GetBlockWork(const CBlockIndex &block);
 
 /**
  * Return the time it would take to redo the work difference between from and
@@ -484,9 +485,6 @@ int64_t GetBlockWorkEquivalentTime(const CBlockIndex &to,
     const CBlockIndex &from,
     const CBlockIndex &tip,
     const Consensus::Params &);
-
-/** Get block's work: that is the work equivalent for the nBits of difficulty specified in this block */
-arith_uint256 GetBlockWork(const CBlockIndex &block);
 
 /** Find the last common ancestor two blocks have.
  *  Both pa and pb must be non-nullptr. */

@@ -256,7 +256,7 @@ int64_t GetBlockWorkEquivalentTime(const CBlockIndex &to,
         r = from.chainWork() - to.chainWork();
         sign = -1;
     }
-    r = r * arith_uint256(params.nPowTargetSpacing) / GetBlockWork(tip);
+    r = r * arith_uint256(params.nPowTargetSpacing) / tip.GetBlockWork();
     if (r.bits() > 63)
     {
         return sign * std::numeric_limits<int64_t>::max();
@@ -264,4 +264,4 @@ int64_t GetBlockWorkEquivalentTime(const CBlockIndex &to,
     return sign * r.GetLow64();
 }
 
-arith_uint256 GetBlockWork(const CBlockIndex &block) { return GetWorkForDifficultyBits(block.tgtBits()); }
+arith_uint256 CBlockIndex::GetBlockWork() const { return GetBlockHeader().GetBlockWork(); }
