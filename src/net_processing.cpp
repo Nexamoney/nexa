@@ -2388,9 +2388,11 @@ bool ProcessMessage(CNode *pfrom,
 
         const uint256 hash = pblock->GetHash();
         if (IsSummaryBlock(pblock))
-            LOG(BLK | NET, "received block %s peer=%d height=%d\n", hash.ToString(), pfrom->id, pblock->height);
+            LOG(BLK | NET, "received block %s peer=%s height=%d\n", hash.ToString(), pfrom->GetLogName(),
+                pblock->height);
         else
-            LOG(BLK | NET, "received subblock %s peer=%d height=%d\n", hash.ToString(), pfrom->id, pblock->height);
+            LOG(BLK | NET, "received subblock %s peer=%s height=%d\n", hash.ToString(), pfrom->GetLogName(),
+                pblock->height);
         UnlimitedLogBlock(*pblock, hash.ToString(), receiptTime);
 
         if (IsChainNearlySyncd()) // Send the received block out to expedited channels quickly

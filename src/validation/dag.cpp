@@ -543,10 +543,11 @@ void CTailstormGrove::Clear()
     // the nodes from mapAllNodes
     for (auto &mi : mapGroveNodes)
     {
+        LOG(DAG, "%s(): Removing %s from all nodes and grove %s.\n", __func__, mi.first.ToString(),
+            roothash.ToString());
         tailstormForest.mapAllNodes.erase(mi.first);
         tailstormForest.mapAllGrovesByNode.erase(mi.first);
     }
-
     mapGroveNodes.clear();
 }
 
@@ -563,7 +564,8 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
         if (item != tree->dag.end())
         {
             tailstormForest.mapNodesUnlinked.erase(newNode->hash);
-            LOG(DAG, "%s(): Not inserting new node since treenode already exists", __func__);
+            LOG(DAG, "%s(): Not inserting new node %s since treenode already exists", __func__,
+                newNode->hash.ToString());
             return item->second; // We return the existing (inserted one) so it can be used instead of the new
         }
     }
@@ -827,6 +829,7 @@ bool CTailstormGrove::GetBestTipHash(uint256 &tiphash)
 void CTailstormForest::Clear()
 {
     LOCK(cs_forest);
+    LOG(DAG, "Clearing tailstorm forest\n");
     mapAllGrovesByNode.clear();
     mapAllNodes.clear();
     mapNodesUnlinked.clear();
@@ -843,7 +846,8 @@ void CTailstormForest::ClearByHeight(const uint32_t nPruneHeight)
         if (iter->second->subblock && (iter->second->subblock->height <= nPruneHeight))
         {
             const uint256 &hash = iter->first;
-            LOG(DAG, "pruning subblock %s at height %ld\n", hash.ToString(), iter->second->subblock->height);
+            LOG(DAG, "pruning subblock %s at height %ld (erased from nodes, groves and orphans)\n", hash.ToString(),
+                iter->second->subblock->height);
 
             mapNodesUnlinked.erase(hash);
             mapAllGrovesByNode.erase(hash);
@@ -888,7 +892,11 @@ bool CTailstormForest::Insert(const ConstCBlockRef &subblock)
     LOCK(cs_forest);
     bool fOK = _Insert(subblock);
     if (fOK)
-        mapNodesUnlinked.erase(subblock->GetHash());
+    {
+        LOG(DAG, "Insert success, removing %s:%s from unlinked\n", subblock->GetHash().ToString(),
+            subblock->GetHeight());
+        RemoveSubblockOrphan(subblock);
+    }
 
     Check();
     return fOK;
@@ -947,6 +955,8 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
             {
                 LOG(DAG, "%s: invalid subblock height %ld should be %ld - could not add subblock to grove", __func__,
                     subblock->height, pindex->height() + 1);
+                if (inserted)
+                    mapAllNodes.erase(newNode->hash);
                 return false;
             }
 
@@ -956,6 +966,8 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
             if (subblock->chainWork != expectedChainWork)
             {
                 LOG(DAG, "%s: invalid chainwork - could not add subblock to grove", __func__);
+                if (inserted)
+                    mapAllNodes.erase(newNode->hash);
                 return false;
             }
             // Add new grove and/or insert subblock
@@ -1048,7 +1060,8 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
     }
     else
     {
-        LOG(DAG, "%s(): forest insertion failed for subblock %s", __func__, newNode->hash.GetHex());
+        LOG(DAG, "%s(): forest insertion failed for subblock %s, erasing from groves", __func__,
+            newNode->hash.GetHex());
         mapAllGrovesByNode.erase(newNode->hash);
     }
     return fOK;
@@ -1075,7 +1088,7 @@ void CTailstormForest::RemoveSummaryBlockOrphan(ConstCBlockRef pblock)
 void CTailstormForest::AddSubblockOrphan(CTreeNodeRef newNode)
 {
     LOCK(cs_forest);
-    LOG(DAG, "Adding subblock orphan (removing from groves and unlinked): %s", newNode->hash.ToString());
+    LOG(DAG, "Adding subblock orphan (removing from groves and adding to unlinked): %s", newNode->hash.ToString());
     newNode->setAncestors.clear();
     newNode->setDescendants.clear();
     newNode->fProcessed = false;
@@ -1095,6 +1108,8 @@ void CTailstormForest::RemoveSubblockOrphan(const ConstCBlockRef &pblock)
 std::set<uint256> CTailstormForest::ProcessOrphans()
 {
     AssertLockHeld(cs_forest);
+    if (mapNodesUnlinked.size() == 0)
+        return std::set<uint256>(); // nothing to do
     processingOrphans = true;
     std::set<uint256> setAllLinked;
     while (true)
@@ -1121,8 +1136,12 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
         std::set<uint256> setLinked;
 
         bool changes = true;
+        int loopNum = 0;
         while (changes)
         {
+            loopNum++;
+            LOG(DAG, "%s(): Loop %d.  Removing %d orphans from mapNodesUnlinked", __func__, loopNum,
+                mapNodesUnlinked.size());
             changes = false;
             // Move all current orphans to a new map
             std::map<uint256, CTreeNodeRef> orphans;
@@ -1133,6 +1152,7 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
             // Now stick them into the dag or back into the orphans list
             for (auto iter = orphans.begin(); iter != orphans.end(); ++iter)
             {
+                LOG(DAG, "%s(): consider orphan %s", __func__, iter->first.ToString());
                 const auto &subblock = iter->second->subblock;
                 assert(subblock);
                 const uint256 &prevhash = subblock->hashPrevBlock;
@@ -1158,19 +1178,20 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
                     auto hash = iter->second->hash;
                     LOG(DAG, "%s(): process orphans - found subblock orphan %s connecting to prev summary block %s",
                         __func__, hash.ToString(), prevhash.ToString());
-                    placed = true;
-                    if (_Insert(iter->second)) // This will insert the tx into the orphan map on orphan-caused-failure
+                    if (_Insert(iter->second))
                     {
                         LOG(DAG, "%s(): Success: Insert of subblock orphan %s connecting to prev summary block %s",
                             __func__, __func__, hash.ToString(), prevhash.ToString());
                         setLinked.insert(hash);
                         changes = true;
+                        placed = true;
                     }
                 }
                 if (!placed)
                 {
                     LOG(DAG, "%s(): Cannot insert orphan subblock %s returning to unlinked map (size %ld)", __func__,
                         iter->second->hash.ToString(), mapNodesUnlinked.size());
+                    // If its already inserted, this is a no-op
                     mapNodesUnlinked.emplace(iter->first, iter->second);
                 }
             }
@@ -1853,10 +1874,13 @@ std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTreeNodeRef treenod
 bool CTailstormForest::Remove(uint256 &hash)
 {
     LOCK(cs_forest);
-    // If the node is unlinked, it will not be anywhere else so just remove it from the unlinked list and we are done
+    // If the node is unlinked, it will not be anywhere else so just remove it from the unlinked map
+    // and the all-known map and we are done
     if (mapNodesUnlinked.count(hash))
     {
+        LOG(DAG, "CTailstormForest::Remove %s from unlinked\n", hash.ToString());
         mapNodesUnlinked.erase(hash);
+        mapAllNodes.erase(hash);
         return true;
     }
 
@@ -1864,6 +1888,7 @@ bool CTailstormForest::Remove(uint256 &hash)
     CTailstormGroveRef grove = nullptr;
     if (GetGrove(hash, grove)) // If the subblock is in a grove, clean it out of there
     {
+        LOG(DAG, "%s(): Removing %s from grove %s.\n", __func__, hash.ToString(), grove->roothash.ToString());
         mapAllNodes.erase(hash);
         mapAllGrovesByNode.erase(hash);
         grove->mapGroveNodes.erase(hash);
