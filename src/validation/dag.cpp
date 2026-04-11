@@ -1108,8 +1108,11 @@ void CTailstormForest::RemoveSubblockOrphan(const ConstCBlockRef &pblock)
 std::set<uint256> CTailstormForest::ProcessOrphans()
 {
     AssertLockHeld(cs_forest);
-    if (mapNodesUnlinked.size() == 0)
-        return std::set<uint256>(); // nothing to do
+    if (mapNodesUnlinked.empty() && mapSummaryBlocksUnlinked.empty())
+    {
+        return {}; // nothing to do
+    }
+
     processingOrphans = true;
     std::set<uint256> setAllLinked;
     while (true)
