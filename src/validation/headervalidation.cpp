@@ -85,12 +85,13 @@ bool CheckTailstormSummaryBlockProofOfWork(const Consensus::Params &consensusPar
     }
     // If the bits for uncles and subblocks are the same then they will all (including uncles) validate as subblocks
     // and so the count of the subblocks whould equal the sum of both the expected uncle count and the subblock count.
-    if ((ret.nBitsUncle == ret.nBitsSubblock) && (ret.nUncles + ret.nSubblocks == nSubblocksFound))
+    if ((ret.nBitsUncle == ret.nBitsSubblock) && ((ret.nUncles + ret.nSubblocks) != (nUnclesFound + nSubblocksFound)))
     {
         return state.DoS(50,
             error("CheckTailstormSummaryBlockHeader(): proof of work failed - uncle and subblock count did not match"),
             REJECT_INVALID, "bad-blk-invalid-uncle-and-subblock-count");
     }
+
 
     return true;
 }
