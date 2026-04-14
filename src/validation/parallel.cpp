@@ -587,7 +587,6 @@ void CParallelValidation::HandleBlockMessage(CNode *pfrom, const string &strComm
         // NOTE: you can not put this call to CheckForReorg() in the above
         // code block where the cs_forest lock is taken. This will cause
         // a lockorder issue with cs_main.
-        if (!setToAnnounce.empty())
         {
             tailstormForest.CheckForReorg();
             tailstormForest.Check();
@@ -828,7 +827,6 @@ void HandleBlockMessageThread(CNodeRef noderef, const string strCommand, ConstCB
         // NOTE: you can not put this call to CheckForReorg() in the above
         // code block where the cs_forest lock is taken. This will cause
         // a lockorder issue with cs_main.
-        if (!setToAnnounce.empty())
         {
             tailstormForest.CheckForReorg();
             tailstormForest.Check();
