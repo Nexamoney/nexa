@@ -128,7 +128,6 @@ void AcceptSubblock(ConstCBlockRef pblock)
     if (!pblock)
         return;
 
-    bool fCheckForReorg = false;
     std::set<uint256> setToAnnounce;
     {
         LOCK(tailstormForest.cs_forest);
@@ -136,7 +135,6 @@ void AcceptSubblock(ConstCBlockRef pblock)
         // Insert new subblock into dag
         if (tailstormForest._Insert(pblock))
         {
-            fCheckForReorg = true;
             // If insertion was successful, this block is not an orphan (not unlinked).
             tailstormForest.RemoveSubblockOrphan(pblock);
             // Process Orphans
@@ -178,7 +176,6 @@ void AcceptSubblock(ConstCBlockRef pblock)
     // NOTE: you can not put this call to CheckForReorg() in the above
     // code block where the cs_forest lock is taken. This will cause
     // a lockorder issue with cs_main.
-    if (fCheckForReorg)
     {
         tailstormForest.CheckForReorg();
         tailstormForest.Check();

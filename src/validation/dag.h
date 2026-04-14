@@ -313,7 +313,7 @@ public:
         std::vector<std::map<uint256, CTreeNodeRef> > *vDoubleSpendTxns = nullptr,
         std::map<COutPoint, CTransactionRef> *mapInputs = nullptr);
 
-    //! Return the entire set of treen nodes and uncle nodes
+    //! Return the entire set of tree nodes and uncle nodes
     bool GetFullDagFor(const uint256 &hash, std::set<CTreeNodeRef> &dag);
 
     //! Return a set of nodes from a tree that matches what is in a block
@@ -343,8 +343,8 @@ public:
     //! Detemine if we need to re-org the chainActive tip to one that has a better dag.
     void CheckForReorg();
 
-    //! Generate coincache and mapDagTxn data for a grove and all its valid trees.
-    void GenerateDagData(CTailstormGroveRef grove);
+    //! Regenerate coincache and mapDagTxn data for a tree.
+    void ReGenerateDagData(CTailstormGroveRef grove);
 
     //! Set the main coins cache that we build our tailstorm tree views on top of.
     void SetBackend(CCoinsViewCache *coinsCache)

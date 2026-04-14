@@ -3618,21 +3618,6 @@ void UpdateTip(CBlockIndex *pindexNew)
 
     forceTemplateRecalc.store(true);
 
-    // If the dag has already received some of the subblocks before the chain tip
-    // was connected then we need to update the dag for it and any associated trees
-    // so that pcoinsDag is updated correctly before releasing the tx pause on the corral.
-    static bool fRunOnce2 = true;
-    if (fTailstormEnabled && fRunOnce2 && IsInitialSyncComplete())
-    {
-        // Get the grove for the chain active tip if it already exists and process the dag.
-        CTailstormGroveRef grove = nullptr;
-        if (tailstormForest.GetGrove(*(pindexNew->phashBlock), grove))
-        {
-            tailstormForest.GenerateDagData(grove);
-        }
-        fRunOnce2 = false;
-    }
-
     cvBlockChange.notify_all();
 
     LOGA("%s: new best=%s  height=%d bits=%d log2_work=%.8g  tx=%lu date=%s progress=%f  cache=%.1fMiB(%utxo)\n",

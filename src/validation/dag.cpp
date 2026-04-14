@@ -271,26 +271,19 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
 
     DbgAssert(newNode->subblock != nullptr, );
     if (!newNode->subblock)
-        return CTreeNodeRef();
+        return {};
 
     // Add to the tree
     auto element = dag.find(newNode->hash);
     if (element == dag.end()) // We need to add it if it does not already exist
     {
-        // Check if we're trying to insert into the tree of the current active summary block tip.
-        // If not then we just return true but without setting the fProcessed flag. This way we keep
-        // this new tree node linked into a dag but we can process the subblock later if/when
-        // we reorg to its summary block root. (This process is analagous to when
-        // we accept summary block headers and blocks but don't connect them yet because
-        // they're not on the best chain yet).
+        // Check if we're working on the current chaintip. If not then add to the unlinked map
+        // and return false.
         if (pindexSummaryRoot && (chainActive.Tip() != pindexSummaryRoot))
         {
-            // Alhough we haven't processed this block yet we later need to know
-            // the sequence id.
-            newNode->nSequenceId = dag.size() + 1;
-            DbgAssert(newNode->nSequenceId > 0, );
-            dag.emplace(newNode->hash, newNode);
-            return newNode;
+            newNode->fProcessed = false;
+            tailstormForest.AddSubblockOrphan(newNode);
+            return {};
         }
 
         bool fMissingOrSpent = false;
@@ -311,9 +304,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
 
             // Try connecting the block and updating the coins cache.  If successful then we can remove
-            // the transactions from the mempool.
-            // TODO: connect canonical needs to still prepare the upper view with valid coins
-            // even if we find a conflict because we later need to flush the view.
+            // any conflicts from the txpool.
             if (!ConnectBlockCanonicalOrdering(newNode->subblock, state, pindexSummaryRoot, upperview, chainparams,
                     fJustCheck, fParallel, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages,
                     accumulatedAuthorities, &mapDagTxns))
@@ -367,19 +358,19 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
                     if (ptx->IsCoinBase())
                         continue;
 
-                    std::map<uint256, CTreeNodeRef> mapTxns;
+                    std::map<uint256, CTreeNodeRef> mapDoubleSpendTxns;
                     for (size_t j = 0; j < ptx->vin.size(); j++)
                     {
                         if (mapOutpoints.count(ptx->vin[j].prevout))
                         {
                             setConflictingSubblocks.insert(it->second);
-                            mapTxns.emplace(ptx->GetId(), it->second);
-                            mapTxns.emplace(mapOutpoints[ptx->vin[j].prevout]->GetId(), newNode);
+                            mapDoubleSpendTxns.emplace(ptx->GetId(), it->second);
+                            mapDoubleSpendTxns.emplace(mapOutpoints[ptx->vin[j].prevout]->GetId(), newNode);
                         }
                     }
-                    if (!mapTxns.empty())
+                    if (!mapDoubleSpendTxns.empty())
                     {
-                        vDoubleSpendTxns.push_back(mapTxns);
+                        vDoubleSpendTxns.push_back(mapDoubleSpendTxns);
                     }
                 }
             }
@@ -403,7 +394,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
                 {
                     LOG(DAG, "%s: Rejected - subbblock %s has a double spend in its ancestor tree: %s", __func__,
                         newNode->hash.ToString(), state.GetLogString());
-                    return CTreeNodeRef();
+                    return {};
                 }
                 else
                 {
@@ -426,7 +417,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             LOG(DAG, "%s: subbblock %s failed to validate: %s", __func__, newNode->hash.ToString(),
                 state.GetLogString());
 
-            return CTreeNodeRef();
+            return {};
         }
         else
         {
@@ -438,42 +429,54 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             newNode->nSequenceId = dag.size() + 1;
             DbgAssert(newNode->nSequenceId > 0, );
             dag.emplace(newNode->hash, newNode);
-            // Update the map of all current dag transactions. This must be done before
-            // we continue processing, especially is we have a double spend block and
-            // we need to re-generate the dag data.
-            for (CTransactionRef ptx : newNode->subblock->vtx)
+
+            // Only process txns and flush coins for subblocks that fit into the best dag. Overflow subblocks
+            // are excluded.
+            if (newNode->nSequenceId <= Params().GetConsensus().tailstorm_k - 1)
             {
-                if (ptx->IsCoinBase())
-                    continue;
-
-                mapDagTxns.emplace(ptx->GetId(), ptx);
-
-                for (auto &input : ptx->vin)
+                // Update the map of all current dag transactions. This must be done before
+                // we continue processing, especially is we have a double spend block and
+                // we need to re-generate the dag data.
+                for (CTransactionRef ptx : newNode->subblock->vtx)
                 {
-                    mapInputs.emplace(input.prevout, ptx);
+                    if (ptx->IsCoinBase())
+                        continue;
+
+                    mapDagTxns.emplace(ptx->GetId(), ptx);
+
+                    for (auto &input : ptx->vin)
+                    {
+                        mapInputs.emplace(input.prevout, ptx);
+                    }
+                }
+
+                // After the subblock is validated without error we can flush coin state
+                bool result = upperview.Flush();
+                assert(result);
+
+                std::list<CTransactionRef> txConflicted;
+                // TODO: leave this commented code block as it will be useful in the future.
+                // mempool.removeForBlock(pblock->vtx, pblock->height, txConflicted, true);
+                // Process orphan pool for transactions in block but do deferr it to be done
+                // in another thread.
+                // LOCK(orphanpool.cs_blockprocessing);
+                // orphanpool.vPostBlockProcessing.push_back(pblock);
+
+                // Remove conflicting txns from the txpool
+                {
+                    WRITELOCK(mempool.cs_txmempool);
+                    for (const auto &tx : newNode->subblock->vtx)
+                    {
+                        mempool._removeConflicts(*tx, txConflicted);
+                    }
                 }
             }
 
-            // After the subblock is validated without error we can flush coin state
-            bool result = upperview.Flush();
-            assert(result);
-
-            std::list<CTransactionRef> txConflicted;
-            // TODO: leave this commented code block as it will be useful in the future.
-            // mempool.removeForBlock(pblock->vtx, pblock->height, txConflicted, true);
-            // Process orphan pool for transactions in block but do deferr it to be done
-            // in another thread.
-            // LOCK(orphanpool.cs_blockprocessing);
-            // orphanpool.vPostBlockProcessing.push_back(pblock);
-
-            // Remove conflicting txns from the txpool
-            {
-                WRITELOCK(mempool.cs_txmempool);
-                for (const auto &tx : newNode->subblock->vtx)
-                {
-                    mempool._removeConflicts(*tx, txConflicted);
-                }
-            }
+            // Although in the case of a double spend subblock, the dag data will have to
+            // be regnerated to determine the state of pcoinsDag which depends on which
+            // double spends are to be included/excluded, set the processed flag indicating
+            // the subblock is valid and added to the dag
+            newNode->fProcessed = true;
 
             CTailstormGroveRef grove = nullptr;
             if (tailstormForest.GetGrove(*(pindexSummaryRoot->phashBlock), grove))
@@ -482,14 +485,10 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
                 // the low score double spends.
                 if (!setConflictingSubblocks.empty())
                 {
-                    // This can delete this block from the grove.  If so, fProcessed will be false
-                    tailstormForest.GenerateDagData(grove);
+                    tailstormForest.ReGenerateDagData(grove);
                 }
                 else
                 {
-                    // Set the processed flag
-                    newNode->fProcessed = true;
-
                     // Set pcoinsDag to the best dag in the Forest.
                     tailstormForest.SetDagCoinsTip();
                 }
@@ -498,10 +497,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             cvCommitQ.notify_all();
         }
 
-        // We found a conflict, regenerated the DAG data and this block was rejected, so return false
-        if (!newNode->fProcessed)
-            return CTreeNodeRef();
-        DbgAssert(newNode->nSequenceId > 0, );
+        DbgAssert(newNode->nSequenceId > 0 && newNode->fProcessed, );
         return newNode;
     }
 
@@ -556,7 +552,7 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
     AssertLockHeld(tailstormForest.cs_forest);
 
     if (!newNode->subblock)
-        return CTreeNodeRef();
+        return {};
 
     // Check the tree and make sure we don't already have this item.
     {
@@ -590,7 +586,7 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
                 {
                     mapGroveNodes.erase(newNode->hash);
                     tailstormForest.AddSubblockOrphan(newNode);
-                    return CTreeNodeRef();
+                    return {};
                 }
                 LOG(DAG, "%s(): Initialize Tree: completed init tree for %s", __func__, newNode->hash.ToString());
             }
@@ -602,7 +598,7 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
                     mapGroveNodes.erase(newNode->hash);
                     tailstormForest.AddSubblockOrphan(newNode);
                     LOG(DAG, "%s(): Initialize Tree: adding orphan to unused nodes", __func__);
-                    return CTreeNodeRef();
+                    return {};
                 }
                 newNode = tmp;
                 LOG(DAG, "%s(): Initialize Tree: completed insert into tree for %s", __func__,
@@ -722,7 +718,7 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
             tailstormForest.AddSubblockOrphan(newNode);
             LOG(DAG, "%s(): adding orphan to unlinked map for %d", __func__, newNode->hash.ToString());
         }
-        return CTreeNodeRef();
+        return {};
     }
 
     return newNode;
@@ -908,6 +904,7 @@ bool CTailstormForest::_Insert(const ConstCBlockRef &subblock)
 
     if (!subblock)
         return false;
+
     // Create new node
     CTreeNodeRef newNode = MakeTreeNodeRef(subblock);
     return _Insert(newNode);
@@ -1598,6 +1595,13 @@ void CTailstormForest::CheckForReorg()
             nChainTipWork += GetWorkForDifficultyBits(node->subblock->nBits);
         }
 
+        // Create a map of unlinked nodes stored by their "potential" grove node summary root hash.
+        std::map<uint256, std::set<CTreeNodeRef> > mapUnlinkedGroves;
+        for (auto &mi : mapNodesUnlinked)
+        {
+            mapUnlinkedGroves[mi.second->subblock->hashPrevBlock].insert(mi.second);
+        }
+
         // Cycle through all the trees of each grove and find the chainWork
         for (auto &grove : setAllGroves)
         {
@@ -1608,11 +1612,44 @@ void CTailstormForest::CheckForReorg()
             {
                 nTreeChainWork += GetWorkForDifficultyBits(node->subblock->nBits);
             }
+            for (auto &mi : mapUnlinkedGroves)
+            {
+                if (mi.first == grove->roothash)
+                {
+                    for (auto &si : mi.second)
+                        nTreeChainWork += GetWorkForDifficultyBits(si->subblock->nBits);
+                }
+            }
+
             if (nTreeChainWork > nMaxChainWork && nTreeChainWork > nChainTipWork)
             {
                 nMaxChainWork = nTreeChainWork;
                 pindexMostWork = grove->tree->pindexSummaryRoot;
                 grovetip = grove;
+
+                LOG(DAG, "%s : pindexMostWork %s > chaintip %s\n", __func__, pindexMostWork->phashBlock->ToString(),
+                    chainTip->phashBlock->ToString());
+            }
+        }
+
+        // Cycle through any groupings of unlinked nodes, grouped by their hashPrevBlock. This
+        // handles the case where ALL subblocks in a grove are unlinked so the grove has not
+        // yet been created.
+        for (auto &mi : mapUnlinkedGroves)
+        {
+            CBlockIndex *pindexSummaryRoot = LookupBlockIndex(mi.first);
+            if (!pindexSummaryRoot || !(pindexSummaryRoot->nStatus & BLOCK_HAVE_DATA))
+                continue;
+
+            arith_uint256 nTreeChainWork = pindexSummaryRoot->chainWork();
+            for (auto node : mi.second)
+            {
+                nTreeChainWork += GetWorkForDifficultyBits(node->subblock->nBits);
+            }
+            if (nTreeChainWork > nMaxChainWork && nTreeChainWork > nChainTipWork)
+            {
+                nMaxChainWork = nTreeChainWork;
+                pindexMostWork = pindexSummaryRoot;
 
                 LOG(DAG, "%s : pindexMostWork %s > chaintip %s\n", __func__, pindexMostWork->phashBlock->ToString(),
                     chainTip->phashBlock->ToString());
@@ -1661,16 +1698,15 @@ void CTailstormForest::CheckForReorg()
             else
                 LOG(DAG, "%s():  completed a reorg to %s", __func__, pindexMostWork->phashBlock->ToString());
 
-            // Rebuild the each tree's coinscache and data structures on the grove we've now set as our best chain tip.
-            // We only need to build data for unprocessed subblocks.
-            GenerateDagData(grovetip);
+            // Since all subblocks already in the dag have been processed we just need to process
+            // any unlinked subblocks.
+            ProcessOrphans();
         }
     }
-
     return;
 }
 
-void CTailstormForest::GenerateDagData(CTailstormGroveRef grove)
+void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
 {
     AssertLockHeld(cs_forest);
     DbgAssert(
@@ -1707,9 +1743,15 @@ void CTailstormForest::GenerateDagData(CTailstormGroveRef grove)
         for (auto it = vSortedDag.begin(); it != vSortedDag.end(); it++)
         {
             nSequenceId++;
+            if (nSequenceId == chainparams.GetConsensus().tailstorm_k)
+            {
+                LOG(DAG, "%s(): Breaking from regenerate because we have processed enough subblocks: %s", __func__);
+                break;
+            }
+
+            // If it's in the dag it must have been processed already.
             const CTreeNodeRef &treenode = it->second;
-            // if (treenode->fProcessed) TODO: for now rebuild everything.
-            //     continue;
+            DbgAssert(treenode->fProcessed, );
 
             bool fJustCheck = false;
             bool fParallel = false;
@@ -1751,8 +1793,9 @@ void CTailstormForest::GenerateDagData(CTailstormGroveRef grove)
                 treenode->fProcessed = false;
                 treenode->nSequenceId = 0;
                 AddSubblockOrphan(treenode);
-                LOG(DAG, "%s():  Unable to process subblock while generating data: %s", __func__,
-                    treenode->hash.ToString());
+                LOG(DAG, "%s(): This should never happen! - Unable to process subblock while regenerating data: %s",
+                    __func__, treenode->hash.ToString());
+                DbgAssert(false, );
             }
         }
     }
@@ -2085,6 +2128,9 @@ void CTailstormForest::Check()
 
             // Check hash
             assert(mi.first == mi.second->hash);
+
+            // Check that fProcessed is true
+            assert(mi.second->fProcessed);
         }
         assert(nTreeTxnCount >= tree->mapDagTxns.size());
 
