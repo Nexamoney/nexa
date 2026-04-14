@@ -788,7 +788,7 @@ def start_nodes(num_nodes, dirname, extra_args=None, rpchost=None, binary=None,t
             bin = binary[i]
         datadir = os.path.join(dirname, "node"+str(i))
         # RPC tests still depend on free transactions
-        args = [ bin, "-datadir="+datadir, "-rest", "-mocktime="+str(get_mocktime()) ] # // BU removed, "-keypool=1","-blockprioritysize=50000" ]
+        args = [ bin, "-datadir="+datadir, "-rest", "-mocktime="+str(get_mocktime())]
         if extra_args[i] is not None: args.extend(extra_args[i])
 
         process = subprocess.Popen(args)

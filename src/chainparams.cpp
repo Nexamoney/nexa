@@ -373,7 +373,7 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].windowsize = 144;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].threshold = 108; // 75% of 144
 
-        consensus.nextForkActivationTime = NEXT_FORK_ACTIVATION_TIME;
+        consensus.nextForkActivationTime = 1789948805; // 12noon, Sept 21, 2026 GMT
 
         pchMessageStart[0] = 0xea;
         pchMessageStart[1] = 0xe5;
