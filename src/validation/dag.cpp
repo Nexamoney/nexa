@@ -277,13 +277,30 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
     auto element = dag.find(newNode->hash);
     if (element == dag.end()) // We need to add it if it does not already exist
     {
-        // Check if we're working on the current chaintip. If not then add to the unlinked map
-        // and return false.
-        if (pindexSummaryRoot && (chainActive.Tip() != pindexSummaryRoot))
+        // Check if we're working on the current chaintip. If not then add to the
+        // dag directly and indicate this subblock was not processed.
+        auto chainTip = chainActive.Tip();
+        if (pindexSummaryRoot && (chainTip != pindexSummaryRoot))
         {
+            // Update the sequence id
+            newNode->nSequenceId = dag.size() + 1;
+            DbgAssert(newNode->nSequenceId > 0, );
+
             newNode->fProcessed = false;
-            tailstormForest.AddSubblockOrphan(newNode);
-            return {};
+            if (chainTip->pprev == pindexSummaryRoot)
+            {
+                // If the pprev of the chaintip is for the epoch we're currently
+                // trying to insert into then this newNode is going to be an orphaned subblock
+                // block and so we can and need to insert it direclty into the dag so it
+                // can be picked up and used as an Uncle block in the next epoch.
+                dag.emplace(newNode->hash, newNode);
+                return newNode;
+            }
+            else
+            {
+                tailstormForest.AddSubblockOrphan(newNode);
+                return {};
+            }
         }
 
         bool fMissingOrSpent = false;
@@ -2123,14 +2140,15 @@ void CTailstormForest::Check()
         {
             setAllTreeNodes.insert(mi.second);
 
-            // Check tree mapDagTxns is correctly reflecting the tree
-            nTreeTxnCount += mi.second->subblock->vtx.size() - 1;
-
             // Check hash
             assert(mi.first == mi.second->hash);
 
-            // Check that fProcessed is true
-            assert(mi.second->fProcessed);
+            // Don't include txn count if not processed.
+            if (!mi.second->fProcessed)
+                continue;
+
+            // Check tree mapDagTxns is correctly reflecting the tree
+            nTreeTxnCount += mi.second->subblock->vtx.size() - 1;
         }
         assert(nTreeTxnCount >= tree->mapDagTxns.size());
 
