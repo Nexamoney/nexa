@@ -908,7 +908,7 @@ void DagWidget::AddItem(uint256 hash,
                     continue;
                 }
 
-                if (!mapInfo[hash]->item)
+                if (!mapInfo[hash]->litem)
                 {
                     // create line with a zvalue less than the prev block. This way the line portions that
                     // are withing the block rectangle won't be seen.
@@ -1016,7 +1016,7 @@ void DagWidget::AddItem(uint256 hash,
                     continue;
                 }
 
-                if (!mapInfo[hash]->item)
+                if (!mapInfo[hash]->litem)
                 {
                     // create line with a zvalue less than the prev block. This way the line portions that
                     // are withing the block rectangle won't be seen.
@@ -1127,7 +1127,7 @@ void DagWidget::AddItem(uint256 hash,
                 if (!mapInfo.count(link.prevBlock))
                     continue;
 
-                if (!mapInfo[hash]->item)
+                if (!mapInfo[hash]->litem)
                 {
                     // create line with a zvalue less than the prev block. This way the line portions that
                     // are withing the block rectangle won't be seen.
