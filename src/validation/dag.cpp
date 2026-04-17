@@ -856,12 +856,29 @@ void CTailstormForest::ClearByHeight(const uint32_t nPruneHeight)
     auto iter = mapAllNodes.begin();
     while (iter != mapAllNodes.end())
     {
-        if (iter->second->subblock && (iter->second->subblock->height <= nPruneHeight))
+        ConstCBlockRef subblock = iter->second->subblock;
+        if (subblock && (subblock->height <= nPruneHeight))
         {
             const uint256 &hash = iter->first;
             LOG(DAG, "pruning subblock %s at height %ld (erased from nodes, groves and orphans)\n", hash.ToString(),
-                iter->second->subblock->height);
+                subblock->height);
 
+            // Unwind all the grove and tree subblock and txn references
+            CTailstormGroveRef grove = nullptr;
+            if (GetGrove(subblock->hashPrevBlock, grove))
+            {
+                // Clear out the tree
+                grove->tree->dag.clear();
+                grove->tree->mapUncles.clear();
+                grove->tree->vDoubleSpendTxns.clear();
+                grove->tree->mapDagTxns.clear();
+                grove->tree->mapInputs.clear();
+
+                // Clear out the grove
+                grove->mapGroveNodes.clear();
+            }
+
+            // Remoe all the forest references
             mapNodesUnlinked.erase(hash);
             mapAllGrovesByNode.erase(hash);
             iter = mapAllNodes.erase(iter);
