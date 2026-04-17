@@ -971,15 +971,20 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
         auto pindex = LookupBlockIndex(subblock->hashPrevBlock);
 
         bool fHavePrevGrove = false;
-        if (pindex)
+        bool fIsLinked = false;
+        if (pindex && pindex->pprev)
         {
             CTailstormGroveRef dummyGrove = nullptr;
             fHavePrevGrove = GetGrove(*(pindex->pprev->phashBlock), dummyGrove);
+            {
+                READLOCK(cs_mapBlockIndex);
+                fIsLinked = pindex->IsLinked();
+            }
         }
         if (pindex && (pindex->height() == chainActive.Height()))
             fHavePrevGrove = true;
 
-        if (pindex && pindex->IsLinked() && fHavePrevGrove)
+        if (pindex && fIsLinked && fHavePrevGrove)
         {
             // Make sure the height of this subblock is 1 more than the previous summary block
             if (subblock->height != pindex->height() + 1)
@@ -1190,8 +1195,12 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
                 const auto &subblock = iter->second->subblock;
                 assert(subblock);
                 const uint256 &prevhash = subblock->hashPrevBlock;
-                auto pindex = LookupBlockIndex(prevhash);
-
+                auto pindexPrev = LookupBlockIndex(prevhash);
+                bool fIsLinked = false;
+                {
+                    READLOCK(cs_mapBlockIndex);
+                    fIsLinked = (pindexPrev && pindexPrev->IsLinked());
+                }
                 auto setHashes = GetPrevHashes(subblock->GetBlockHeader());
                 bool fHaveAllPrevSubblocks = true;
                 for (auto &hash : setHashes)
@@ -1206,8 +1215,7 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
                 }
 
                 bool placed = false;
-                if (((pindex && pindex->IsLinked()) && fHaveAllPrevSubblocks) &&
-                    !mapSummaryBlocksUnlinked.count(prevhash))
+                if (((pindexPrev && fIsLinked) && fHaveAllPrevSubblocks) && !mapSummaryBlocksUnlinked.count(prevhash))
                 {
                     auto hash = iter->second->hash;
                     LOG(DAG, "%s(): process orphans - found subblock orphan %s connecting to prev summary block %s",
@@ -1598,6 +1606,9 @@ void CTailstormForest::CheckForReorg()
 {
     AssertLockNotHeld(cs_forest);
 
+    if (!fTailstormEnabled)
+        return;
+
     // Only allow one thread to run re-org at a time.
     TRY_LOCK(cs_reorg, lock);
     if (!lock)
@@ -1639,7 +1650,14 @@ void CTailstormForest::CheckForReorg()
         // Cycle through all the trees of each grove and find the chainWork
         for (auto &grove : setAllGroves)
         {
-            arith_uint256 nTreeChainWork = grove->tree->pindexSummaryRoot->chainWork();
+            auto pindexSummaryRoot = grove->tree->pindexSummaryRoot;
+            {
+                READLOCK(cs_mapBlockIndex);
+                if (!pindexSummaryRoot || !pindexSummaryRoot->IsLinked())
+                    continue;
+            }
+
+            arith_uint256 nTreeChainWork = pindexSummaryRoot->chainWork();
             std::set<CTreeNodeRef> dag;
             GetFullDagFor(grove->roothash, dag);
             for (auto node : dag)
@@ -1658,7 +1676,7 @@ void CTailstormForest::CheckForReorg()
             if (nTreeChainWork > nMaxChainWork && nTreeChainWork > nChainTipWork)
             {
                 nMaxChainWork = nTreeChainWork;
-                pindexMostWork = grove->tree->pindexSummaryRoot;
+                pindexMostWork = pindexSummaryRoot;
                 grovetip = grove;
 
                 LOG(DAG, "%s : pindexMostWork %s > chaintip %s\n", __func__, pindexMostWork->phashBlock->ToString(),
@@ -1672,8 +1690,13 @@ void CTailstormForest::CheckForReorg()
         for (auto &mi : mapUnlinkedGroves)
         {
             CBlockIndex *pindexSummaryRoot = LookupBlockIndex(mi.first);
-            if (!pindexSummaryRoot || !(pindexSummaryRoot->nStatus & BLOCK_HAVE_DATA))
-                continue;
+            {
+                // Make sure we have the block data as well as all previous blocks
+                // in this blocks chain.
+                READLOCK(cs_mapBlockIndex);
+                if (!pindexSummaryRoot || !pindexSummaryRoot->IsLinked())
+                    continue;
+            }
 
             arith_uint256 nTreeChainWork = pindexSummaryRoot->chainWork();
             for (auto node : mi.second)
@@ -1696,12 +1719,16 @@ void CTailstormForest::CheckForReorg()
         LOG(DAG, "%s():  could not find pindexMostWork for reorg", __func__);
     }
 
-    if (pindexMostWork && !(pindexMostWork->nStatus & BLOCK_HAVE_DATA))
     {
-        LOG(DAG, "%s():  WARNING: block data is not present for Reorg: %s", __func__,
-            pindexMostWork->phashBlock->ToString());
-        return;
+        READLOCK(cs_mapBlockIndex);
+        if (pindexMostWork && !(pindexMostWork->IsLinked()))
+        {
+            LOG(DAG, "%s():  WARNING: block data is not fully linked for Reorg: %s", __func__,
+                pindexMostWork->phashBlock->ToString());
+            return;
+        }
     }
+
 
     // Initiate reorg if there is a tree with greater work on another fork
     const CBlockIndex *pindexFork = chainActive.FindFork(pindexMostWork);
