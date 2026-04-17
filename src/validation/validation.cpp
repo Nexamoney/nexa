@@ -3703,6 +3703,7 @@ bool DisconnectTip(CValidationState &state, const Consensus::Params &consensusPa
             if (DisconnectBlock(pblock, pindexDelete, view) != DISCONNECT_OK)
                 return error("DisconnectTip(): DisconnectBlock %s failed", pindexDelete->GetBlockHash().ToString());
             bool result = view.Flush();
+            tailstormForest._ClearBestGrove(); // this resets it so that go back to pcoinsTip
             assert(result);
         }
         LOG(BENCH, "- Disconnect block: %.2fms\n", (GetStopwatchMicros() - nStart) * 0.001);
@@ -3826,7 +3827,7 @@ bool ConnectTip(CValidationState &state,
         // Flush coin state and set coins tip
         bool result = view.Flush();
         assert(result);
-        tailstormForest.SetDagCoinsTip();
+        tailstormForest.SetBestGrove();
         LOG(BENCH, "      - Flush Coins %.3fms\n", GetStopwatchMicros() - nStart);
 
         // Remove transactions from the mempool, both those confirmed in the block and conflicting transactions.

@@ -439,7 +439,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
         else
         {
             // Stop txadmission, and flush the commitQ, before we flush coin state, remove txn conflicts and
-            // set the active tree as well as pcoinsDag.
+            // set the active tree as well as bestGrove.
             TxAdmissionPause txlock;
 
             // Update the sequence id
@@ -490,7 +490,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             }
 
             // Although in the case of a double spend subblock, the dag data will have to
-            // be regnerated to determine the state of pcoinsDag which depends on which
+            // be regnerated to determine the state of the bestGrove view which depends on which
             // double spends are to be included/excluded, set the processed flag indicating
             // the subblock is valid and added to the dag
             newNode->fProcessed = true;
@@ -506,8 +506,8 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
                 }
                 else
                 {
-                    // Set pcoinsDag to the best dag in the Forest.
-                    tailstormForest.SetDagCoinsTip();
+                    // Set "bestGrove" to the best dag in the Forest.
+                    tailstormForest.SetBestGrove();
                 }
             }
 
@@ -1861,10 +1861,10 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
         }
     }
 
-    tailstormForest.SetDagCoinsTip();
+    tailstormForest.SetBestGrove();
 }
 
-void CTailstormForest::SetDagCoinsTip()
+void CTailstormForest::SetBestGrove()
 {
     AssertLockHeld(tailstormForest.cs_forest);
     DbgAssert(
