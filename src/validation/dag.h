@@ -207,7 +207,7 @@ class CTailstormForest
     friend class CTailstormGrove;
 
 public:
-    // Use for locking all data structure except pDagActiveTip and pcoinsDag.
+    // Use for locking all data structure except pDagActiveTip and bestGrove.
     CCriticalSection cs_forest;
 
     // Used for try locking when we check for a re-org
@@ -245,7 +245,7 @@ public:
     // by txadmission and needs to be set each time the active
     // tree is updated.
     //
-    // NOTE: pcoinsDag is protected by txAdmissionPause().  You must
+    // NOTE: bestGrove is protected by txAdmissionPause().  You must
     // have taken a Corral, either a TX_PAUSE or TX_PROCESSING before using this
     // pointer.
     CCoinsViewCache *bestGroveCoins()
@@ -354,7 +354,14 @@ public:
     }
 
     //! Set the coins tip for the active dag
-    void SetDagCoinsTip();
+    void SetBestGrove();
+
+    //! Reset bestGrove to null
+    void _ClearBestGrove()
+    {
+        AssertLockHeld(cs_forest);
+        bestGrove = nullptr;
+    }
 
     //! Atomically set the dag active tip
     void SetDagActiveTip(CTreeNodeRef treenode);
