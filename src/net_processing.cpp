@@ -109,10 +109,10 @@ static bool PeerHasSubblockHeader(CNodeStateAccessor &state, const uint256 &hash
     //
     // The map is allowed to grow larger than the trim size before a trim is triggered
     // so that we don't end up trying to trim the map every time this function is called.
-    if (state->mapSubblockHeaders.size() >
-        (Params().GetConsensus().tailstorm_k * (DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS + 1)))
+    auto tsEnforce = Params().GetConsensus().tailstormEnforceDepth;
+    if (state->mapSubblockHeaders.size() > (Params().GetConsensus().tailstorm_k * (tsEnforce + 1)))
     {
-        uint64_t nTrimHeight = chainActive.Height() - DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS;
+        uint64_t nTrimHeight = chainActive.Height() - tsEnforce;
         auto mi = state->mapSubblockHeaders.begin();
         while (mi != state->mapSubblockHeaders.end())
         {
@@ -240,7 +240,7 @@ void static ProcessGetData(CNode *pfrom,
         {
             // I am in the middle of communicating with this node, so I want to make sure it gets an explicit close
             // rather than timing out since I am breaking the request/reply protocol by quitting.
-            pfrom->CloseSocketDisconnect();
+            pfrom->CloseSocketDisconnect("all threads shutdown");
             return;
         }
 
@@ -553,7 +553,7 @@ void static ProcessExtGetData(CNode *pfrom,
         {
             // I am in the middle of communicating with this node, so I want to make sure it gets an explicit close
             // rather than timing out since I am breaking the request/reply protocol by quitting.
-            pfrom->CloseSocketDisconnect();
+            pfrom->CloseSocketDisconnect("all threads shutdown");
             return;
         }
 
@@ -906,6 +906,7 @@ static void GetInitialTailstormSubblocks(CNode *pfrom)
         {
             setDagToSend.insert(treenode->subblock->GetHash());
         }
+        LOG(NET, "Asking for DAG to node %s", pfrom ? pfrom->GetLogName() : "nullptr");
         pfrom->PushMessage(NetMsgType::GET_DAG, setDagToSend);
     }
 }
@@ -1206,15 +1207,30 @@ bool ProcessMessage(CNode *pfrom,
         vRecv >> setDagFromPeer;
 
         std::set<CTreeNodeRef> dag;
-        tailstormForest.GetBestDagFor(*(chainActive.Tip()->phashBlock), dag);
-        for (auto &treenode : dag)
+        auto sumblk = chainActive.Tip();
+        int subblockConsensusEnforcement = Params().GetConsensus().tailstormEnforceDepth;
+        for (int i = 0; i < 1; i++) // TEST: only provide the tip: subblockConsensusEnforcement + 1; i++)
         {
-            if (!setDagFromPeer.count(treenode->subblock->GetHash()))
+            tailstormForest.GetBestDagFor(sumblk->GetBlockHash(), dag);
+            LOG(NET, "Responding to DAG request from node %s, for sumblk %d:%s with %d subblocks",
+                pfrom ? pfrom->GetLogName() : "nullptr", sumblk->height(), sumblk->GetBlockHash().ToString(),
+                dag.size());
+
+            for (auto &treenode : dag)
             {
-                pfrom->PushMessage(NetMsgType::BLOCK, *(treenode->subblock));
+                if (!setDagFromPeer.count(treenode->subblock->GetHash()))
+                {
+                    LOG(NET, "Responding to DAG request from node %s with subblock %s",
+                        treenode->subblock->GetHash().ToString());
+                    pfrom->PushMessage(NetMsgType::BLOCK, *(treenode->subblock));
+                }
             }
+            sumblk = sumblk->pprev;
+            if (sumblk == nullptr)
+                break;
         }
     }
+
 
     else if (strCommand == NetMsgType::FILTERSIZEXTHIN)
     {
@@ -1778,7 +1794,7 @@ bool ProcessMessage(CNode *pfrom,
                 modablestate->mapSubblockHeaders.emplace(inv.hash, header.height);
 
                 // Only ask for subblocks near the chain tip and that we don't already have
-                if (header.height > (nTipHeight - DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS))
+                if (header.height > (nTipHeight - Params().GetConsensus().tailstormEnforceDepth))
                 {
                     if (!tailstormForest.Contains(inv.hash))
                     {
@@ -1952,7 +1968,7 @@ bool ProcessMessage(CNode *pfrom,
                     // the initial sync flag so that we'll snap back to the tip
                     // as per "emergent consensus".
                     if (IsInitialSyncComplete() &&
-                        ((header.height - chainActive.Tip()->height()) > DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS))
+                        ((header.height - chainActive.Tip()->height()) > Params().GetConsensus().tailstormEnforceDepth))
                     {
                         bool fSynced = false;
                         IsInitialSyncCompleteInit(&fSynced);

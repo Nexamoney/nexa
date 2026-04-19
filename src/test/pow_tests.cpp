@@ -30,7 +30,7 @@ BOOST_AUTO_TEST_CASE(GetBlockWorkEquivalentTime_test)
         blocks[i].SetBlockHeaderTime(1269211443 + i * params.nPowTargetSpacing);
         blocks[i].SetBlockHeaderBits(0x207fffff); /* target 0x7fffff000... */
         blocks[i].SetBlockHeaderChainWork(ArithToUint256(
-            i ? blocks[i - 1].GetBlockHeader().aChainWork() + GetBlockWork(blocks[i - 1]) : arith_uint256(0)));
+            i ? blocks[i - 1].GetBlockHeader().aChainWork() + blocks[i - 1].GetBlockWork() : arith_uint256(0)));
     }
 
     for (int j = 0; j < 1000; j++)
@@ -51,7 +51,7 @@ static CBlockIndex GetBlockIndex(CBlockIndex *pindexPrev, int64_t nTimeInterval,
     block.SetBlockHeaderHeight(pindexPrev->height() + 1);
     block.SetBlockHeaderTime(pindexPrev->GetBlockTime() + nTimeInterval);
     block.SetBlockHeaderBits(nBits);
-    block.SetBlockHeaderChainWork(ArithToUint256(pindexPrev->chainWork() + GetBlockWork(block)));
+    block.SetBlockHeaderChainWork(ArithToUint256(pindexPrev->chainWork() + block.GetBlockWork()));
     block.BuildSkip();
     return block;
 }
@@ -99,7 +99,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test)
     // The pre-anchor block's nBits should never be used, so we set it to a nonsense value in order to
     // trigger an error if it is ever accessed
     blocks[0].SetBlockHeaderBits(0x0dedbeef);
-    blocks[0].SetBlockHeaderChainWork(ArithToUint256(GetBlockWork(blocks[0])));
+    blocks[0].SetBlockHeaderChainWork(ArithToUint256(blocks[0].GetBlockWork()));
 
     // Block counter.
     size_t i = 1;

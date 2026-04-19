@@ -117,6 +117,7 @@ bool WriteBlockToDiskSequential(const CBlock &block,
 
 CBlockRef ReadBlockFromDiskSequential(const CDiskBlockPos &pos, const Consensus::Params &consensusParams)
 {
+    DbgAssert(!pos.IsNull(), );
     // Open history file to read
     CAutoFile filein(OpenBlockFile(pos, true), SER_DISK, CLIENT_VERSION);
     if (filein.IsNull())

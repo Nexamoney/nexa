@@ -205,27 +205,37 @@ bool ThinTypeRelay::IsBlockInFlight(CNode *pfrom, const std::string thinType, co
     return false;
 }
 
+void ThinTypeRelay::BlockWasAborted(const uint256 &hash)
+{
+    // There is no difference right now, just stop tracking it
+    BlockWasReceived(nullptr, hash);
+}
+
 void ThinTypeRelay::BlockWasReceived(CNode *pfrom, const uint256 &hash)
 {
     LOCK(cs_inflight);
-    auto key = mapThinTypeBlocksInFlight.find(pfrom->GetId());
-    if (key != mapThinTypeBlocksInFlight.end())
+    // We want to remove the block from every node we requested it from because its transmission is no longer
+    // relevant to us.  This MUST be auto& or a copy of the set is made (defeating our operations on it).
+    for (auto &key : mapThinTypeBlocksInFlight)
     {
         // elements in a set are immutable. they can be added/removed but not edited
         // inserting/emplacing new elements in a set while iterating through a set is safe behavior
-        for (auto entry = key->second.begin(); entry != key->second.end();)
+        for (auto entry = key.second.begin(); entry != key.second.end();)
         {
             // our sets uniqueness is based on hash + thinType so just checking the hash
             // does not guaranteed that all entries with that hash are marked as received
-            if (entry->hash == hash && entry->fReceived == false)
+            if ((entry->hash == hash) && (entry->fReceived == false))
             {
-                CThinTypeBlockInFlight updatedEntry = *entry;
-                updatedEntry.fReceived = true;
-                // we have to erase before emplacing to comply with comparator uniqueness
-                // erase never throws exceptions
-                entry = key->second.erase(entry);
-                key->second.emplace(updatedEntry);
-                // intended thin type block relay behavior should clear failed entries when making
+                // Note the receipt on every node that has this block in flight
+                // get entry into a temp, increment entry, then extract temp
+                auto updatedEntry = key.second.extract(entry++);
+                updatedEntry.value().fReceived = true;
+                LOG(THIN, "ThinTypeRelay: %s received or aborted for nodeId %d thintype: %s\n",
+                    updatedEntry.value().hash.ToString(), key.first, updatedEntry.value().thinType);
+                auto result = key.second.insert(std::move(updatedEntry));
+                DbgAssert(result.inserted == true, ); // if false it was not inserted because already exists
+
+                // The intended thin type block relay behavior should clear failed entries when making
                 // a failover request so there should only ever be 1 entry in the set with any
                 // given block hash across all thinType
                 // we do not break here to prevent a disconnect from a peer in the event
@@ -247,8 +257,19 @@ bool ThinTypeRelay::AddBlockInFlight(CNode *pfrom, const uint256 &hash, const st
 
     // this insert returns a pair <iterator,bool> where the bool denotes whether the insertion took place
     auto key = mapThinTypeBlocksInFlight.find(pfrom->GetId());
-    if (key != mapThinTypeBlocksInFlight.end())
+    if (key != mapThinTypeBlocksInFlight.end()) // There already is a set of inflight blocks
     {
+        for (const auto &blkInFlight : key->second)
+        {
+            // We already got this block, do not ask for it again.
+            if ((blkInFlight.hash == hash) && (blkInFlight.fReceived))
+            {
+                LOG(THIN, "ThinTypeRelay: skipping request of already received %s from %s\n", hash.ToString(),
+                    pfrom->GetLogName());
+                return false;
+            }
+        }
+        LOG(THIN, "ThinTypeRelay: asking for %s from %s\n", hash.ToString(), pfrom->GetLogName());
         return key->second.emplace(CThinTypeBlockInFlight{hash, GetTime(), false, thinType}).second;
     }
     auto result = mapThinTypeBlocksInFlight.emplace(pfrom->GetId(), std::set<CThinTypeBlockInFlight>());
@@ -322,7 +343,7 @@ void ThinTypeRelay::CheckForDownloadTimeout(CNode *pfrom)
     auto key = mapThinTypeBlocksInFlight.find(pfrom->GetId());
     if (key != mapThinTypeBlocksInFlight.end())
     {
-        for (auto &entry : (*key).second)
+        for (const CThinTypeBlockInFlight &entry : (*key).second)
         {
             // Use a timeout of 6 times the retry inverval before disconnecting.  This way only a max of 6
             // re-requested thinblocks or graphene blocks could be in memory at any one time.
@@ -332,8 +353,8 @@ void ThinTypeRelay::CheckForDownloadTimeout(CNode *pfrom)
                 if (!pfrom->fWhitelisted && Params().NetworkIDString() != "regtest")
                 {
                     LOG(THIN | GRAPHENE | CMPCT,
-                        "ERROR: Disconnecting peer %s due to thinblock download timeout exceeded (%d secs)\n",
-                        pfrom->GetLogName(), (GetTime() - entry.nRequestTime));
+                        "ERROR: Disconnecting peer %s due to %s thinblock %s download timeout exceeded (%d secs)\n",
+                        pfrom->GetLogName(), entry.thinType, entry.hash.ToString(), (GetTime() - entry.nRequestTime));
                     pfrom->fDisconnect = true;
                     return;
                 }

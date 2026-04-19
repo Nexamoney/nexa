@@ -118,7 +118,9 @@ ConstCBlockRef ReadBlockFromDisk(const CBlockIndex *pindex, const Consensus::Par
             pblock->GetHash().ToString().c_str());
         return pblock;
     }
-    pblock = ReadBlockFromDiskSequential(pindex->GetBlockPos(), consensusParams);
+    auto diskPos = pindex->GetBlockPos();
+    DbgAssert(!diskPos.IsNull(), );
+    pblock = ReadBlockFromDiskSequential(diskPos, consensusParams);
     if (!pblock)
     {
         return nullptr;

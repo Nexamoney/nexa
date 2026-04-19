@@ -91,7 +91,7 @@ struct MatchCNodeRequestData
 {
     CNodeRef pnode;
     MatchCNodeRequestData(CNodeRef n) : pnode(n){};
-    inline bool operator()(const CNodeRequestData &nd) const { return nd.noderef.get() == pnode.get(); }
+    inline bool operator()(const CNodeRequestData &nd) const { return nd.noderef->id == pnode->id; }
 };
 
 class CUnknownObj
@@ -256,6 +256,7 @@ public:
     void AlreadyReceived(CNode *pnode, const CInv &obj);
 
     // Indicate that getting this object was rejected
+    // Do not call if you got the wrong object for a CInv.  Only call if its the right object, but is somehow invalid.
     void Rejected(const CInv &obj, CNode *from, unsigned char reason = 0);
 
     // request a block by its hash
@@ -314,6 +315,9 @@ public:
 
     // Returns a bool if successful in indicating we received this block.
     bool MarkBlockAsReceived(const uint256 &hash, CNode *pnode);
+
+    // Somebody else gave me this block so stop tracking it.
+    void MarkBlockAsReceivedByAnother(const uint256 &hash);
 
     // Methods for handling mapBlocksInFlight which is protected.
     void MapBlocksInFlightErase(const uint256 &hash, NodeId nodeid);

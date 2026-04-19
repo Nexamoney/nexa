@@ -17,7 +17,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     // set up a set of nodes and put them in a dag. The nodes must have
     // a correct set of ancestors so we can calculate scores. 
     //
-    // The following dags are show in verticle going from top to bottom
+    // The following dags are show in vertical going from top to bottom
     // Each dag show the summary block "block" at each end.  The score
     // for each subblock is show as a number in the center of the subblock
     //

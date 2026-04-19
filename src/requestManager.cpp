@@ -302,6 +302,11 @@ void CRequestManager::UpdateTxnResponseTime(const CInv &obj, CNode *pfrom)
 
 void CRequestManager::ProcessingBlock(const uint256 &hash, CNode *pfrom)
 {
+    // Indicate that the block was fully received. At this point we have either a block or a fully reconstructed
+    // thin type block but we still need to maintain a mapBlocksInFlight entry so that we don't re-request a
+    // full block from the same node while the block is processing.
+    thinrelay.BlockWasReceived(pfrom, hash);
+
     LOCK(cs_objDownloader);
     OdMap::iterator item = mapBlkInfo.find(hash);
     if (item == mapBlkInfo.end())
@@ -350,6 +355,7 @@ void CRequestManager::Accepted(const CInv &obj, CNode *pfrom)
     {
         LOG(REQ, "ReqMgr: Block received: %s.\n", obj.hash.ToString().c_str());
         cleanup(obj);
+        MarkBlockAsReceivedByAnother(obj.hash);
     }
 }
 
@@ -373,7 +379,8 @@ void CRequestManager::AlreadyReceived(CNode *pnode, const CInv &obj)
     cleanup(item); // remove the item
 }
 
-// Indicate that we got this object, from and bytes are optional (for node performance tracking)
+// Indicate that we got this object, from and bytes are optional (for node performance tracking).
+// Do not call if you got the wrong object for a CInv.  Only call if its the right object, but is somehow invalid
 void CRequestManager::Rejected(const CInv &obj, CNode *from, unsigned char reason)
 {
     LOCK(cs_objDownloader);
@@ -404,6 +411,7 @@ void CRequestManager::Rejected(const CInv &obj, CNode *from, unsigned char reaso
 
         auto nodeid = from->GetId();
         MapBlocksInFlightErase(obj.hash, nodeid);
+        thinrelay.BlockWasReceived(from, obj.hash); // We did not like it, but we did receive it
         {
             // Get a request manager nodestate pointer.
             std::map<NodeId, CRequestManagerNodeState>::iterator it = mapRequestManagerNodeState.find(nodeid);
@@ -752,6 +760,8 @@ void CRequestManager::RunBlockDeleter(OdMap &maybeToSend)
     {
         maybeToSend.erase(hash);
         mapBlkInfo.erase(hash);
+        thinrelay.BlockWasAborted(hash);
+        MarkBlockAsReceivedByAnother(hash);
     }
 }
 
@@ -1560,11 +1570,37 @@ void CRequestManager::MarkBlockAsInFlight(NodeId nodeid, const uint256 &hash)
     }
 }
 
-// Returns a bool if successful in indicating we received this block.
+// Someone else supplied this block so just abort all tracking of the block being received by other nodes
+void CRequestManager::MarkBlockAsReceivedByAnother(const uint256 &hash)
+{
+    LOCK(cs_objDownloader);
+    mapBlocksInFlight.erase(hash);
+    for (auto &nodeIdByNodeState : mapRequestManagerNodeState)
+    {
+        auto &state = nodeIdByNodeState.second;
+        // remove the block from the in flight node state
+        for (auto iter = state.vBlocksInFlight.begin(); iter != state.vBlocksInFlight.end();)
+        {
+            if (hash == iter->hash)
+            {
+                iter = state.vBlocksInFlight.erase(iter);
+                LOG(REQ | BLK, "ReqMgr: Removed block %s received by another node from node state of node %d\n",
+                    hash.ToString(), nodeIdByNodeState.first);
+            }
+            else
+                iter++;
+        }
+        state.nBlocksInFlight = state.vBlocksInFlight.size();
+    }
+}
+
+// Returns a bool if successful in indicating we originally asked for this block.
 bool CRequestManager::MarkBlockAsReceived(const uint256 &hash, CNode *pnode)
 {
+    thinrelay.BlockWasReceived(pnode, hash);
+
     if (!pnode)
-        return false;
+        return true;
 
     LOCK(cs_objDownloader);
     NodeId nodeid = pnode->GetId();
@@ -1573,7 +1609,12 @@ bool CRequestManager::MarkBlockAsReceived(const uint256 &hash, CNode *pnode)
     std::map<uint256, std::map<NodeId, std::list<QueuedBlock>::iterator> >::iterator itHash =
         mapBlocksInFlight.find(hash);
     if (itHash == mapBlocksInFlight.end())
+    {
+        // If we were interested in this block return true (we probably asked for it, but already got it)
+        if (mapBlkInfo.find(hash) != mapBlkInfo.end())
+            return true;
         return false;
+    }
 
     // Lookup this block for this nodeid and if we have one in flight then mark it as received.
     std::map<NodeId, std::list<QueuedBlock>::iterator>::iterator itInFlight = itHash->second.find(nodeid);
@@ -1761,6 +1802,10 @@ bool CRequestManager::MarkBlockAsReceived(const uint256 &hash, CNode *pnode)
 
         return true;
     }
+
+    // If we were interested in this block return true (we probably asked for it, but already got it)
+    if (mapBlkInfo.find(hash) != mapBlkInfo.end())
+        return true;
     return false;
 }
 
@@ -1839,8 +1884,11 @@ void CRequestManager::DisconnectOnDownloadTimeout(CNode *pnode, const Consensus:
             mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince +
                 consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER))
         {
-            LOGA("Timeout downloading block %s from peer %s, disconnecting\n",
-                mapRequestManagerNodeState[nodeid].vBlocksInFlight.front().hash.ToString(), pnode->GetLogName());
+            LOGA("Timeout downloading block %s from peer %s, disconnecting. Requested at %ld currently %ld difference "
+                 "%ld\n",
+                mapRequestManagerNodeState[nodeid].vBlocksInFlight.front().hash.ToString(), pnode->GetLogName(),
+                mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince, nNow,
+                nNow - mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince);
             pnode->fDisconnect = true;
         }
     }

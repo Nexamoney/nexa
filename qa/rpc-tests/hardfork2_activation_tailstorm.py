@@ -1179,7 +1179,8 @@ class TailstormActivationTest(BitcoinTestFramework):
         self.sync_all()
 
         currentCount = self.nodes[0].getblockcount();
-        self.nodes[1].generate(4)
+        self.nodes[1].generate(4) # 3 subblocks 1 summaryblock
+        waitFor(waitTime, lambda: currentCount + 1 == self.nodes[1].getblockcount())
         waitFor(waitTime, lambda: currentCount + 1 == self.nodes[0].getblockcount())
         self.sync_all()
 
@@ -1336,7 +1337,7 @@ def TestOne():
     t = TailstormActivationTest()
     t.drop_to_pdb = True
     bitcoinConf = {
-        "debug": ["validation", "rpc", "net", "blk", "thin", "mempool", "req", "bench", "evict"],
+        "debug": ["all", "-libevent","validation", "rpc", "net", "blk", "thin", "mempool", "req", "bench", "evict"],
     }
     flags = standardFlags()
     flags[0] = '--tmpdir=/ramdisk/test/t1'

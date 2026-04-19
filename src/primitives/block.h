@@ -175,6 +175,15 @@ public:
 
     /** Return the miner-reported time that block was created */
     int64_t GetBlockTime() const { return (int64_t)nTime; }
+
+    /** Return true if this is a summary block, either before or after tailstorm.  Blockchain blocks
+     before the fork and tailstorm summary blocks return true. */
+    bool IsSummaryBlock() const;
+    /** Return true if this is a tailstorm summary block.  Blockchain blocks before the tailstorm for
+     will return false */
+    bool IsTailstormSummaryBlock() const;
+    /** Get the amount of work in this block, including any tailstorm subblocks if this is a summary block */
+    arith_uint256 GetBlockWork() const;
 };
 
 /** Combine a hashed header with a nonce to get the hash value used in proof-of-work calculations */
@@ -317,9 +326,14 @@ struct CBlockLocator
 struct CSummaryBlockMinerData
 {
     uint256 prevOfprevhash;
+    // Uncles are subblocks that were created for the prior summary block but didn't get included.
     uint8_t nUncles = 0;
+    // All uncles have the same nBits, but the value will be different than the current subbblocks because the
+    // the difficulty changes every block.
     uint32_t nBitsUncle = 0;
     uint8_t nSubblocks = 0;
+    // The subblocks' nbits might be different than this summary block's because  the summary block need to compensate.
+    // for low work uncles.
     uint32_t nBitsSubblock = 0;
     std::vector<std::pair<uint256, std::vector<uint8_t> > > vSubblockProofs;
 };

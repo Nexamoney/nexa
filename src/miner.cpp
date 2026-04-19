@@ -455,8 +455,9 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript &sc
             }
         }
 
-        // Generate the minerData field.
-        const uint256 &prevOfprevhash = *(pindexPrev->pprev->phashBlock);
+        // Generate the minerData field, supply 0 hashes if near the genesis block
+        const uint256 &prevOfprevhash =
+            (pindexPrev && pindexPrev->pprev) ? *(pindexPrev->pprev->phashBlock) : uint256();
         pblock->minerData = GenerateMinerData(conparams.tailstorm_k, setBestDag, prevOfprevhash);
     }
 

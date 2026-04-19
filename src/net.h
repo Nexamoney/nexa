@@ -1214,7 +1214,7 @@ public:
     void ClearPriorityQueues();
 
     /** close the socket and do some cleanup */
-    void CloseSocketDisconnect();
+    void CloseSocketDisconnect(const std::string &reason);
 
     /** If possible, try to evict a connection to make room for a new inbound connection attempt */
     bool AttemptToEvictConnection(const unsigned int nMaxInbound);

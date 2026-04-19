@@ -962,7 +962,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
         pcoinsTip->SetBestBlock(next->GetBlockHash());
         next->pprev = prev;
         next->SetBlockHeaderBits(chainTgtBits);
-        next->SetBlockHeaderChainWork(ArithToUint256(prev->chainWork() + GetBlockWork(*next)));
+        next->SetBlockHeaderChainWork(ArithToUint256(prev->chainWork() + next->GetBlockWork()));
         next->SetBlockHeaderHeight(prev->height() + 1);
         next->nNextMaxBlockSize = DEFAULT_NEXT_MAX_BLOCK_SIZE;
         next->BuildSkip();

@@ -956,6 +956,10 @@ static UniValue getblock(const UniValue &params, bool fHelp)
         fListTxns = !(is_param_trueish(params[2]));
     }
 
+    // Since we are not taking cs_main here, we can actually get a pindex that is in the middle of block processing
+    // So check what we have before we try to use it.
+    if ((pindex->nStatus & BLOCK_HAVE_DATA) == 0)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Full block data is not ready"));
     const CBlock block = GetBlockChecked(pindex);
 
     if (nVerbose == 0 && fListTxns == true)
