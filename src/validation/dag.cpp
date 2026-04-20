@@ -282,6 +282,16 @@ std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &setBestDag,
 }
 
 // Tailstorm Tree
+
+CTailstormTree::~CTailstormTree()
+{
+    if (view)
+    {
+        delete view;
+        view = nullptr;
+    }
+}
+
 CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
 {
     AssertLockHeld(tailstormForest.cs_forest);
@@ -569,6 +579,27 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
 }
 
 // Tailstorm Grove
+
+CTailstormGrove::CTailstormGrove(CCoinsViewCache *coinsCache)
+{
+    tree = std::make_shared<CTailstormTree>();
+
+    _pcoinsTip = coinsCache;
+    view = new CCoinsViewCache(coinsCache);
+    view->SetBestBlock(roothash);
+    assert(_pcoinsTip);
+    assert(view);
+}
+
+CTailstormGrove::~CTailstormGrove()
+{
+    if (!tree && view)
+    {
+        delete view;
+        view = nullptr;
+    }
+}
+
 bool CTailstormGrove::InitializeTree(CTreeNodeRef newNode, CCoinsViewCache *coinsCache)
 {
     AssertLockHeld(tailstormForest.cs_forest);

@@ -125,14 +125,7 @@ protected:
 
 public:
     CTailstormTree() {}
-    ~CTailstormTree()
-    {
-        if (view)
-        {
-            delete view;
-            view = nullptr;
-        }
-    }
+    ~CTailstormTree();
 
 protected:
     // Returns new_node if inserted, the existing node if it was already inserted, or nullptr if insertion failed
@@ -170,25 +163,8 @@ protected:
     CTreeNodeRef InsertIntoTree(CTreeNodeRef newNode);
 
 public:
-    CTailstormGrove(CCoinsViewCache *coinsCache)
-    {
-        tree = std::make_shared<CTailstormTree>();
-
-        _pcoinsTip = coinsCache;
-        view = new CCoinsViewCache(coinsCache);
-        view->SetBestBlock(roothash);
-        assert(_pcoinsTip);
-        assert(view);
-    }
-
-    ~CTailstormGrove()
-    {
-        if (!tree && view)
-        {
-            delete view;
-            view = nullptr;
-        }
-    }
+    CTailstormGrove(CCoinsViewCache *coinsCache);
+    ~CTailstormGrove();
 
 protected:
     void Clear();
