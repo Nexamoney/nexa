@@ -320,6 +320,17 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             }
         }
 
+        // if we already have a full dag then don't process anymore but
+        // we can add it to the dag as uprocesed so it can be used as an orphan.
+        if (dag.size() >= Params().GetConsensus().tailstorm_k - 1)
+        {
+            newNode->nSequenceId = dag.size() + 1;
+            DbgAssert(newNode->nSequenceId > 0, );
+            newNode->fProcessed = false;
+            dag.emplace(newNode->hash, newNode);
+            return newNode;
+        }
+
         bool fMissingOrSpent = false;
         std::set<CTreeNodeRef> setConflictingSubblocks;
         CValidationState state;
@@ -1839,14 +1850,22 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
     auto chainparams = Params();
     auto &tree = grove->tree;
     {
+        // Sort the dag from lowest to highest sequence id
+        std::vector<std::pair<uint256, CTreeNodeRef> > vSortedDag(tree->dag.begin(), tree->dag.end());
+        std::sort(vSortedDag.begin(), vSortedDag.end(),
+            [](const auto &a, const auto &b) { return a.second->nSequenceId < b.second->nSequenceId; });
+
         // Get the exclusion set for this dag which is used to pass to connect block and allow
         // processing to continue without a missing inputs error begin returned. This exlusion set is needed
         // because mapDagTxns, which is also used to skip processing a transaction twice,
         // does not get created until the block has succesfully finished connecting.
         std::map<COutPoint, CTransactionRef> mapInputs;
+        auto tailstorm_k = chainparams.GetConsensus().tailstorm_k;
         std::set<CTreeNodeRef> setDag;
-        for (auto mi : tree->dag)
-            setDag.insert(mi.second);
+        for (auto it = vSortedDag.begin(); it != vSortedDag.end() && it->second->nSequenceId < tailstorm_k; it++)
+        {
+            setDag.insert(it->second);
+        }
         std::set<uint256> setTxnExclusions = GetTxnExclusionSet(setDag, tree->vDoubleSpendTxns, tree->mapInputs);
         if (setTxnExclusions.size() > 0)
         {
@@ -1866,14 +1885,11 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
         tree->mapInputs.clear();
         tree->view->Clear();
 
-        std::vector<std::pair<uint256, CTreeNodeRef> > vSortedDag(tree->dag.begin(), tree->dag.end());
-        std::sort(vSortedDag.begin(), vSortedDag.end(),
-            [](const auto &a, const auto &b) { return a.second->nSequenceId < b.second->nSequenceId; });
         uint32_t nSequenceId = 0;
-        for (auto it = vSortedDag.begin(); it != vSortedDag.end(); it++)
+        for (auto it = vSortedDag.begin(); it != vSortedDag.end() && it->second->nSequenceId < tailstorm_k; it++)
         {
             nSequenceId++;
-            if (nSequenceId == chainparams.GetConsensus().tailstorm_k)
+            if (nSequenceId == tailstorm_k)
             {
                 LOG(DAG, "%s(): Breaking from regenerate because we have processed enough subblocks: %s", __func__);
                 break;
