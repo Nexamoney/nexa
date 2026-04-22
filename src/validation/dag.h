@@ -216,6 +216,9 @@ protected:
     // accessed by its class methods.
     CTreeNodeRef pDagActiveTip = nullptr;
 
+    // Are orphans currently begin processed
+    bool processingOrphans = false;
+
 public:
     // The coins cache for the active tree. This is used
     // by txadmission and needs to be set each time the active
