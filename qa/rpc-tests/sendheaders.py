@@ -624,20 +624,20 @@ class SendHeadersTest(BitcoinTestFramework):
         # blocks
         self.nodes[0].set("net.maxBlocksInTransitPerPeer=16")
         self.nodes[1].set("net.maxBlocksInTransitPerPeer=16")
-        if False:
-            test_node.send_header_for_blocks(blocks[2:18])
-            test_node.sync_with_ping()
-            test_node.wait_for_getdata([x.gethash() for x in blocks[2:16]], timeout=5)
-            with mininode_lock:
-                assert_equal(test_node.last_getdata, [])
 
-            # Announcing 1 more header should not trigger any response because we
-            # already have the maximumum blocks in flight
-            test_node.last_getdata = []
-            test_node.send_header_for_blocks(blocks[18:19])
-            test_node.sync_with_ping()
-            with mininode_lock:
-                assert_equal(test_node.last_getdata, [])
+        test_node.send_header_for_blocks(blocks[2:18])
+        test_node.sync_with_ping()
+        test_node.wait_for_getdata([x.gethash() for x in blocks[2:16]], timeout=5)
+        with mininode_lock:
+            assert_equal(test_node.last_getdata, [])
+
+        # Announcing 1 more header should not trigger any response because we
+        # already have the maximumum blocks in flight
+        test_node.last_getdata = []
+        test_node.send_header_for_blocks(blocks[18:19])
+        test_node.sync_with_ping()
+        with mininode_lock:
+            assert_equal(test_node.last_getdata, [])
 
         print("Part 4: success!")
 
