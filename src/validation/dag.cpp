@@ -2354,6 +2354,9 @@ void CTailstormForest::Check()
             if (!mi.second->fProcessed)
                 continue;
 
+            // Check that treenode is not also an uncle
+            assert(!tree->mapUncles.count(mi.first));
+
             // Check tree mapDagTxns is correctly reflecting the tree
             nTreeTxnCount += mi.second->subblock->vtx.size() - 1;
         }
