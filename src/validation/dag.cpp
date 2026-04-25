@@ -368,8 +368,8 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
                 if (state.IsInvalid(nDos))
                 {
                     // Check if this subblock is double spending anything in the dag
-                    // and if so then fork a new dag and use this subblock as it's
-                    // tip.
+                    // and if so mark is as a possible TRUE double spend so we can check it
+                    // more fully.
                     if (state.GetRejectCode() == REJECT_CONFLICT)
                     {
                         fMissingOrSpent = true;
@@ -1886,7 +1886,6 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
 
     // Rebuild the each tree's coinscache and data structures on the grove we've now set as our best chain tip.
     // We only need to build data for unprocessed subblocks.
-    CValidationState state;
     auto chainparams = Params();
     auto &tree = grove->tree;
     {
@@ -1950,6 +1949,7 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
             std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
 
             // Try connecting the subblock and updating the coins cache.
+            CValidationState state;
             if (ConnectBlockCanonicalOrdering(treenode->subblock, state, tree->pindexSummaryRoot, *tree->view,
                     chainparams, fJustCheck, fParallel, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages,
                     accumulatedAuthorities, &tree->mapDagTxns, &setTxnExclusions))
@@ -1973,15 +1973,49 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
             }
             else
             {
+                nSequenceId--;
+
+                // If this is a failure to connect here then we remove all references to this subblock
                 tree->dag.erase(treenode->hash);
                 grove->mapGroveNodes.erase(treenode->hash);
-                nSequenceId--;
-                treenode->fProcessed = false;
-                treenode->nSequenceId = 0;
-                AddSubblockOrphan(treenode);
-                LOG(DAG, "%s(): This should never happen! - Unable to process subblock while regenerating data: %s",
-                    __func__, treenode->hash.ToString());
-                DbgAssert(false, );
+                mapAllGrovesByNode.erase(treenode->hash);
+                mapAllNodes.erase(treenode->hash);
+                mapNodesUnlinked.erase(treenode->hash);
+
+                // Find the double spend map which contains this failed subblock and remove it.
+                for (auto iter = tree->vDoubleSpendTxns.begin(); iter != tree->vDoubleSpendTxns.end();)
+                {
+                    bool fRemoveMap = false;
+                    for (auto mi : *iter)
+                    {
+                        if (mi.second->hash == treenode->hash)
+                        {
+                            fRemoveMap = true;
+                            break;
+                        }
+                    }
+                    if (fRemoveMap)
+                        iter = tree->vDoubleSpendTxns.erase(iter);
+                    else
+                        iter++;
+                }
+
+                // If the validation fails it's either because we never correctly detected a double spend
+                // in the first round of connecting the subblock OR because there was a double spend which WAS
+                // detected but there was also some other reason why the subblock would fail validation.
+                if (state.GetRejectCode() == REJECT_CONFLICT)
+                {
+                    LOG(DAG,
+                        "%s(): This should never happen! - Unable to process subblock with double spend while "
+                        "regenerating data: %s",
+                        __func__, treenode->hash.ToString());
+                    DbgAssert(false, );
+                }
+                else
+                {
+                    LOG(DAG, "%s(): Unable to process subblock while regenerating data due to some hidden issue: %s",
+                        __func__, treenode->hash.ToString());
+                }
             }
         }
     }
@@ -2319,6 +2353,9 @@ void CTailstormForest::Check()
             // Don't include txn count if not processed.
             if (!mi.second->fProcessed)
                 continue;
+
+            // Check that treenode is not also an uncle
+            assert(!tree->mapUncles.count(mi.first));
 
             // Check tree mapDagTxns is correctly reflecting the tree
             nTreeTxnCount += mi.second->subblock->vtx.size() - 1;
