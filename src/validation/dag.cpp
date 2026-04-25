@@ -329,7 +329,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
         }
 
         // if we already have a full dag then don't process anymore but
-        // we can add it to the dag as uprocesed so it can be used as an orphan.
+        // we can add it to the dag as uprocessed so it can be used as an orphan.
         if (dag.size() >= Params().GetConsensus().tailstorm_k - 1)
         {
             newNode->nSequenceId = dag.size() + 1;
@@ -1070,11 +1070,15 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
             else
                 fHavePrevGrove = GetGrove(*(pindex->pprev->phashBlock), dummyGrove);
 
+            // Check that the prev headers/blocks are are linked together. At this point we
+            // don't need to check that we're on the right for, that check is done
+            // when we call Insert() further down. If we did it here then we might
+            // end up not adding unprocessed subblocks where the dag size is >= k
+            // which could then end up preventing summary blocks from processing or
+            // uncles from getting pulled into the next epoch.
             {
-                // WARNING: you must not try to connect subblocks to dag that is not currently
-                // being built on the  chain active tip otherwise your subblock may return as
-                // having a potential conflict.
-                fIsLinked = (*chainActive.Tip()->phashBlock == subblock->hashPrevBlock);
+                READLOCK(cs_mapBlockIndex);
+                fIsLinked = pindex->IsLinked();
             }
         }
         if (pindex && (pindex->height() == chainActive.Height()))
