@@ -20,6 +20,63 @@ extern std::atomic<bool> fTailstormEnabled;
 
 static std::atomic<const CBlockIndex *> cachedAnchor{nullptr};
 
+arith_uint256 GetTargetForRequiredWork(arith_uint256 requiredWork) noexcept
+{
+    if (requiredWork == 0)
+        return arith_uint256(1);
+
+    // Inverse of GetWorkForTarget(): target = floor((2**256 / work) - 1).
+    arith_uint256 target = ~requiredWork / requiredWork;
+    if (target == 0)
+        target = arith_uint256(1);
+    return target;
+}
+
+uint32_t GetNextHarderCompactBits(uint32_t nBits) noexcept
+{
+    uint32_t nSize = nBits >> 24;
+    uint32_t nWord = nBits & 0x007fffff;
+    assert(nWord != 0);
+
+    // The caller contract is a canonical positive compact encoding, as produced
+    // by arith_uint256::GetCompact() or by this function. For such inputs the
+    // mantissa's high byte carries the sign-bit-avoiding 0x8000 bit set.
+    //
+    // Decrement first, then re-canonicalize. When the decrement drops the
+    // mantissa below 0x008000 we fold one byte of exponent into the mantissa
+    // and fill the low byte with 0xff, giving the largest canonical encoding
+    // that is still strictly smaller than the input. The loop iterates only
+    // if the input was already non-canonical (e.g. a test-supplied mantissa
+    // of 1); a canonical input needs at most one fold.
+    --nWord;
+    while (nWord < 0x00008000 && nSize > 1)
+    {
+        nWord = (nWord << 8) | 0xff;
+        --nSize;
+    }
+
+    // For nSize < 3 the canonical form has the low 8*(3-nSize) bits of the
+    // mantissa zero, because GetCompact() left-shifts the value into the top
+    // of the 3-byte field. SetCompact() then drops those bits again on decode,
+    // so masking them here preserves the decoded target and yields the unique
+    // encoding GetCompact() would have produced. Without this step the output
+    // would be a valid-but-non-canonical representation of the same target,
+    // breaking the "walks an ordered set of canonical targets" invariant.
+    if (nSize < 3)
+        nWord &= ~((1u << (8 * (3 - nSize))) - 1);
+
+    assert(nWord > 1);
+    return (nSize << 24) | nWord;
+}
+
+uint32_t GetCompactBitsForRequiredWork(arith_uint256 requiredWork) noexcept
+{
+    uint32_t nBits = GetTargetForRequiredWork(requiredWork).GetCompact();
+    while (GetWorkForDifficultyBits(nBits) < requiredWork)
+        nBits = GetNextHarderCompactBits(nBits);
+    return nBits;
+}
+
 void ResetASERTAnchorBlockCache() noexcept { cachedAnchor = nullptr; }
 const CBlockIndex *GetASERTAnchorBlockCache() noexcept { return cachedAnchor.load(); }
 /**
@@ -144,20 +201,33 @@ uint32_t GetNextASERTWorkRequired(const CBlockIndex *pindexPrev,
 
     arith_uint256 nextTarget;
 
-    // make the target N times easier to produce N subblocks per block (if we are doing tailstorm)
+    // make the target K times easier to produce K subblocks per block (if we are doing tailstorm)
     if (tailstorm && (params.tailstorm_k != 0))
     {
         nextTarget = CalculateASERT(
             refBlockTarget, params.nPowTargetSpacing, nTimeDiff, nHeightDiff, powLimit, params.nASERTHalfLife);
 
-        // Make the target easier by the number of PoW puzzles we are solving
+        // Tailstorm solves K PoW subblocks per summary block, so the subblock baseline target
+        // is K times easier than the non-tailstorm ASERT target.
+        arith_uint256 defaultTarget = nextTarget * params.tailstorm_k;
+        if (defaultTarget > powLimit)
+        {
+            LOGA("warning: tailstorm target difficulty is too easy! %s > %s", defaultTarget.ToString(),
+                powLimit.ToString());
+            defaultTarget = powLimit; // We can't get any easier than this
+        }
+
+        // For a normal subblock, use the default target directly.
         //
-        // For a subblock the nexttarget will be determined by tailstorm_k, but for a summary
-        // block we have to count up the work done by all previous subblocks and then calculate
-        // how much more work the summary block has to do to reach the overall target.
+        // For a summary block, count the exact work already contributed by its referenced
+        // uncles/subblocks and then require the summary block to contribute any remaining work
+        // needed to reach the expected summary block total work. All arithmetic here stays in work units;
+        // we convert back to a target only at the end.
         if (IsTailstormSummaryBlock(*pblock))
         {
             auto ret = ParseSummaryBlockMinerData(pblock->minerData);
+            const arith_uint256 defaultWork = GetWorkForTarget(defaultTarget);
+            const arith_uint256 expectedBlockWork = defaultWork * params.tailstorm_k;
 
             // add up the work from all the uncle blocks and subblocks.
             arith_uint256 nCurrentWorkInBlock = 0;
@@ -166,32 +236,22 @@ uint32_t GetNextASERTWorkRequired(const CBlockIndex *pindexPrev,
                 nCurrentWorkInBlock += (ret.nSubblocks * GetWorkForDifficultyBits(ret.nBitsSubblock));
             }
 
-            // If the sum of the work from the uncle block + the subblocks + the expected work
-            // from the summary block is greater than our next expected target then just return
-            // the next expected target, however if the sum is less then we have to adjust
-            // the target for our summary block to make up for the reduction in overall work.
-            arith_uint256 nextExpectedTarget;
-            nextExpectedTarget = nextTarget * params.tailstorm_k;
-            if (nCurrentWorkInBlock + nextExpectedTarget >= nextTarget)
+            // The summary block is itself a Tailstorm subblock, so it should never be easier than
+            // the default subblock target. If prior included work is short, harden the summary
+            // target enough to make up the deficit.
+            arith_uint256 requiredSummaryWork = defaultWork;
+            if (nCurrentWorkInBlock < expectedBlockWork)
             {
-                nextTarget *= params.tailstorm_k;
+                arith_uint256 remainingWork = expectedBlockWork - nCurrentWorkInBlock;
+                if (remainingWork > requiredSummaryWork)
+                    requiredSummaryWork = remainingWork;
             }
-            else
-            {
-                nextTarget = nextTarget - nCurrentWorkInBlock;
-            }
-            assert(nextTarget >= nextExpectedTarget);
+
+            nextTarget.SetCompact(GetCompactBitsForRequiredWork(requiredSummaryWork));
         }
         else
         {
-            nextTarget *= params.tailstorm_k;
-        }
-
-        if (nextTarget > powLimit)
-        {
-            LOGA("warning: tailstorm target difficulty is too easy! %s > %s", nextTarget.ToString(),
-                powLimit.ToString());
-            nextTarget = powLimit; // We can't get any easier than this
+            nextTarget = defaultTarget;
         }
     }
     else
@@ -200,7 +260,12 @@ uint32_t GetNextASERTWorkRequired(const CBlockIndex *pindexPrev,
             refBlockTarget, params.nPowTargetSpacing, nTimeDiff, nHeightDiff, powLimit, params.nASERTHalfLife);
     }
 
-    // CalculateASERT() already clamps to powLimit.
+    // nextTarget is bounded by powLimit on every path:
+    //   - The non-tailstorm path returns CalculateASERT() directly, which clamps.
+    //   - The tailstorm non-summary path uses defaultTarget, explicitly clamped above.
+    //   - The tailstorm summary path derives its target from a work value that is
+    //     >= GetWorkForTarget(defaultTarget); inverting a larger-or-equal work gives
+    //     a smaller-or-equal target, so the result is still <= defaultTarget <= powLimit.
     return nextTarget.GetCompact();
 }
 
@@ -217,9 +282,9 @@ arith_uint256 CalculateASERT(const arith_uint256 &refTarget,
     assert(refTarget > 0);
     assert(refTarget <= powLimit);
 
-    // We need some leading zero bits in powLimit in order to have room to handle
-    // overflows easily. 32 leading zero bits is more than enough.
-    // (broken if starting from genesis block with more difficult POW, so using 20 leading 0 bits)
+    // We need leading zero bits in powLimit in order to leave headroom to
+    // handle intermediate overflows easily in the fixed-point ASERT math.
+    // This assertion requires at least 18 leading zero bits.
     assert((powLimit >> 238) == 0);
 
     // Height diff should NOT be negative.

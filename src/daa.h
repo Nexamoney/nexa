@@ -21,6 +21,23 @@ class arith_uint256;
  */
 bool MineBlock(CBlockHeader &blockHeader, unsigned long int tries, const Consensus::Params &cparams);
 
+/**
+ * Return the largest target whose idealized work is at least the requested work.
+ * This is the inverse of the usual target-to-work conversion, before compact rounding.
+ */
+arith_uint256 GetTargetForRequiredWork(arith_uint256 requiredWork) noexcept;
+
+/**
+ * Return the next harder compact target encoding.
+ * This is used when compact rounding would otherwise make the encoded target too easy.
+ */
+uint32_t GetNextHarderCompactBits(uint32_t nBits) noexcept;
+
+/**
+ * Return a compact target encoding that guarantees at least the requested work
+ * after compact-format rounding has been applied.
+ */
+uint32_t GetCompactBitsForRequiredWork(arith_uint256 requiredWork) noexcept;
 
 arith_uint256 CalculateASERT(const arith_uint256 &refTarget,
     const int64_t nPowTargetSpacing,
