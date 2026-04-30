@@ -9,6 +9,10 @@ define $(package)_set_vars
 $(package)_config_opts=--disable-shared --enable-cxx --disable-replication --enable-option-checking
 $(package)_config_opts_mingw32=--enable-mingw
 $(package)_config_opts_linux=--with-pic
+# Berkeley DB's configure can incorrectly detect pthread_yield() when cross-compiling
+# for Linux targets, which later leaves os_yield.o with an unresolved pthread_yield
+# reference on newer target libcs. Force the portable sched_yield() path instead.
+$(package)_config_env_linux=ac_cv_func_pthread_yield=no
 $(package)_cflags+=-Wno-error=implicit-function-declaration
 $(package)_cflags+=-Wno-error=incompatible-pointer-types
 $(package)_cxxflags+=-std=c++17

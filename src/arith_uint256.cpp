@@ -10,6 +10,7 @@
 #include "uint256.h"
 #include "utilstrencodings.h"
 
+#include <cmath>
 #include <stdio.h>
 #include <string.h>
 
@@ -158,12 +159,43 @@ double base_uint<BITS>::getdouble() const
 template <unsigned int BITS>
 void base_uint<BITS>::setdouble(double val)
 {
-    double fact = 1.0;
-    for (int i = 0; i < WIDTH; i++)
+    static_assert(BITS % 32 == 0, "BITS must be multiple of 32");
+    const double factor = 4294967296.0; // 2^32 exactly representable
+
+    // Clear the value
+    std::memset(pn, 0, sizeof(pn));
+
+    if (val <= 0.0 || !std::isfinite(val))
     {
-        double tmp = val / fact;
-        pn[i] = (uint32_t)tmp;
-        fact *= 4294967296.0;
+        return;
+    }
+
+    // Handle potential overflow (very large val -> set to maximum)
+    if (val >= ldexp(factor, BITS))
+    { // Approx max uint<BITS> + 1
+        for (int i = 0; i < WIDTH; ++i)
+        {
+            pn[i] = UINT32_MAX;
+        }
+        return;
+    }
+
+    // Scale down by 2^{32*(WIDTH-1)} to bring the highest limb into range
+    double scaled = ldexp(val, -32 * (WIDTH - 1));
+
+    for (int i = WIDTH - 1; i >= 0; --i)
+    {
+        // Extract integer part (floor towards zero for positive)
+        uint64_t limb = static_cast<uint64_t>(scaled);
+
+        // Clamp to 32-bit (rare, only if rounding pushed over)
+        pn[i] = static_cast<uint32_t>(limb & 0xFFFFFFFFULL);
+
+        // Subtract integer part
+        scaled -= static_cast<double>(limb);
+
+        // Scale remainder up for next lower limb
+        scaled *= factor;
     }
 }
 
