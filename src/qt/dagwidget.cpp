@@ -233,7 +233,7 @@ void DagWidget::mousePressEvent(QMouseEvent *event)
                             // Add a highlight border around the selected block
                             qreal offset = 8;
                             qreal yshift = 4;
-                            if (info->blockType == ORPHAN_BLOCK)
+                            if (info->blockType == UNCLE_BLOCK)
                             {
                                 offset = 5;
                                 yshift = 7;
@@ -568,7 +568,7 @@ void DagWidget::AddItem(uint256 hash,
     if ((mapDag.begin() != mapDag.end()) && (nDagViewerHeight < mapDag.begin()->first))
         return;
 
-    if (blockType != ORPHAN_BLOCK)
+    if (blockType != UNCLE_BLOCK)
     {
         // If we have the item already and we try to add it as a header again then do nothing
         if (mapInfo.count(hash) && fHeader == true)
@@ -593,7 +593,7 @@ void DagWidget::AddItem(uint256 hash,
     // Determine if this is a new block to display or whether we already displayed it
     // as a header
     bool fIsNewBlockToDisplay = true;
-    if ((blockType != ORPHAN_BLOCK && mapInfo.count(hash)) || (blockType == ORPHAN_BLOCK && mapOrphanInfo.count(hash)))
+    if ((blockType != UNCLE_BLOCK && mapInfo.count(hash)) || (blockType == UNCLE_BLOCK && mapOrphanInfo.count(hash)))
     {
         fIsNewBlockToDisplay = false;
     }
@@ -642,7 +642,7 @@ void DagWidget::AddItem(uint256 hash,
     // Add the item to the tracking maps or update it if it exists already.
     // Also need to update the block sequence id here since we don't know for sure what it will
     // be until we get a full block.
-    if (blockType != ORPHAN_BLOCK)
+    if (blockType != UNCLE_BLOCK)
     {
         if (!mapInfo.count(hash))
         {
@@ -701,7 +701,7 @@ void DagWidget::AddItem(uint256 hash,
                 }
             }
         }
-        else if (blockType == STORM_BLOCK || blockType == ORPHAN_BLOCK)
+        else if (blockType == STORM_BLOCK || blockType == UNCLE_BLOCK)
         {
             offset = distance + (itemHeight / 2);
 
@@ -821,11 +821,14 @@ void DagWidget::AddItem(uint256 hash,
         }
 
         // Add the new block and connecting lines to the scene.
-        if (blockType == ORPHAN_BLOCK)
+        if (blockType == UNCLE_BLOCK)
         {
             // Add the connecting lines
             for (Link link : info->vBlockPointsTo)
             {
+                LOG(DAGVIEWER, "Dagwidget: trying to add uncle on screen %s with prevlink %s", hash.ToString(),
+                    link.prevBlock.ToString());
+
                 // get the max y for blocks we're pointing to.
                 // NOTE: the prelink would NOT be an orphan so look in mapInfo
                 //       instead of mapOrphanInfo.
@@ -848,6 +851,8 @@ void DagWidget::AddItem(uint256 hash,
                     continue;
                 }
 
+                if (!mapOrphanInfo.count(hash))
+                    continue;
                 if (!mapOrphanInfo[hash]->item)
                 {
                     // create line with a zvalue less than the prev block. This way the line portions that
@@ -867,6 +872,8 @@ void DagWidget::AddItem(uint256 hash,
             QPen pen = borderPen;
             brush = steelBlueBrush;
 
+            if (!mapOrphanInfo.count(hash))
+                return;
             if (mapOrphanInfo[hash]->item)
             {
                 mapOrphanInfo[hash]->item->setPen(pen);
@@ -888,6 +895,9 @@ void DagWidget::AddItem(uint256 hash,
             // Add the connecting lines
             for (Link link : info->vBlockPointsTo)
             {
+                LOG(DAGVIEWER, "Dagwidget: trying to add subblock on screen %s with prevlink %s", hash.ToString(),
+                    link.prevBlock.ToString());
+
                 // get the max y for blocks we're pointing to.
                 if (mapInfo.count(link.prevBlock) == 0)
                 {
@@ -908,6 +918,8 @@ void DagWidget::AddItem(uint256 hash,
                     continue;
                 }
 
+                if (!mapInfo.count(hash))
+                    continue;
                 if (!mapInfo[hash]->litem)
                 {
                     // create line with a zvalue less than the prev block. This way the line portions that
@@ -975,6 +987,8 @@ void DagWidget::AddItem(uint256 hash,
                 brush = greyBrush;
             }
 
+            if (!mapInfo.count(hash))
+                return;
             if (mapInfo[hash]->item)
             {
                 mapInfo[hash]->item->setPen(pen);
@@ -996,6 +1010,9 @@ void DagWidget::AddItem(uint256 hash,
             // Add the connecting lines
             for (Link link : info->vBlockPointsTo)
             {
+                LOG(DAGVIEWER, "Dagwidget: trying to add summary block on screen %s with prevlink %s", hash.ToString(),
+                    link.prevBlock.ToString());
+
                 // get the max y for blocks we're pointing to.
                 if (mapInfo.count(link.prevBlock) == 0)
                 {
@@ -1016,6 +1033,8 @@ void DagWidget::AddItem(uint256 hash,
                     continue;
                 }
 
+                if (!mapInfo.count(hash))
+                    continue;
                 if (!mapInfo[hash]->litem)
                 {
                     // create line with a zvalue less than the prev block. This way the line portions that
@@ -1078,6 +1097,8 @@ void DagWidget::AddItem(uint256 hash,
             }
 
 
+            if (!mapInfo.count(hash))
+                return;
             if (mapInfo[hash]->item)
             {
                 mapInfo[hash]->item->setPen(pen);
@@ -1105,10 +1126,14 @@ void DagWidget::AddItem(uint256 hash,
             // Add the connecting lines
             for (Link link : info->vBlockPointsTo)
             {
+                LOG(DAGVIEWER, "Dagwidget: trying to add legacy block on screen %s with prevlink %s", hash.ToString(),
+                    link.prevBlock.ToString());
+
                 // get the max y for blocks we're pointing to.
                 if (mapInfo.count(link.prevBlock) == 0)
                 {
-                    LOG(DAGVIEWER, "Dagwidget: Did not find prevous link on the screen %s", link.prevBlock.ToString());
+                    LOG(DAGVIEWER, "Dagwidget: Not addding legacy block. Did not find prevous link on the screen %s",
+                        link.prevBlock.ToString());
                     continue;
                 }
 
@@ -1124,7 +1149,7 @@ void DagWidget::AddItem(uint256 hash,
                     // pen = dashedLinePen;
                     continue;
                 }
-                if (!mapInfo.count(link.prevBlock))
+                if (!mapInfo.count(link.prevBlock) || !mapInfo.count(hash))
                     continue;
 
                 if (!mapInfo[hash]->litem)
@@ -1188,6 +1213,8 @@ void DagWidget::AddItem(uint256 hash,
                 brush = greyBrush;
             }
 
+            if (!mapInfo.count(hash))
+                return;
             if (mapInfo[hash]->item)
             {
                 mapInfo[hash]->item->setPen(pen);
@@ -1299,7 +1326,7 @@ void DagWidget::ProcessOrphans()
                 mi++;
             }
         }
-        else if (blockType == STORM_BLOCK || blockType == LEGACY_BLOCK)
+        else if (blockType == STORM_BLOCK || blockType == LEGACY_BLOCK || blockType == UNCLE_BLOCK)
         {
             bool fHaveAll = true;
             for (auto link : vBlockPointsTo)
@@ -1313,7 +1340,7 @@ void DagWidget::ProcessOrphans()
 
             if (fHaveAll)
             {
-                LOG(DAGVIEWER, "Dagwidget: Adding subblock or legacy block %s from orphans pointing back to %s",
+                LOG(DAGVIEWER, "Dagwidget: Adding subblock legacy or uncle block %s from orphans pointing back to %s",
                     hash.ToString(), vBlockPointsTo[0].prevBlock.ToString());
                 AddItem(hash, mininghash, prevhash, nDagHeight, nSequenceId, nBlockHeight, nTransactions, nBlockSize,
                     vBlockPointsTo, false /* ds */, blockType, fHeader, header);
@@ -1328,6 +1355,10 @@ void DagWidget::ProcessOrphans()
 
                 mi++;
             }
+        }
+        else
+        {
+            mi++;
         }
     }
     LOG(DAGVIEWER, "Dagwidget: mapdeferred size after process orphans %ld", mapDeferredInfo.size());
@@ -1423,7 +1454,7 @@ int32_t DagWidget::GetNextDagViewerHeight(uint256 &prevDagHash, const CBlockHead
     if (mapInfo.empty())
         return 1;
 
-    if (blockType == ORPHAN_BLOCK)
+    if (blockType == UNCLE_BLOCK)
     {
         if (mapInfo.count(prevDagHash))
         {
@@ -1747,13 +1778,14 @@ static void UncleReceived(DagWidget *dagwidget,
 
     bool fHeader = false;
     uint256 prevDagHash = roothash;
-    auto blockType = DagWidget::ORPHAN_BLOCK;
+    auto blockType = DagWidget::UNCLE_BLOCK;
     bool fDoubleSpend = false;
 
     auto nNextDagViewerHeight = dagwidget->GetNextDagViewerHeight(prevDagHash, header, blockType);
     if (nNextDagViewerHeight == -1)
     {
-        LOG(DAGVIEWER, "Dagwidget: Deferring uncle in dagwidget %s", hash.ToString());
+        LOG(DAGVIEWER, "Dagwidget: Deferring uncle in dagwidget %s with prevhash", hash.ToString(),
+            prevDagHash.ToString());
         dagwidget->DeferItem(hash, mininghash, prevDagHash, nDagHeight, nSequenceId, nBlockHeight, nTransactions,
             nBlockSize, vLinks, fDoubleSpend /* ds */, blockType, fHeader, header);
 
@@ -1767,6 +1799,8 @@ static void UncleReceived(DagWidget *dagwidget,
         {
             if (dagwidget)
             {
+                LOG(DAGVIEWER, "Dagwidget: Adding uncle in dagwidget %s with prevhash %s", hash.ToString(),
+                    prevDagHash.ToString());
                 dagwidget->AddItem(hash, mininghash, prevDagHash, nDagHeight, nSequenceId, nBlockHeight, nTransactions,
                     nBlockSize, vLinks, fDoubleSpend, blockType, fHeader, header);
             }

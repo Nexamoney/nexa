@@ -40,7 +40,7 @@ To add a new log category:
         {COINDB, "coindb"},                     \
         {CMPCT, "cmpctblock"},                  \
         {DAG, "dag"},                           \
-        {DAG, "dagviewer"},                     \
+        {DAGVIEWER, "dagviewer"},               \
         {DBASE, "dbase"},                       \
         {DSPROOF, "dsproof"},                   \
         {ELECTRUM, "electrum"},                 \

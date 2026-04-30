@@ -1144,6 +1144,11 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef> &vtx,
         }
         setReadOnlyHashes.clear();
 
+        // Before updating ancestor states, remove conflicting txns.
+        for (const auto &tx : vtx)
+        {
+            _removeConflicts(*tx, conflicts);
+        }
 
         setEntries setTxnsInBlock;
         for (const auto &tx : vtx)
@@ -1259,12 +1264,6 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef> &vtx,
 
     // Update ancestor state for remaining chains
     UpdateTxnChainState(mapTxnChainTips, false);
-
-    // Remove conflicting tx
-    for (const auto &tx : vtx)
-    {
-        _removeConflicts(*tx, conflicts);
-    }
 }
 
 void CTxMemPool::_clear()

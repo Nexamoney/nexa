@@ -62,7 +62,7 @@ public:
         STORM_BLOCK = 0,
         SUMMARY = 1,
         LEGACY_BLOCK = 2,
-        ORPHAN_BLOCK = 3
+        UNCLE_BLOCK = 3
     };
 
     struct Link

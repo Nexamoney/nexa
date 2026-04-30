@@ -783,21 +783,6 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
         uint32_t nSequenceId = newNode->nSequenceId;
         DbgAssert(nSequenceId > 0, );
         uiInterface.NotifyBlockTipDag(false, newNode->dagHeight, nSequenceId, header, true);
-
-        // Update the uncles map with any "new" uncles that may have arrived.
-        auto mapUncles = tailstormForest.GetUncles(newNode);
-        for (auto &mi : mapUncles)
-        {
-            if (!tree->mapUncles.count(mi.first))
-            {
-                tree->mapUncles.emplace(mi.first, mi.second);
-
-                // Notify the dagviewer of any "new" uncles.
-                uint32_t nDagHeight = 1; // uncles should always be viewed at this height.
-                uiInterface.NotifyDagViewerUncle(!IsInitialSyncComplete(), nDagHeight, 0,
-                    mi.second->subblock->GetBlockHeader(), mi.second->roothash);
-            }
-        }
     }
     else
     {
@@ -810,10 +795,30 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
             tailstormForest.AddSubblockOrphan(newNode);
             LOG(DAG, "%s(): adding orphan to unlinked map for %d", __func__, newNode->hash.ToString());
         }
-        return {};
     }
 
-    return newNode;
+    // Update the uncles map with any "new" uncles that may have arrived regardless
+    // of whether we actually connected this subblocks. This is so that each side of
+    // any potential fork will have a full set of uncles which are can be used to
+    // determine whether a reorg should happen.
+    auto mapUncles = tailstormForest.GetUncles(newNode);
+    for (auto &mi : mapUncles)
+    {
+        if (!tree->mapUncles.count(mi.first))
+        {
+            tree->mapUncles.emplace(mi.first, mi.second);
+
+            // Notify the dagviewer of any "new" uncles.
+            uint32_t nDagHeight = 1; // uncles should always be viewed at this height.
+            uiInterface.NotifyDagViewerUncle(
+                !IsInitialSyncComplete(), nDagHeight, 0, mi.second->subblock->GetBlockHeader(), mi.second->roothash);
+        }
+    }
+
+    if (fAddedSubblock)
+        return newNode;
+    else
+        return {};
 }
 
 CTreeNodeRef CTailstormGrove::Insert(CTreeNodeRef newNode)
@@ -1406,7 +1411,19 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
 
                     // locking cs_main here prevents any other thread from starting a block validation.
                     {
+                        // maintain locking order with cs_forest.
+                        // TODO: not sure we really need cs_main here since the dag uses it's own
+                        // scriptcheckqueue and we're working on a different coinscache but for now
+                        // it's a safe thing to do.
                         LOCK(cs_main);
+
+                        // We need to make sure we take cs_forest because in the dag we are using
+                        // a single scriptcheckqueue which is governed by cs_forest, otherwise we
+                        // risk some other thread using the queue before it's fully available.
+                        // TODO: in the future we should come up with a more robust solution to
+                        // getting access to this scriptcheckqueue.
+                        LOCK(cs_forest);
+
                         bool forceProcessing = true;
                         CValidationState state;
                         ProcessNewBlock(state, Params(), nullptr, pblock, forceProcessing, nullptr, false);
@@ -2360,11 +2377,18 @@ void CTailstormForest::Check()
 
             // Check that treenode is not also an uncle
             assert(!tree->mapUncles.count(mi.first));
+            assert(!mi.second->fUncle);
 
             // Check tree mapDagTxns is correctly reflecting the tree
             nTreeTxnCount += mi.second->subblock->vtx.size() - 1;
         }
         assert(nTreeTxnCount >= tree->mapDagTxns.size());
+
+        // Check uncles map contains only uncles
+        for (auto &mi : tree->mapUncles)
+        {
+            assert(mi.second->fUncle);
+        }
 
         // Check sequence ids are contiguous and match the total number of nodes
         {
