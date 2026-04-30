@@ -1209,7 +1209,7 @@ bool ProcessMessage(CNode *pfrom,
         std::set<CTreeNodeRef> dag;
         auto sumblk = chainActive.Tip();
         // int subblockConsensusEnforcement = Params().GetConsensus().tailstormEnforceDepth;
-        for (int i = 0; i < 1; i++) // TEST: only provide the tip: subblockConsensusEnforcement + 1; i++)
+        for (int i = 0; i < 2; i++) // TEST: only provide the tip: subblockConsensusEnforcement + 1; i++)
         {
             tailstormForest.GetBestDagFor(sumblk->GetBlockHash(), dag);
             LOG(NET, "Responding to DAG request from node %s, for sumblk %d:%s with %d subblocks",

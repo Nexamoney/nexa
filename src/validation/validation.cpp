@@ -2380,6 +2380,10 @@ static bool AcceptBlock(ConstCBlockRef pblock,
                 {
                     AbortNode(state, "Failed to write block");
                 }
+
+                // Update the block viewer once we've written to disk.
+                if (IsSummaryBlock(pindex->GetBlockHeader()))
+                    NotifyBlockTipDag(pindex);
             }
             if (!ReceivedBlockTransactions(pblock, state, pindex, blockPos))
             {
@@ -4121,7 +4125,8 @@ bool ActivateBestChainStep(CValidationState &state,
                 }
 
                 // Update the block viewer (only do this once)
-                NotifyBlockTipDag(pindexNewTip);
+                if (IsSummaryBlock(pindexNewTip->GetBlockHeader()))
+                    NotifyBlockTipDag(pindexNewTip);
 
                 PruneBlockIndexCandidates();
                 if (!pindexOldTip || chainActive.Tip()->chainWork() > pindexOldTip->chainWork())
