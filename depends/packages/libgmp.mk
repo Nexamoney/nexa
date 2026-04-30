@@ -56,3 +56,7 @@ endef
 define $(package)_stage_cmds
   $(MAKE) install
 endef
+
+define $(package)_postprocess_cmds
+  rm -f lib/libgmp.la
+endef
