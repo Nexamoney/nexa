@@ -18,6 +18,7 @@
 - [getraworphanpool](commands/getraworphanpool.md)
 - [getrawtxpool](commands/getrawtxpool.md) ( verbose ) (id or idem)
 - [getrawtxpool](commands/getrawtxpool.md) ( verbose ) ( id or idem)
+- [gettailstorminfo](commands/gettailstorminfo.md)
 - [gettxout](commands/gettxout.md) "txidem" n ( includetxpool )
 - [gettxoutproof](commands/gettxoutproof.md) ["txid",...](commands/ blockhash )
 - [gettxoutproofs](commands/gettxoutproofs.md) ["txid",...](commands/ blockhash )
