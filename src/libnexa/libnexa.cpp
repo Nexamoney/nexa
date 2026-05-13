@@ -965,13 +965,8 @@ SLAPI int verifyMessage(const unsigned char *message,
     unsigned char *result,
     unsigned int resultLen)
 {
-    if (addrLen != 20)
-    {
-        set_error(LIBNEXA_ERROR::INVALID_ARG, "address must be 20 bytes\n");
-        return 0;
-    }
-
     checkSigInit();
+    // printf("verifyMessage\n");
 
     CHashWriter ss(SER_GETHASH, 0);
     ss << strMessageMagic << std::vector<unsigned char>(message, message + msgLen);
@@ -980,16 +975,57 @@ SLAPI int verifyMessage(const unsigned char *message,
     //__android_log_print(ANDROID_LOG_INFO, APPNAME, "verifying sigSize %d data %s\n", sig.size, GetHex(sig.data,
     // sig.size).c_str());
 
-    CPubKey pubkey;
+    CTxDestination destination;
+    // There are only a few script types that we can extract a pubkey from.  If the data size is
+    // 24, its a binary format script template address
+    if (addrLen == 24)
+    {
+        // printf("pay to pubkey script template destination\n");
+        ScriptTemplateDestination st;
+        std::vector<unsigned char> vec(addr, addr + addrLen);
+        CDataStream ssData(vec, SER_NETWORK, PROTOCOL_VERSION);
+        ssData >> st;
+        destination = st;
+    }
+    // If the data size is 20 its a raw pubkeyhash
+    else if (addrLen == 20)
+    {
+        destination = CKeyID(uint160(addr));
+    }
+    // If it was neither of those or they didn't decode, try string decoding of any blockchain
+    if (!IsValidDestination(destination))
+    {
+        // decode this address as if it was a string
+        auto s = std::string(addr, addr + addrLen);
+        destination = DecodeDestination(s, Params(CBaseChainParams::NEXA));
+        if (!IsValidDestination(destination))
+        {
+            destination = DecodeDestination(s, Params(CBaseChainParams::TESTNET));
+            if (!IsValidDestination(destination))
+            {
+                destination = DecodeDestination(s, Params(CBaseChainParams::REGTEST));
+                if (!IsValidDestination(destination))
+                {
+                    destination = DecodeDestination(s, Params(CBaseChainParams::LEGACY_UNIT_TESTS));
+                    if (!IsValidDestination(destination))
+                    {
+                        set_error(LIBNEXA_ERROR::DECODE_FAILURE, "invalid or unusable address\n");
+                        // printf("invalid or unusable address\n");
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
+
     std::vector<unsigned char> sigv(sig, sig + sigLen);
+    CPubKey pubkey;
     if (!pubkey.RecoverCompact(msgHash, sigv))
     {
         set_error(LIBNEXA_ERROR::DECODE_FAILURE, "could not recover pubkey from msg and sig data provided\n");
         return 0;
     }
 
-    CKeyID pkAddr = pubkey.GetID();
-    CKeyID passedAddr = CKeyID(uint160(addr));
     //__android_log_print(ANDROID_LOG_INFO, APPNAME, "pkAddr %s\n", pkAddr.GetHex().c_str());
     //__android_log_print(ANDROID_LOG_INFO, APPNAME, "passedAddr %s\n", passedAddr.GetHex().c_str());
     const size_t sz = pubkey.size();
@@ -1006,14 +1042,41 @@ SLAPI int verifyMessage(const unsigned char *message,
     memcpy(result, pubkey.begin(), sz);
     const int res = (int)sz;
     set_error(LIBNEXA_ERROR::SUCCESS_NO_ERROR, "");
-    if (pkAddr == passedAddr)
+
+    const CKeyID *keyID = std::get_if<CKeyID>(&destination);
+    ScriptTemplateDestination *st = nullptr;
+    if (keyID)
     {
-        return res;
-    }
-    else
-    {
+        if (pubkey.GetID() == *keyID)
+        {
+            return res;
+        }
         return -res;
     }
+    else if ((st = std::get_if<ScriptTemplateDestination>(&destination)) != nullptr)
+    {
+        CGroupTokenInfo groupInfo;
+        std::vector<unsigned char> templateHash;
+
+        // We do not understand this address as a script template so cannot verify this
+        if (ScriptTemplateError::OK != GetScriptTemplate(st->toScript(), &groupInfo, &templateHash))
+        {
+            return -res;
+        }
+        // We cannot figure out the pubkeyhash of a template type that we do not understand
+        if (templateHash != P2PKT_ID)
+        {
+            return -res;
+        }
+        // ok see if this pubkey makes the same p2pkt script as was given to us
+        ScriptTemplateDestination signedBy(P2pktOutput(pubkey));
+        if (*st == signedBy)
+        {
+            return res;
+        }
+    }
+    // We don't know this destination type
+    return -res;
 }
 
 SLAPI int recoverPubkeyFromSignedMessage(const unsigned char *message,
