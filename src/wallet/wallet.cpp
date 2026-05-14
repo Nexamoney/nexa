@@ -1358,6 +1358,12 @@ void CWallet::MarkConflicted(const uint256 &hashBlock, const uint256 &hashTx)
     }
 }
 
+void CWallet::UpdatedTip(const CBlockIndex *pindex)
+{
+    LOCK(cs_wallet);
+    currentTip = pindex;
+}
+
 void CWallet::SyncTransaction(const CTransactionRef &ptx, const ConstCBlockRef pblock, int txIdx)
 {
     LOCK(cs_wallet);
@@ -2010,6 +2016,7 @@ int CWallet::ScanForWalletTransactions(CBlockIndex *pindexStart, bool fUpdate)
                     ret++;
                 txIdx++;
             }
+            currentTip = pindex;
             pindex = chainActive.Next(pindex);
             if (GetTime() >= nNow + 60)
             {
@@ -5113,6 +5120,8 @@ bool InitLoadWallet()
             pindexRescan = chainActive.Genesis();
         }
     }
+    // Initialize the wallet's tip to where it was when we ran last.
+    walletInstance->UpdatedTip(pindexRescan);
     if (chainActive.Tip() && chainActive.Tip() != pindexRescan)
     {
         // We can't rescan beyond non-pruned blocks, stop and throw an error

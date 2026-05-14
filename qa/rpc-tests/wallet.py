@@ -711,7 +711,8 @@ class WalletTest (BitcoinTestFramework):
         self.nodes[0].sendtoaddress(addr3, sendQty)
         self.sync_all()
         time.sleep(instantDelay + 1) # wait one second extra to be sure
-        waitFor(waitTime, lambda: self.nodes[2].getbalance() == balance2)
+        waitFor(waitTime, lambda: self.nodes[2].getbalance() == balance2,
+                onError = lambda: f"Expected balance of {balance2} got balance {self.nodes[2].getbalance()}")
 
         # generate a block and the balance should now update
         self.nodes[0].generate(1)

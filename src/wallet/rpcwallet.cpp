@@ -3034,8 +3034,17 @@ UniValue getwalletinfo(const UniValue &params, bool fHelp)
 
     UniValue obj(UniValue::VOBJ);
     obj.pushKV("walletversion", pwalletMain->GetVersion());
-    obj.pushKV("syncblock", chainActive.Tip()->GetBlockHash().ToString());
-    obj.pushKV("syncheight", chainActive.Tip()->height());
+    auto wtip = pwalletMain->currentTip;
+    if (wtip)
+    {
+        obj.pushKV("syncblock", wtip->GetBlockHash().ToString());
+        obj.pushKV("syncheight", wtip->height());
+    }
+    else
+    {
+        obj.pushKV("syncblock", "pending");
+        obj.pushKV("syncheight", -1);
+    }
     obj.pushKV("balance", ValueFromAmount(pwalletMain->GetBalance()));
     obj.pushKV("unconfirmed_balance", ValueFromAmount(pwalletMain->GetUnconfirmedBalance()));
     obj.pushKV("immature_balance", ValueFromAmount(pwalletMain->GetImmatureBalance()));

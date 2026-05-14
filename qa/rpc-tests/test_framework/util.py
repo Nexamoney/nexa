@@ -405,6 +405,7 @@ def hub_is_running(node_num):
 def sync_wallet(timeout, node, onError="timeout in syncWallet", sleepAmt=1.0):
     timeout = float(timeout)
     while 1:
+        jsonExcept = ""
         try:
             blk = node.getbestblockhash()
             walInfo = node.getwalletinfo()

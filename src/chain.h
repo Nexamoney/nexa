@@ -654,6 +654,16 @@ public:
         return vChain[nHeight];
     }
 
+    /** Return block index if on main chain of this block or null */
+    CBlockIndex *indexFromBlock(ConstCBlockRef pblock)
+    {
+        READLOCK(cs_chainLock);
+        auto ret = _idx(pblock->height);
+        if ((ret != nullptr) && (ret->GetBlockHash() == pblock->GetHash()))
+            return ret;
+        return nullptr;
+    }
+
     /** Compare two chains efficiently. */
     friend bool operator==(const CChain &a, const CChain &b)
     {
