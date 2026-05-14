@@ -16,10 +16,10 @@
  * x = first block where the new consensus rules are enforced
  **/
 
-bool IsFork1Activated(const CBlockIndex *pindexTip);
+bool IsFork1Activated(const Consensus::Params &consensusparams, const CBlockIndex *pindexTip);
 
 /* Check if the next block will enable fork1 */
-bool IsFork1Pending(const CBlockIndex *pindexTip);
+bool IsFork1Pending(const Consensus::Params &consensusparams, const CBlockIndex *pindexTip);
 
 /** Check if fork2 is activated at a specific block.  Activated means that the new rules are applied in this block
  *

@@ -57,7 +57,8 @@ struct SeedSpec6
     uint16_t port;
 };
 
-typedef std::map<int, uint256> MapCheckpoints;
+// the key to be used in this map is supposed to be a block height
+typedef std::map<uint32_t, uint256> MapCheckpoints;
 
 struct CCheckpointData
 {

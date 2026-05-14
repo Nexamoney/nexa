@@ -136,7 +136,7 @@ bool ContextualCheckTransaction(const CTransactionRef tx,
     for (const CTxIn &txin : tx->vin)
     {
         // if fork 1 has not yet been enabled, only fork 0 types are valid
-        if (!IsFork1Activated(pindexPrev))
+        if (!IsFork1Activated(params.GetConsensus(), pindexPrev))
         {
             // check if the txin type is outside the range of valid types for the last fork
             // fork 0 means valid before the first HF
@@ -146,19 +146,17 @@ bool ContextualCheckTransaction(const CTransactionRef tx,
             }
         }
         // template for further hard forks
-        /*
         // if fork 2 has not yet been enabled, only fork 0 and 1 types are valid
-        if (!IsFork2Enabled(pindexPrev))
+        if (!IsUpgrade2Activated(pindexPrev))
         {
             if (txin.type > CTxIn::VALID_FORK1_TYPES)
             {
                 return state.DoS(100, false, REJECT_INVALID, "invalid-txin-type-for-block");
             }
         }
-        */
     }
 
-    if (IsFork1Activated(pindexPrev) || IsFork1Pending(pindexPrev))
+    if (IsFork1Activated(params.GetConsensus(), pindexPrev) || IsFork1Pending(params.GetConsensus(), pindexPrev))
     {
         for (const CTxOut &txout : tx->vout)
         {

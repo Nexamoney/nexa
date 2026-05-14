@@ -219,13 +219,13 @@ class MyTest (BitcoinTestFramework):
             n += 1
 
         txhex = hexlify(tx.serialize()).decode("utf-8")
-        txidem = self.nodes[0].enqueuerawtransaction(txhex)
+        txidem = self.nodes[0].sendrawtransaction(txhex)
         assert txidem == hexlify(libnexa.GetTxidem(txhex)[::-1]).decode("utf-8")
 
         # Now spend the created output to an anyone can spend address
         tx2 = CTransaction()
         tx2.vin.append(CTxIn(COutPoint().fromIdemAndIdx(txidem, 0), amt, b"", 0xffffffff))
-        tx2.vout.append(CTxOut(amt, CScript([OP_1])))
+        tx2.vout.append(anySpender(amt))
         sig2 = libnexa.signTxInput(tx2, 0, amt, output, destPrivKey)
         tx2.vin[0].scriptSig = libnexa.spendscript(sig2, destPubKey)
 
@@ -253,7 +253,7 @@ class MyTest (BitcoinTestFramework):
         assert(ret)
 
         # commit the created transaction
-        tx2id = self.nodes[0].enqueuerawtransaction(hexlify(tx2.serialize()).decode("utf-8"))
+        tx2id = self.nodes[0].sendrawtransaction(hexlify(tx2.serialize()).decode("utf-8"))
 
         # Check that all tx were created, and commit them
         waitFor(20, lambda: self.nodes[0].gettxpoolinfo()["size"] == 2)
