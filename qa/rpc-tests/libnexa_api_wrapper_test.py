@@ -404,6 +404,21 @@ class LibnexaTest(BitcoinTestFramework):
         assert random_bytes2 != b"0000000000000000000000000000000000000000000000000000000000000000"
         assert random_bytes != random_bytes2
 
+    def test_calcSigHash(self):
+        tx_data = bytes.fromhex("01010070bfbaaa9712046e1b306039eb9ebfa1917be52ff9bc9fc616dfee2d7d0076a50156ffffffff0000000000000000010000000000000000000000000000")
+        input_index = 0
+        prevout_script = bytes.fromhex("52210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179821038282263212c609d9ea2a6e3e172de238d8c39cabd5ac1ca10646e23fd5f5150802beef53ae")
+        hash_type = bytes()
+        res = libnexa.calcSigHash(tx_data, input_index, prevout_script, hash_type)
+        expected_hash = res.hex()
+        assert expected_hash == "9c6f00b30ac02c01be808657bec3ca97a53b9193a536e96347892e2753d99190"
+
+    def test_recoverPubkeyFromSignedMessage(self):
+        msg = "this is a test msg".encode(encoding="UTF-8")
+        sig = bytes.fromhex("2053a42ef1f7429b42e4b8676d8d6ce6fce716b43b2fa8580711822a7cff6aa83d492792db46cd79d39ccfae43a314473674e16153a277d2d1aaf0ba6014ca3df5")
+        res = libnexa.recoverPubkeyFromSignedMessage(msg, sig)
+        found_pubkey = res.hex()
+        assert found_pubkey == "03be3bae13f4a4b11c9fbcaf3a7f9d85bec9e20b6d59ab087aae0f17e2856703ea"
 
     def run_test(self):
         libnexa_methods = libnexa_test_coverage.get_libnexa_api_methods()
@@ -464,6 +479,8 @@ class LibnexaTest(BitcoinTestFramework):
         self.test_verifyDataSchnorr()
         self.test_verifyHashSchnorr()
         self.test_RandomBytes()
+        self.test_calcSigHash()
+        self.test_recoverPubkeyFromSignedMessage()
 
 
 if __name__ == '__main__':
