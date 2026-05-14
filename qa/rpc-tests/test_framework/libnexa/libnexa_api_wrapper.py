@@ -180,7 +180,10 @@ def init(libnexa_file=None):
     libnexa.verifyHashSchnorr.argtypes = [ c_char_p, c_char_p, c_int, c_char_p ]
     libnexa.RandomBytes.restype = c_int
     libnexa.RandomBytes.argtypes = [ c_char_p, c_int ]
-
+    libnexa.calcSigHash.restype = c_int
+    libnexa.calcSigHash.argtypes = [ c_char_p, c_int, c_uint, c_int64, c_char_p, c_uint, c_char_p, c_uint, c_char_p, c_uint ]
+    libnexa.recoverPubkeyFromSignedMessage.restype = c_int
+    libnexa.recoverPubkeyFromSignedMessage.argtypes = [ c_char_p, c_uint, c_char_p, c_uint, c_char_p, c_uint ]
 
 # hacky fix for creating response buffers, nothing should ever be this big
 C_STR_BUF_SIZE = 1000
@@ -524,4 +527,23 @@ def verifyHashSchnorr(hash: bytes, pubkey: bytes, signature: bytes) -> bool:
 def RandomBytes(num_bytes: int) -> bytes:
     res_buf = create_string_buffer(num_bytes)
     res_size = libnexa.RandomBytes(res_buf, num_bytes)
+    return res_buf.raw[0:res_size]
+
+
+def calcSigHash(tx_data: bytes, input_index: int, prevout_script: bytes, hash_type: bytes) -> bytes:
+    # input amount is an unused arg so fill in a 0
+    input_amount = 0
+    res_buf = create_string_buffer(C_STR_BUF_SIZE)
+    res_size = libnexa.calcSigHash(tx_data, len(tx_data), input_index, input_amount,
+                            prevout_script, len(prevout_script), hash_type,
+                            len(hash_type), res_buf, C_STR_BUF_SIZE)
+    if res_size <= 0:
+        return None
+    return res_buf.raw[0:res_size]
+
+def recoverPubkeyFromSignedMessage(message: bytes, sig: bytes) -> bytes:
+    res_buf = create_string_buffer(C_STR_BUF_SIZE)
+    res_size = libnexa.recoverPubkeyFromSignedMessage(message, len(message), sig, len(sig), res_buf, C_STR_BUF_SIZE)
+    if res_size <= 0:
+        return None
     return res_buf.raw[0:res_size]
