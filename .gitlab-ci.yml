@@ -532,7 +532,8 @@ test-ubuntu-qa-rostrum:
         - wget https://gitlab.com/nexa/rostrum/-/archive/v14.0.1/rostrum-v14.0.1.tar.gz -O rostrum-master.tar.gz
         #- wget https://gitlab.com/nexa/rostrum/-/archive/master/rostrum-master.tar.gz -O rostrum-master.tar.gz
         - tar -zxf rostrum-master.tar.gz
-        - ./rostrum-v14.0.1/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab
+        # Some rostrum tests are unreliable if launched simultaneously because (for example) they require that the txpool contents be exactly what one test places in them
+        - ./rostrum-v14.0.1/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab -parallel=1
         #- ./rostrum-master/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab
     dependencies:
         - build-ubuntu

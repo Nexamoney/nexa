@@ -440,6 +440,9 @@ void CRequestManager::Rejected(const CInv &obj, CNode *from, unsigned char reaso
     else if (reason == REJECT_INVALID)
     {
     }
+    else if (reason == REJECT_FORK)
+    {
+    }
     else if (reason == REJECT_OBSOLETE)
     {
     }

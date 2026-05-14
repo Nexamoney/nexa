@@ -605,6 +605,8 @@ public:
     uint256 hash;
 };
 
+/** CInv2 is just like CInv but it specifies the type as 1 byte, saving bytes over the network since INVs are
+    very common messages */
 class CInv2
 {
 public:
@@ -634,8 +636,8 @@ public:
     uint256 hash;
 };
 
-// Extended Inv messages store a byte vector rather than a uint256 and so
-// can hold smaller or larger values and thus have more flexibility when needed.
+/** Extended Inv messages store a byte vector rather than a uint256 and so
+    can hold smaller or larger values and thus have more flexibility when needed. */
 class CExtInv
 {
 public:
