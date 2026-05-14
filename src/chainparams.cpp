@@ -373,6 +373,9 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].windowsize = 144;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].threshold = 108; // 75% of 144
 
+        // Fork1 rules always active on regtest
+        consensus.fork1Height = 0;
+
         consensus.nextForkActivationTime = 1789948805; // 12noon, Sept 21, 2026 GMT
 
         pchMessageStart[0] = 0xea;
@@ -464,6 +467,11 @@ public:
         // Two days (in seconds)
         consensus.nASERTHalfLife = 2 * 24 * 60 * 60;
 
+        // Height of the First block for which GTP > fork time (ie we culd start
+        // accepting txns in the mempool according to the fork1 new rules
+        // fork1Height + 1:  1st block valid according the Fork1 new rules (12 Feb 2025)
+        consensus.fork1Height = 747031;
+
         consensus.nextForkActivationTime = NEXT_FORK_ACTIVATION_TIME;
 
         std::vector<unsigned char> nonce;
@@ -518,11 +526,15 @@ public:
         // height is the first block for which MTP <= upgrade activation time
         checkpointData = CCheckpointData();
         MapCheckpoints &checkpoints = checkpointData.mapCheckpoints;
-        checkpoints[100000] = uint256S("0x0acb69c056c86b62bc788bab58f5ed95f7c8cda63326b23e1d8cb349e1b5257f");
+        checkpoints[100000]     = uint256S("0x0acb69c056c86b62bc788bab58f5ed95f7c8cda63326b23e1d8cb349e1b5257f");
+        // 1st block where the new fork1 rules applied (~12 Feb 2025)
+        checkpoints[747032] = uint256S("0xf73448500f5af6f49f1f2cc44aeb3c77d0085cfe5a7273189c890fc8d8cf8797");
+        // 14 may 2026, 12:00 UTC
+        checkpoints[1075835] = uint256S("0x7baff752b1c9b20460fe3dd785439ae1b5179d634e06b268fb194fd9f93f63d4");
         // clang-format on
 
         // * UNIX timestamp of last checkpoint block
-        checkpointData.nTimeLastCheckpoint = 1661700138;
+        checkpointData.nTimeLastCheckpoint = 1778760019;
 
         nBlockFileSize = 0x8000000ULL; // 128MiB
         nUndoFileSize = 0x800000ULL; // 8MiB
@@ -585,6 +597,8 @@ public:
         consensus.powAlgorithm = 1;
         consensus.initialSubsidy = 10 * 1000000 * COIN;
         consensus.coinbaseMaturity = COINBASE_MATURITY_TESTNET;
+        // Fork1 rules always valid on stormnet
+        consensus.fork1Height = 0;
         consensus.nextForkActivationTime = NEXT_FORK_ACTIVATION_TIME;
 
         // The half life for the ASERT DAA. For every (nASERTHalfLife) seconds behind schedule the blockchain gets,
@@ -710,6 +724,11 @@ public:
         // Two days (in seconds)
         consensus.nASERTHalfLife = 2 * 24 * 60 * 60;
 
+        // Height of the First block for which GTP > fork time (ie we culd start
+        // accepting txns in the mempool according to the fork1 new rules
+        // fork1Height + 1:  1st block valid according the Fork1 new rules (31 March 2025)
+        consensus.fork1Height = 766083;
+
         consensus.nextForkActivationTime = NEXT_FORK_ACTIVATION_TIME;
 
         std::vector<unsigned char> nonce; // TODO make this difficulty higher and hard code solution
@@ -778,13 +797,15 @@ public:
         checkpoints[290000] = uint256S("0xc0f85055e25de9283ed3ebf29f8f06d4fc900f370c478de9f49f089841bc7395");
         // block 373813,  oct 1 2023
         checkpoints[373813] = uint256S("0xfdce97737c792e958030efc545aded1f25996a1eb42d25dfb8363246d5cc04ce");
-        // block 766084,  March 31 2025
+        // block 766084,  March 31 2025 (fork1)
         checkpoints[766084] = uint256S("0xf8ca73d729b2d30616b2513db99eb15f59056232f633a595a2b90f00cd1c37d3");
+        // May 14 2025, 12:03 UTC
+        checkpoints[1059519] = uint256S("0x36401c7be98bba569a17ca30add640a8e82d60b809c6d10c8d3dc2889f6f5e7d");
 
         // clang-format on
 
         // * UNIX timestamp of last checkpoint block
-        checkpointData.nTimeLastCheckpoint = 1743423742;
+        checkpointData.nTimeLastCheckpoint = 1778760236;
 
         nBlockFileSize = 0x8000000ULL; // 128MiB
         nUndoFileSize = 0x800000ULL; // 8MiB

@@ -3590,7 +3590,7 @@ void UpdateTip(CBlockIndex *pindexNew)
     nTimeBestReceived.store(GetTime());
     mempool.AddTransactionsUpdated(1);
 
-    if (IsFork1Pending(pindexNew))
+    if (IsFork1Pending(Params().GetConsensus(), pindexNew))
     {
         // If the fork is locked in to happen in the next block, force all tx to be readmitted into the pool
         // so that invalid txes are dropped

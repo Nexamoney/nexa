@@ -153,6 +153,9 @@ struct Params
     uint64_t nBlockSizeMultiplier;
     uint64_t nNextMaxBlockSize;
 
+    /** Fork1 activation height */
+    uint64_t fork1Height;
+
     /** Number of tailstorm subblocks needed to make up a block.
      *  This *includes* the current block so the actual number of subblocks a summary block needs to reference is
      *  this amount - 1.

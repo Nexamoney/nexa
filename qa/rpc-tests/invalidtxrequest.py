@@ -18,7 +18,7 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
 from test_framework.bunode import *
 from test_framework.script import *
-
+from test_framework.blocktools import p2pkh
 class MyTest (BitcoinTestFramework):
 
     def setup_chain(self,bitcoinConfDict=None, wallets=None):
@@ -65,13 +65,15 @@ class MyTest (BitcoinTestFramework):
         node = self.node
         rnode = self.rnode  # node can relay to node 1
 
-        testTx = fundSignSendSpend(node, tx, relay=False)
+        finalOutScript = p2pkh(node.getaddressforms(node.getnewaddress("p2pkh"))["legacy"])
+        testTx = fundSignSendSpend(node, tx, finalOutScript=finalOutScript, relay=False)
 
         self.invGetdata(testTx)
         txrpcIdem = uint256ToRpcHex(testTx.GetIdem())
         waitFor(10, lambda: len(self.pynodeCnxn.last_reject) > 0)
         rej = self.pynodeCnxn.last_reject.pop()
-        assert p2pErr in rej.reason
+        if p2pErr is not None:
+            assert p2pErr in rej.reason
         assert txrpcIdem not in node.getrawtxpool()
         assert txrpcIdem not in rnode.getrawtxpool()  # Verify that the bad tx did not relay
         ret = rnode.validaterawtransaction(testTx.toHex())
@@ -122,7 +124,7 @@ class MyTest (BitcoinTestFramework):
         # print(f"Using UTXO: {utxo}")
         tx1 = CTransaction()
         tx1.vin.append(CTxIn(utxo))
-        tx1.vout.append(TxOut(0,utxo["amount"]-fee, CScript([OP_1])))
+        tx1.vout.append(TxOut(0,utxo["amount"]-fee, CScript(utxo["scriptPubKey"])))
         # result = node.fundrawtransaction(tx1.toHex())
         result = self.node.signrawtransaction(tx1.toHex())
         # print(result)
@@ -147,8 +149,8 @@ class MyTest (BitcoinTestFramework):
         tx2.vin.append(CTxIn(utxo))
         #tx2.vin[0].scriptSig = b'\x61'*48 + b'\x64'
         # tx2.vout.append(TxOut(0,utxo["amount"]-fee, CScript([OP_1])))
-        tx2.vout.append(TxOut(0,utxo["amount"]-fee, CScript([OP_NOP]*48 + [OP_NOTIF])))
-        self.trySpendingAtx(tx2, b'mandatory-script-verify-flag-failed', 'mandatory-script-verify-flag-failed (Invalid OP_IF construction)')
+        tx2.vout.append(TxOut(0,utxo["amount"]-fee).setLockingToTemplate(CScript([OP_NOP]*48 + [OP_NOTIF]), None))
+        self.trySpendingAtx(tx2, None, 'mandatory-script-verify-flag-failed (Bad template operation)')
 
         # Try undersize transaction
         tx2.vin[0].scriptSig = b''

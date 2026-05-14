@@ -25,7 +25,7 @@ static void SetMTP(std::array<CBlockIndex, 12> &blocks, int64_t mtp)
     assert(blocks.back().GetMedianTimePast() == mtp);
 }
 
-BOOST_AUTO_TEST_CASE(isfork1enabled)
+BOOST_AUTO_TEST_CASE(isfork2enabled)
 {
     const CChainParams config = Params(CBaseChainParams::REGTEST);
     CBlockIndex prev;
