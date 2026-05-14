@@ -2829,7 +2829,36 @@ bool ProcessMessage(CNode *pfrom,
         }
         pfrom->PushMessageWithCookie(NetMsgType::UTXO, msgCookie | 0xffff, vUtxo);
     }
-
+    else if (strCommand == NetMsgType::NOTFOUND)
+    {
+        try
+        {
+            if (pfrom->fPeerWantsINV2)
+            {
+                std::vector<CInv2> vNotFound;
+                vRecv >> vNotFound;
+                for (const auto &inv : vNotFound)
+                {
+                    // If its not found its on a pruned fork
+                    requester.Rejected(CInv(inv.type, inv.hash), pfrom, REJECT_FORK);
+                }
+            }
+            else
+            {
+                std::vector<CInv> vNotFound;
+                vRecv >> vNotFound;
+                for (const auto &inv : vNotFound)
+                {
+                    requester.Rejected(inv, pfrom, REJECT_FORK); // If its not found its on a pruned fork
+                }
+            }
+        }
+        catch (const std::ios_base::failure &)
+        {
+            // Avoid feedback loops by preventing error messages like notfound from triggering a reject message.
+            LOG(NET | REQ, "Unparseable NOTFOUND message received\n");
+        }
+    }
     else if (strCommand == NetMsgType::REJECT)
     {
         // Request manager: this was restructured to not just be active in fDebug mode so that the request manager
