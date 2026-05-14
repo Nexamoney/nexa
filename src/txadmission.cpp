@@ -415,6 +415,15 @@ void CommitTxToMempool(int nCorral)
                 }
             }
             int64_t nEnd = GetStopwatchMicros();
+            const CBlockIndex *pindex = nullptr;
+            if (syncwallet.fSetIndex)
+                pindex = chainActive.indexFromBlock(syncwallet.pblock); // moving forward
+            // rewinding this block, so set the wallet tip to the prior.
+            else
+                pindex = chainActive[syncwallet.pblock->height - 1];
+            if (pindex && pwalletMain)
+                pwalletMain->UpdatedTip(pindex);
+
             LOG(BENCH, "Sync with wallets - processed block: %s in: %.2fms\n", syncwallet.pblock->GetHash().ToString(),
                 (nEnd - nStart) * 0.001);
         }

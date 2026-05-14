@@ -52,7 +52,7 @@ struct CSyncWithWallets
 {
     ConstCBlockRef pblock;
     std::shared_ptr<std::list<CTransactionRef> > ptxConflicted;
-    bool fSetIndex;
+    bool fSetIndex; // true to set the index of each transaction.  If false, and pblock != nullptr, I am rewinding
 };
 extern CCriticalSection cs_walletprocessing;
 extern std::deque<CSyncWithWallets> vPostBlockProcessing;

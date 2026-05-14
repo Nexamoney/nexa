@@ -80,7 +80,7 @@ class MempoolCoinbaseTest(BitcoinTestFramework):
 
         # txpool should be empty, all txns confirmed (check 2 different ways)
         mpi = self.nodes[0].gettxpoolinfo()
-        assert mpi['size'] == 6, "Transactions rejected from txpool"
+        assert mpi['size'] == 6, f"Transactions rejected from txpool, expected 6 got {mpi['size']}\n  {mpi}"
         assert_equal(set(self.nodes[0].getrawtxpool()), set(spends1_id+spends2_id))
 
         for txid in spends1_id+spends2_id:

@@ -775,6 +775,7 @@ public:
     typedef std::map<unsigned int, CMasterKey> MasterKeyMap;
     MasterKeyMap mapMasterKeys;
     unsigned int nMasterKeyMaxID;
+    const CBlockIndex *currentTip = nullptr;
 
     CWallet() { SetNull(); }
     CWallet(const std::string &strWalletFileIn)
@@ -984,6 +985,8 @@ public:
     CAmount GetWatchOnlyBalance() const;
     CAmount GetUnconfirmedWatchOnlyBalance() const;
     CAmount GetImmatureWatchOnlyBalance() const;
+
+    void UpdatedTip(const CBlockIndex *pindex);
 
     /**
      * Insert additional inputs into the transaction by
