@@ -22,8 +22,6 @@ const char *GetTxnOutputType(txnouttype t)
     {
     case TX_NONSTANDARD:
         return "nonstandard";
-    case TX_PUBKEY:
-        return "pubkey";
     case TX_PUBKEYHASH:
         return "pubkeyhash";
     case TX_SCRIPTHASH:
@@ -42,27 +40,6 @@ const char *GetTxnOutputType(txnouttype t)
         return "scripttemplate";
     }
     return nullptr;
-}
-
-static bool MatchPayToPubkey(const CScript &script, valtype &pubkey)
-{
-    // Standard tx, sender provides pubkey, receiver adds signature
-    // Template: "CScript() << OP_PUBKEY << OP_CHECKSIG"
-
-    if (script.size() == CPubKey::PUBLIC_KEY_SIZE + 2 && script[0] == CPubKey::PUBLIC_KEY_SIZE &&
-        script.back() == OP_CHECKSIG)
-    {
-        pubkey = valtype(script.begin() + 1, script.begin() + CPubKey::PUBLIC_KEY_SIZE + 1);
-        return CPubKey::ValidSize(pubkey);
-    }
-
-    if (script.size() == CPubKey::COMPRESSED_PUBLIC_KEY_SIZE + 2 && script[0] == CPubKey::COMPRESSED_PUBLIC_KEY_SIZE &&
-        script.back() == OP_CHECKSIG)
-    {
-        pubkey = valtype(script.begin() + 1, script.begin() + CPubKey::COMPRESSED_PUBLIC_KEY_SIZE + 1);
-        return CPubKey::ValidSize(pubkey);
-    }
-    return false;
 }
 
 static bool MatchPayToPubkeyHash(const CScript &script, valtype &pubkeyhash)
@@ -254,13 +231,6 @@ bool ExtendedSolver(const CScript &scriptPubKey,
     }
 
     std::vector<uint8_t> data;
-    if (MatchPayToPubkey(scriptPubKey, data))
-    {
-        typeRet = TX_PUBKEY;
-        vSolutionsRet.push_back(std::move(data));
-        return true;
-    }
-
     if (MatchPayToPubkeyHash(scriptPubKey, data))
     {
         typeRet = TX_PUBKEYHASH;
@@ -296,15 +266,6 @@ bool ExtractDestinationAndType(const CScript &scriptPubKey, CTxDestination &addr
     if (whichType == TX_SCRIPT_TEMPLATE)
     {
         addressRet = ScriptTemplateDestination(UngroupedScriptTemplate(scriptPubKey));
-        return true;
-    }
-    else if (whichType == TX_PUBKEY)
-    {
-        CPubKey pubKey(vSolutions[0]);
-        if (!pubKey.IsValid())
-            return false;
-
-        addressRet = pubKey.GetID();
         return true;
     }
     else if ((whichType == TX_PUBKEYHASH) || (whichType == TX_GRP_PUBKEYHASH))
@@ -413,11 +374,6 @@ CScript GetScriptForDestination(const CTxDestination &dest)
 
     std::visit(CScriptVisitor(&script), dest);
     return script;
-}
-
-CScript GetScriptForRawPubKey(const CPubKey &pubKey)
-{
-    return CScript() << std::vector<unsigned char>(pubKey.begin(), pubKey.end()) << OP_CHECKSIG;
 }
 
 CScript GetScriptForMultisig(int nRequired, const std::vector<CPubKey> &keys)

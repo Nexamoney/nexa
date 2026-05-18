@@ -22,7 +22,6 @@ enum txnouttype
 {
     TX_NONSTANDARD,
     // 'standard' transaction types:
-    TX_PUBKEY,
     TX_PUBKEYHASH,
     TX_SCRIPTHASH,
     TX_MULTISIG,
@@ -50,7 +49,6 @@ bool ExtractDestinations(const CScript &scriptPubKey,
 const char *GetTxnOutputType(txnouttype t);
 
 CScript GetScriptForDestination(const CTxDestination &dest);
-CScript GetScriptForRawPubKey(const CPubKey &pubkey);
 CScript GetScriptForMultisig(int nRequired, const std::vector<CPubKey> &keys);
 CScript GetScriptLabelPublic(const std::string &labelPublic);
 

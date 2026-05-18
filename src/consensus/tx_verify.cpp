@@ -171,11 +171,6 @@ bool ContextualCheckTransaction(const CTransactionRef tx,
                     if (!((whichType == TX_SCRIPTHASH) && (params.NetworkIDString() == "regtest")))
                         return state.DoS(100, false, REJECT_INVALID, "invalid-nonstandard-legacy-output");
                 }
-                // SCRIPT_HASH is already considered nonstandard, so is handled above
-                if (whichType == TX_PUBKEY)
-                {
-                    return state.DoS(100, false, REJECT_INVALID, "invalid-legacy-output");
-                }
             }
 
             if (txout.type == CTxOut::TEMPLATE)

@@ -52,7 +52,6 @@ static std::vector<ScriptImportedState> createForAllInputs(CTransactionRef tx,
     return ret;
 }
 
-
 static void CheckErrorWithFlags(const char *file,
     int line,
     uint32_t flags,
@@ -84,11 +83,9 @@ static void CheckPassWithFlags(const char *file,
     BOOST_CHECK_MESSAGE(stack == expected, "Failed at: " << file << ":" << line);
 }
 
-
 BOOST_AUTO_TEST_CASE(opcodes_basic)
 {
-    const uint32_t flags = MANDATORY_SCRIPT_VERIFY_FLAGS | SCRIPT_ALLOW_NATIVE_INTROSPECTION | SCRIPT_FORK1_OPCODES;
-    const uint32_t flags_inactive = flags & ~SCRIPT_ALLOW_NATIVE_INTROSPECTION;
+    const uint32_t flags = MANDATORY_SCRIPT_VERIFY_FLAGS | SCRIPT_FORK1_OPCODES;
 
     CCoinsView dummy;
     CCoinsViewCache coins(&dummy);
@@ -127,7 +124,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
     tx.vin[2].scriptSig = CScript();
     tx.vin[2].nSequence = 0;
 
-
     tx.vout.resize(3);
     tx.vout[0].nValue = 1000;
     tx.vout[0].scriptPubKey = CScript() << OP_2;
@@ -157,10 +153,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
 
         // failure (no context)
         CheckErrorWithFlags(__FILE__, __LINE__, flags, {}, CScript() << OP_INPUTINDEX, {}, SCRIPT_ERR_DATA_REQUIRED);
-
-        // failure (not activated)
-        CheckErrorWithFlags(
-            __FILE__, __LINE__, flags_inactive, {}, CScript() << OP_INPUTINDEX, context[0], SCRIPT_ERR_BAD_OPCODE);
     }
 
     // OP_ACTIVEBYTECODE (nullary)
@@ -185,11 +177,8 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
             {CScriptNum::fromIntUnchecked(10).getvch(), CScriptNum::fromIntUnchecked(11).getvch(),
                 CScriptNum::fromIntUnchecked(7654321).getvch(), expected2, CScriptNum::fromIntUnchecked(1).getvch()});
 
-
         // failure (no context)
         CheckErrorWithFlags(__FILE__, __LINE__, flags, {}, bytecode1, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(__FILE__, __LINE__, flags_inactive, {}, bytecode1, context[0], SCRIPT_ERR_BAD_OPCODE);
     }
 
     // OP_TXVERSION (nullary)
@@ -200,9 +189,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
 
         // failure (no context)
         CheckErrorWithFlags(__FILE__, __LINE__, flags, {}, CScript() << OP_TXVERSION, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(
-            __FILE__, __LINE__, flags_inactive, {}, CScript() << OP_TXVERSION, context[0], SCRIPT_ERR_BAD_OPCODE);
     }
 
     // OP_TXINPUTCOUNT (nullary)
@@ -213,9 +199,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
 
         // failure (no context)
         CheckErrorWithFlags(__FILE__, __LINE__, flags, {}, CScript() << OP_TXINPUTCOUNT, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(
-            __FILE__, __LINE__, flags_inactive, {}, CScript() << OP_TXINPUTCOUNT, context[0], SCRIPT_ERR_BAD_OPCODE);
     }
 
     // OP_TXOUTPUTCOUNT (nullary)
@@ -226,9 +209,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
 
         // failure (no context)
         CheckErrorWithFlags(__FILE__, __LINE__, flags, {}, CScript() << OP_TXOUTPUTCOUNT, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(
-            __FILE__, __LINE__, flags_inactive, {}, CScript() << OP_TXOUTPUTCOUNT, context[0], SCRIPT_ERR_BAD_OPCODE);
     }
 
     // OP_TXLOCKTIME (nullary)
@@ -239,11 +219,7 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
 
         // failure (no context)
         CheckErrorWithFlags(__FILE__, __LINE__, flags, {}, CScript() << OP_TXLOCKTIME, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(
-            __FILE__, __LINE__, flags_inactive, {}, CScript() << OP_TXLOCKTIME, context[0], SCRIPT_ERR_BAD_OPCODE);
     }
-
 
     // OP_UTXOVALUE (unary)
     {
@@ -270,9 +246,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
         // failure (no context)
         CheckErrorWithFlags(
             __FILE__, __LINE__, flags, {}, CScript() << OP_0 << OP_UTXOVALUE, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(__FILE__, __LINE__, flags_inactive, {}, CScript() << OP_0 << OP_UTXOVALUE, context[0],
-            SCRIPT_ERR_BAD_OPCODE);
     }
     // OP_INPUTVALUE (unary)
     {
@@ -299,11 +272,7 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
         // failure (no context)
         CheckErrorWithFlags(
             __FILE__, __LINE__, flags, {}, CScript() << OP_0 << OP_INPUTVALUE, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(__FILE__, __LINE__, flags_inactive, {}, CScript() << OP_0 << OP_INPUTVALUE, context[0],
-            SCRIPT_ERR_BAD_OPCODE);
     }
-
 
     // OP_UTXOBYTECODE (unary)
     {
@@ -330,9 +299,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
         // failure (no context)
         CheckErrorWithFlags(
             __FILE__, __LINE__, flags, {}, CScript() << OP_0 << OP_UTXOBYTECODE, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(__FILE__, __LINE__, flags_inactive, {}, CScript() << OP_0 << OP_UTXOBYTECODE, context[0],
-            SCRIPT_ERR_BAD_OPCODE);
     }
 
     // OP_OUTPOINTTXHASH (unary)
@@ -356,9 +322,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
         // failure (no context)
         CheckErrorWithFlags(
             __FILE__, __LINE__, flags, {}, CScript() << OP_0 << OP_OUTPOINTHASH, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(__FILE__, __LINE__, flags_inactive, {}, CScript() << OP_0 << OP_OUTPOINTHASH, context[0],
-            SCRIPT_ERR_BAD_OPCODE);
     }
 
     // OP_INPUTBYTECODE (unary)
@@ -386,9 +349,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
         // failure (no context)
         CheckErrorWithFlags(
             __FILE__, __LINE__, flags, {}, CScript() << OP_0 << OP_INPUTBYTECODE, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(__FILE__, __LINE__, flags_inactive, {}, CScript() << OP_0 << OP_INPUTBYTECODE, context[0],
-            SCRIPT_ERR_BAD_OPCODE);
     }
 
     // OP_INPUTSEQUENCENUMBER (unary)
@@ -416,9 +376,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
         // failure (no context)
         CheckErrorWithFlags(
             __FILE__, __LINE__, flags, {}, CScript() << OP_0 << OP_INPUTSEQUENCENUMBER, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(__FILE__, __LINE__, flags_inactive, {}, CScript() << OP_0 << OP_INPUTSEQUENCENUMBER,
-            context[0], SCRIPT_ERR_BAD_OPCODE);
     }
 
     // OP_OUTPUTVALUE (unary)
@@ -446,9 +403,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
         // failure (no context)
         CheckErrorWithFlags(
             __FILE__, __LINE__, flags, {}, CScript() << OP_0 << OP_OUTPUTVALUE, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(__FILE__, __LINE__, flags_inactive, {}, CScript() << OP_0 << OP_OUTPUTVALUE, context[0],
-            SCRIPT_ERR_BAD_OPCODE);
     }
 
     // OP_OUTPUTBYTECODE (unary)
@@ -482,9 +436,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
         // failure (no context)
         CheckErrorWithFlags(
             __FILE__, __LINE__, flags, {}, CScript() << OP_0 << OP_OUTPUTBYTECODE, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(__FILE__, __LINE__, flags_inactive, {}, CScript() << OP_0 << OP_OUTPUTBYTECODE, context[0],
-            SCRIPT_ERR_BAD_OPCODE);
     }
 
     // OP_OUTPUTTYPE (unary)
@@ -512,9 +463,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
         // failure (no context)
         CheckErrorWithFlags(
             __FILE__, __LINE__, flags, {}, CScript() << OP_0 << OP_OUTPUTTYPE, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(__FILE__, __LINE__, flags_inactive, {}, CScript() << OP_0 << OP_OUTPUTTYPE, context[0],
-            SCRIPT_ERR_BAD_OPCODE);
     }
     // OP_INPUTTYPE (unary)
     {
@@ -541,9 +489,6 @@ BOOST_AUTO_TEST_CASE(opcodes_basic)
         // failure (no context)
         CheckErrorWithFlags(
             __FILE__, __LINE__, flags, {}, CScript() << OP_0 << OP_INPUTTYPE, {}, SCRIPT_ERR_DATA_REQUIRED);
-        // failure (not activated)
-        CheckErrorWithFlags(__FILE__, __LINE__, flags_inactive, {}, CScript() << OP_0 << OP_INPUTTYPE, context[0],
-            SCRIPT_ERR_BAD_OPCODE);
     }
 }
 

@@ -87,14 +87,6 @@ static isminetype IsMine(const CKeyStore &keystore,
         case TX_NULL_DATA:
         case TX_LABELPUBLIC:
             break;
-        case TX_PUBKEY:
-        {
-            keyID = CPubKey(vSolutions[0]).GetID();
-            bool haveKey = alreadyLocked ? keystore._HaveKey(keyID) : keystore.HaveKey(keyID);
-            if (haveKey)
-                return ISMINE_SPENDABLE;
-        }
-        break;
         case TX_PUBKEYHASH:
         case TX_GRP_PUBKEYHASH:
         {

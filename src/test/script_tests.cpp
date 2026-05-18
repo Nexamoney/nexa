@@ -1901,7 +1901,7 @@ BOOST_AUTO_TEST_CASE(script_build_2)
     tests.push_back(TestBuilder(CScript() << OP_0 << OP_0 << OP_CHECKMULTISIGVERIFY,
         "CHECKMULTISIG 0-of-0 w/ SCHNORR_MULTISIG overflow bit", newmultisigflags)
                         .NumULL(0x100000000ULL)
-                        .SetScriptError(SCRIPT_ERR_NUMBER_OVERFLOW));
+                        .SetScriptError(SCRIPT_ERR_INVALID_BIT_RANGE));
 
     tests.push_back(TestBuilder(CScript() << OP_0 << ToByteVector(ParseHex("BEEF")) << OP_1 << OP_CHECKMULTISIG,
         "CHECKMULTISIG 0-of-1 w/ SCHNORR_MULTISIG, null dummy", newmultisigflags)
@@ -2467,30 +2467,6 @@ BOOST_AUTO_TEST_CASE(script_combineSigs)
     combined =
         CombineSignatures(scriptPubKey, MutableTransactionSignatureChecker(&txTo, 0, amount), scriptSigCopy, scriptSig);
     BOOST_CHECK(combined == scriptSigCopy || combined == scriptSig);
-
-    // P2SH, single-signature case:
-    CScript pkSingle;
-    pkSingle << ToByteVector(keys[0].GetPubKey()) << OP_CHECKSIG;
-    keystore.AddCScript(pkSingle);
-    scriptPubKey = GetScriptForDestination(CScriptID(pkSingle));
-    SignSignature(keystore, txFrom.vout[0], txTo, 0);
-    combined = CombineSignatures(scriptPubKey, MutableTransactionSignatureChecker(&txTo, 0, amount), scriptSig, empty);
-    BOOST_CHECK(combined == scriptSig);
-    combined = CombineSignatures(scriptPubKey, MutableTransactionSignatureChecker(&txTo, 0, amount), empty, scriptSig);
-    BOOST_CHECK(combined == scriptSig);
-    scriptSigCopy = scriptSig;
-    SignSignature(keystore, txFrom.vout[0], txTo, 0);
-    combined =
-        CombineSignatures(scriptPubKey, MutableTransactionSignatureChecker(&txTo, 0, amount), scriptSigCopy, scriptSig);
-    BOOST_CHECK(combined == scriptSigCopy || combined == scriptSig);
-    // dummy scriptSigCopy with placeholder, should always choose non-placeholder:
-    scriptSigCopy = CScript() << OP_0 << vector<unsigned char>(pkSingle.begin(), pkSingle.end());
-    combined =
-        CombineSignatures(scriptPubKey, MutableTransactionSignatureChecker(&txTo, 0, amount), scriptSigCopy, scriptSig);
-    BOOST_CHECK(combined == scriptSig);
-    combined =
-        CombineSignatures(scriptPubKey, MutableTransactionSignatureChecker(&txTo, 0, amount), scriptSig, scriptSigCopy);
-    BOOST_CHECK(combined == scriptSig);
 
     // Hardest case:  Multisig 2-of-3
     scriptPubKey = GetScriptForMultisig(2, pubkeys);

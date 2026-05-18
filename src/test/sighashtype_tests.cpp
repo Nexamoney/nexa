@@ -10,6 +10,7 @@
 #include "core_io.h"
 #include "key.h"
 #include "keystore.h"
+#include "script/scripttemplate.h"
 #include "script/sign.h"
 #include "txadmission.h"
 #include "validation/validation.h"
@@ -75,10 +76,11 @@ static void CheckSigHashType(SigHashType t,
 }
 
 //
-// Helper: create two dummy transactions, each with
-// two outputs.  The first has 11 and 50 CENT outputs
-// paid to a TX_PUBKEY, the second 21 and 22 CENT outputs
-// paid to a TX_PUBKEYHASH.
+// Helper: create two dummy transactions.  The first has 100 and 50 CENT
+// outputs paid to a P2PKT script template (so the scriptSig produced by
+// ProduceSignature ends with the signature, preserving the
+// last-byte-is-sighashtype layout this test relies on).  The second has 21
+// and 22 CENT outputs paid to a TX_PUBKEYHASH.
 //
 static std::vector<CMutableTransaction> SetupDummyInputs(CBasicKeyStore &keystoreRet, CCoinsViewCache &coinsRet)
 {
@@ -98,9 +100,9 @@ static std::vector<CMutableTransaction> SetupDummyInputs(CBasicKeyStore &keystor
     dummyTransactions[0].vin.resize(1); // make a fake input so this is not seen as a coinbase
     dummyTransactions[0].vout.resize(2);
     dummyTransactions[0].vout[0].nValue = 100 * CENT;
-    dummyTransactions[0].vout[0].scriptPubKey << ToByteVector(key[0].GetPubKey()) << OP_CHECKSIG;
+    dummyTransactions[0].vout[0].SetScript(P2pktOutput(key[0].GetPubKey()));
     dummyTransactions[0].vout[1].nValue = 50 * CENT;
-    dummyTransactions[0].vout[1].scriptPubKey << ToByteVector(key[1].GetPubKey()) << OP_CHECKSIG;
+    dummyTransactions[0].vout[1].SetScript(P2pktOutput(key[1].GetPubKey()));
     AddCoins(coinsRet, dummyTransactions[0], height);
 
     dummyTransactions[1].vin.resize(1); // make a fake input so this is not seen as a coinbase

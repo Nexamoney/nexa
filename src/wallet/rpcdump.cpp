@@ -612,7 +612,6 @@ UniValue importpubkey(const UniValue &params, bool fHelp)
     // Import a few different ways to use this pubkey
     ImportAddress(pubKey.GetID(), strLabel);
     ImportAddress(ScriptTemplateDestination(P2pktOutput(pubKey)), strLabel);
-    ImportScript(GetScriptForRawPubKey(pubKey), strLabel, false);
 
     if (fRescanLocal)
     {

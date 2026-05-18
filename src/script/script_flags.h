@@ -90,15 +90,6 @@ enum
     //
     SCRIPT_ENABLE_CHECKDATASIG = (1U << 18),
 
-    // Flag which determines if the script interpreter should allow
-    // 64-bit integer arithmetic and the return of OP_MUL or use the previous
-    // semantics.
-    SCRIPT_ALLOW_64_BIT_INTEGERS = (1U << 24),
-
-    // Flag which determines if the script interpretor should allow
-    // Native Introspection opcodes.
-    SCRIPT_ALLOW_NATIVE_INTROSPECTION = (1U << 25),
-
     // Flag which determines if the script interpretor should relax stack width restrictions
     SCRIPT_RELAX_STACK_WIDTH = (1U << 26),
     // Flag which determines if the script interpretor should enforce a maximum # of bytes for the entire stack
