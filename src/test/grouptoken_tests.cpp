@@ -279,10 +279,6 @@ public:
         {
             bool ok = ExtendedSolver(prevtxout.scriptPubKey, type, solns, grp);
             BOOST_CHECK(ok);
-            if (type == TX_PUBKEY)
-            {
-                return CScript() << sig;
-            }
             if ((type == TX_GRP_PUBKEYHASH) || (type == TX_PUBKEYHASH))
             {
                 return CScript() << sig << ToByteVector(key.GetPubKey());

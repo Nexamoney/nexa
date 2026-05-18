@@ -66,10 +66,8 @@ public:
 
 BOOST_FIXTURE_TEST_SUITE(respenddetector_tests, RespendFixture);
 
-// Helper: create two dummy transactions, each with
-// two outputs.  The first has 11 and 50 CENT outputs
-// paid to a TX_PUBKEY, the second 21 and 22 CENT outputs
-// paid to a TX_PUBKEYHASH.
+// Helper: create a dummy transaction with two 50 CENT outputs paid to a
+// TX_PUBKEYHASH.
 //
 static std::vector<CMutableTransaction> SetupDummyInputs(CBasicKeyStore &keystoreRet, CCoinsViewCache &coinsRet)
 {
@@ -88,9 +86,9 @@ static std::vector<CMutableTransaction> SetupDummyInputs(CBasicKeyStore &keystor
     int nHeight = 1000; // any height will do
     dummyTransactions[0].vout.resize(2);
     dummyTransactions[0].vout[0].nValue = 50 * CENT;
-    dummyTransactions[0].vout[0].scriptPubKey << ToByteVector(key[0].GetPubKey()) << OP_CHECKSIG;
+    dummyTransactions[0].vout[0].scriptPubKey = GetScriptForDestination(key[0].GetPubKey().GetID());
     dummyTransactions[0].vout[1].nValue = 50 * CENT;
-    dummyTransactions[0].vout[1].scriptPubKey << ToByteVector(key[1].GetPubKey()) << OP_CHECKSIG;
+    dummyTransactions[0].vout[1].scriptPubKey = GetScriptForDestination(key[1].GetPubKey().GetID());
     AddCoins(coinsRet, dummyTransactions[0], nHeight);
 
     return dummyTransactions;

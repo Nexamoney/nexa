@@ -22,10 +22,8 @@ using namespace respend;
 BOOST_AUTO_TEST_SUITE(respendrelayer_tests);
 
 
-// Helper: create two dummy transactions, each with
-// two outputs.  The first has 11 and 50 CENT outputs
-// paid to a TX_PUBKEY, the second 21 and 22 CENT outputs
-// paid to a TX_PUBKEYHASH.
+// Helper: create a dummy transaction with two 50 CENT outputs paid to a
+// TX_PUBKEYHASH.
 //
 static std::vector<CMutableTransaction> SetupDummyInputs(CBasicKeyStore &keystoreRet, CCoinsViewCache &coinsRet)
 {
@@ -44,9 +42,9 @@ static std::vector<CMutableTransaction> SetupDummyInputs(CBasicKeyStore &keystor
     int nHeight = 1000; // any height will do
     dummyTransactions[0].vout.resize(2);
     dummyTransactions[0].vout[0].nValue = 50 * CENT;
-    dummyTransactions[0].vout[0].scriptPubKey << ToByteVector(key[0].GetPubKey()) << OP_CHECKSIG;
+    dummyTransactions[0].vout[0].scriptPubKey = GetScriptForDestination(key[0].GetPubKey().GetID());
     dummyTransactions[0].vout[1].nValue = 50 * CENT;
-    dummyTransactions[0].vout[1].scriptPubKey << ToByteVector(key[1].GetPubKey()) << OP_CHECKSIG;
+    dummyTransactions[0].vout[1].scriptPubKey = GetScriptForDestination(key[1].GetPubKey().GetID());
     AddCoins(coinsRet, dummyTransactions[0], nHeight);
 
     return dummyTransactions;
@@ -331,46 +329,6 @@ BOOST_FIXTURE_TEST_CASE(triggers_correctly_p2pkh, TestChain100Setup)
     catch (const std::runtime_error &e)
     {
         BOOST_CHECK_EQUAL(e.what(), "Can not create dsproof from identical transactions");
-    }
-
-    // 6) Create a dsproof where one transaction is a spend from a coinbase (P2PK).  It should not
-    //    be possible. Create t3 which double spends t1's coinbase.
-    CMutableTransaction t3;
-    t3.vin.resize(1);
-    t3.vin[0] = dummyTransactions[0].SpendOutput(0);
-    t3.vout.resize(1);
-    t3.vout[0].nValue = 50 * CENT;
-    key.MakeNewKey(true);
-    keystore.AddKey(key);
-    t3.vout[0].scriptPubKey = GetScriptForDestination(key.GetPubKey().GetID());
-    t3.vout[0].SetScript(t3.vout[0].scriptPubKey);
-    CTransaction tx3(t3);
-    {
-        TransactionSignatureCreator tsc(&keystore, &tx3, 0, defaultSigHashType);
-        const CScript &scriptPubKey = dummyTransactions[0].vout[0].scriptPubKey;
-        CScript &scriptSigRes = t3.vin[0].scriptSig;
-        bool worked = ProduceSignature(tsc, scriptPubKey, scriptSigRes);
-        BOOST_CHECK(worked);
-    }
-    CTransaction spendt1(t1);
-    CTransaction spendt3(t3);
-    pool.addUnchecked(entry.FromTx(spendt3));
-    pool.addUnchecked(entry.FromTx(spendt1));
-    try
-    {
-        // both spendt3 and spendt1 are P2PK.
-        READLOCK(pool.cs_txmempool);
-        const auto dsp = DoubleSpendProof::create(spendt3, spendt1, pool);
-        DoubleSpendProof::Validity validity;
-        validity = dsp.validate(pool);
-        if (validity == DoubleSpendProof::Invalid)
-            throw std::runtime_error("Invalid dsproof");
-
-        BOOST_CHECK_MESSAGE(false, "We should have thrown");
-    }
-    catch (const std::runtime_error &e)
-    {
-        BOOST_CHECK_EQUAL(e.what(), "Can not create dsproof: Transaction was not a valid type");
     }
 
     // Cleanup

@@ -507,8 +507,6 @@ bool ScriptMachine::EndStep()
 bool ScriptMachine::Step()
 {
     bool fRequireMinimal = (flags & SCRIPT_VERIFY_MINIMALDATA) != 0;
-    const bool integers64Bit = (flags & SCRIPT_ALLOW_64_BIT_INTEGERS) != 0;
-    const bool nativeIntrospection = (flags & SCRIPT_ALLOW_NATIVE_INTROSPECTION) != 0;
 
     const bool negativeOP_ROLL_OP_PICK = (flags & SCRIPT_FORK1_OPCODES) != 0;
     const bool opParseEnabled = (flags & SCRIPT_FORK1_OPCODES) != 0;
@@ -519,8 +517,7 @@ bool ScriptMachine::Step()
     const bool opMerkleRootEnabled = (flags & SCRIPT_FORK1_OPCODES) != 0;
     const bool upgrade2 = (flags & SCRIPT_UPGRADE2_OPCODES) != 0;
 
-    const size_t maxIntegerSize =
-        integers64Bit ? CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT : CScriptNum::MAXIMUM_ELEMENT_SIZE_32_BIT;
+    const size_t maxIntegerSize = CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT;
 
     const ScriptError_t invalidNumberRangeError = ScriptError_t::SCRIPT_ERR_INVALID_NUMBER_RANGE;
 
@@ -2202,11 +2199,6 @@ bool ScriptMachine::Step()
                 case OP_TXOUTPUTCOUNT:
                 case OP_TXLOCKTIME:
                 {
-                    if (!nativeIntrospection)
-                    {
-                        LOG(SCRIPT, "Native Introspection is off; opcode rejected");
-                        return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
-                    }
                     if (!sis.tx)
                     {
                         return set_error(serror, SCRIPT_ERR_DATA_REQUIRED);
@@ -2278,11 +2270,6 @@ bool ScriptMachine::Step()
                 case OP_OUTPUTTYPE:
                 case OP_INPUTVALUE:
                 {
-                    if (!nativeIntrospection)
-                    {
-                        LOG(SCRIPT, "Native Introspection is off; opcode rejected");
-                        return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
-                    }
                     if (!sis.tx)
                     {
                         return set_error(serror, SCRIPT_ERR_DATA_REQUIRED);

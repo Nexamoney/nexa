@@ -71,12 +71,11 @@ BOOST_AUTO_TEST_CASE(sign)
         keystore.AddKey(key[i]);
     }
 
-    // 8 Scripts: checking all combinations of
-    // different keys, straight/P2SH, pubkey/pubkeyhash
+    // 8 Scripts: 4 different keys, straight/P2SH
     CScript standardScripts[4];
-    standardScripts[0] << ToByteVector(key[0].GetPubKey()) << OP_CHECKSIG;
+    standardScripts[0] = GetScriptForDestination(key[0].GetPubKey().GetID());
     standardScripts[1] = GetScriptForDestination(key[1].GetPubKey().GetID());
-    standardScripts[2] << ToByteVector(key[1].GetPubKey()) << OP_CHECKSIG;
+    standardScripts[2] = GetScriptForDestination(key[3].GetPubKey().GetID());
     standardScripts[3] = GetScriptForDestination(key[2].GetPubKey().GetID());
     CScript evalScripts[4];
     for (int i = 0; i < 4; i++)

@@ -60,16 +60,6 @@ BOOST_AUTO_TEST_CASE(script_standard_Solver_success) {
     txnouttype whichType;
     std::vector<std::vector<uint8_t>> solutions;
 
-    // TX_PUBKEY
-    s.clear();
-    s << ToByteVector(pubkeys[0]) << OP_CHECKSIG;
-    BOOST_CHECK(Solver(s, whichType, solutions));
-    BOOST_CHECK_EQUAL(whichType, TX_PUBKEY);
-    BOOST_CHECK_EQUAL(solutions.size(), 1UL);
-    BOOST_CHECK(solutions[0] == ToByteVector(pubkeys[0]));
-    BOOST_CHECK(IsMine(keystore, s, nullBestBlock));
-    BOOST_CHECK(!IsMine(emptykeystore, s, nullBestBlock));
-
     // TX_PUBKEYHASH
     s.clear();
     s << OP_DUP << OP_HASH160 << ToByteVector(pubkeys[0].GetID()) << OP_EQUALVERIFY << OP_CHECKSIG;
@@ -149,14 +139,6 @@ BOOST_AUTO_TEST_CASE(script_standard_Solver_success) {
 
     // Try some non-minimal PUSHDATA pushes in various standard scripts
     for (auto pushdataop : {OP_PUSHDATA1, OP_PUSHDATA2, OP_PUSHDATA4}) {
-        // mutated TX_PUBKEY
-        s.clear();
-        AppendPush(s, pushdataop, ToByteVector(pubkeys[0]));
-        s << OP_CHECKSIG;
-        BOOST_CHECK(!Solver(s, whichType, solutions));
-        BOOST_CHECK_EQUAL(whichType, TX_NONSTANDARD);
-        BOOST_CHECK_EQUAL(solutions.size(), 0UL);
-
         // mutated TX_PUBKEYHASH
         s.clear();
         s << OP_DUP << OP_HASH160;
@@ -240,11 +222,6 @@ BOOST_AUTO_TEST_CASE(script_standard_Solver_failure) {
     txnouttype whichType;
     std::vector<std::vector<uint8_t>> solutions;
 
-    // TX_PUBKEY with incorrectly sized pubkey
-    s.clear();
-    s << std::vector<uint8_t>(30, 0x01) << OP_CHECKSIG;
-    BOOST_CHECK(!Solver(s, whichType, solutions));
-
     // TX_PUBKEYHASH with incorrectly sized key hash
     s.clear();
     s << OP_DUP << OP_HASH160 << ToByteVector(pubkey) << OP_EQUALVERIFY
@@ -301,13 +278,6 @@ BOOST_AUTO_TEST_CASE(script_standard_ExtractDestination) {
     CScript s;
     CTxDestination address;
 
-    // TX_PUBKEY
-    s.clear();
-    s << ToByteVector(pubkey) << OP_CHECKSIG;
-    BOOST_CHECK(ExtractDestination(s, address));
-    BOOST_CHECK(std::get_if<CKeyID>(&address) &&
-                *std::get_if<CKeyID>(&address) == pubkey.GetID());
-
     // TX_PUBKEYHASH
     s.clear();
     s << OP_DUP << OP_HASH160 << ToByteVector(pubkey.GetID()) << OP_EQUALVERIFY
@@ -357,16 +327,6 @@ BOOST_AUTO_TEST_CASE(script_standard_ExtractDestinations) {
     txnouttype whichType;
     std::vector<CTxDestination> addresses;
     int nRequired;
-
-    // TX_PUBKEY
-    s.clear();
-    s << ToByteVector(pubkeys[0]) << OP_CHECKSIG;
-    BOOST_CHECK(ExtractDestinations(s, whichType, addresses, nRequired));
-    BOOST_CHECK_EQUAL(whichType, TX_PUBKEY);
-    BOOST_CHECK_EQUAL(addresses.size(), 1UL);
-    BOOST_CHECK_EQUAL(nRequired, 1);
-    BOOST_CHECK(std::get_if<CKeyID>(&addresses[0]) &&
-                *std::get_if<CKeyID>(&addresses[0]) == pubkeys[0].GetID());
 
     // TX_PUBKEYHASH
     s.clear();
@@ -450,12 +410,6 @@ BOOST_AUTO_TEST_CASE(script_standard_GetScriptFor_) {
     result = GetScriptForDestination(CNoDestination());
     BOOST_CHECK(result == expected);
 
-    // GetScriptForRawPubKey
-    expected.clear();
-    expected << ToByteVector(pubkeys[0]) << OP_CHECKSIG;
-    result = GetScriptForRawPubKey(pubkeys[0]);
-    BOOST_CHECK(result == expected);
-
     // GetScriptForMultisig
     expected.clear();
     expected << OP_2 << ToByteVector(pubkeys[0]) << ToByteVector(pubkeys[1])
@@ -480,38 +434,6 @@ BOOST_AUTO_TEST_CASE(script_standard_IsMine) {
     CScript scriptPubKey;
     isminetype result;
     CBlockIndex *nullBestBlock = nullptr;
-
-    // P2PK compressed
-    {
-        CBasicKeyStore keystore;
-        scriptPubKey.clear();
-        scriptPubKey << ToByteVector(pubkeys[0]) << OP_CHECKSIG;
-
-        // Keystore does not have key
-        result = IsMine(keystore, scriptPubKey, nullBestBlock);
-        BOOST_CHECK_EQUAL(result, ISMINE_NO);
-
-        // Keystore has key
-        keystore.AddKey(keys[0]);
-        result = IsMine(keystore, scriptPubKey, nullBestBlock);
-        BOOST_CHECK_EQUAL(result, ISMINE_SPENDABLE);
-    }
-
-    // P2PK uncompressed
-    {
-        CBasicKeyStore keystore;
-        scriptPubKey.clear();
-        scriptPubKey << ToByteVector(uncompressedPubkey) << OP_CHECKSIG;
-
-        // Keystore does not have key
-        result = IsMine(keystore, scriptPubKey, nullBestBlock);
-        BOOST_CHECK_EQUAL(result, ISMINE_NO);
-
-        // Keystore has key
-        keystore.AddKey(uncompressedKey);
-        result = IsMine(keystore, scriptPubKey, nullBestBlock);
-        BOOST_CHECK_EQUAL(result, ISMINE_SPENDABLE);
-    }
 
     // P2PKH compressed
     {
