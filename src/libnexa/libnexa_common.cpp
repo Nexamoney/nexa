@@ -52,9 +52,8 @@ void get_error_string(char *buf, uint64_t buflen)
     std::memcpy(buf, str_err.c_str(), copyable);
 }
 
-static bool sigInited = false;
-ECCVerifyHandle *verifyContext = nullptr;
-CChainParams *libnexaParams = nullptr;
+volatile ECCVerifyHandle *verifyContext = nullptr;
+volatile CChainParams *libnexaParams = nullptr;
 
 ForkDeploymentInfo VersionBitsDeploymentInfo[Consensus::MAX_VERSION_BITS_DEPLOYMENTS];
 
@@ -158,14 +157,39 @@ CChainParams *GetChainParams(ChainSelector chainSelector)
 // No-op this RPC function that is unused in .so context
 extern UniValue token(const UniValue &params, bool fHelp) { return UniValue(); }
 
+static std::mutex sigInitLock;
 void checkSigInit()
 {
-    if (!sigInited)
+    try
     {
-        sigInited = true;
-        SHA256AutoDetect();
-        ECC_Start();
-        verifyContext = new ECCVerifyHandle();
+        try
+        {
+            sigInitLock.lock();
+        }
+        catch (const std::exception &)
+        {
+            // Can happen if the sigInitLock is not constructed.
+            // But this should not happen in normal execution.
+            // If it happens during library initialization or destruction, that should be single threaded anyway.
+        }
+
+        if (verifyContext == nullptr)
+        {
+            SHA256AutoDetect();
+            ECC_Start();
+            verifyContext = new ECCVerifyHandle();
+        }
+    }
+    catch (...)
+    {
+    }
+
+    try
+    {
+        sigInitLock.unlock();
+    }
+    catch (const std::exception &)
+    {
     }
 }
 

@@ -1684,7 +1684,17 @@ void GetStrongRandBytes(unsigned char *buf, int num)
 /** Return random bytes from cryptographically acceptable random sources */
 SLAPI int RandomBytes(unsigned char *buf, int num)
 {
-    GetStrongRandBytes(buf, num);
+    int count = 0;
+    // GetStrongRandomBytes has an assertion that limits it to 32 bytes, so it only pulls 32 bytes per random seed.
+    // So we need to loop getting a max of 32 at a time.
+    while (count < num)
+    {
+        int askFor = num - count;
+        if (askFor > 32)
+            askFor = 32;
+        GetStrongRandBytes(buf + count, askFor);
+        count += askFor;
+    }
     set_error(LIBNEXA_ERROR::SUCCESS_NO_ERROR, "");
     return num;
 }
