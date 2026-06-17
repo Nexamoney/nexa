@@ -56,8 +56,8 @@ void get_error_string(char *buf, uint64_t buflen);
 // Schnorr is only 64, but this must also include a few extra bytes for the sighashtype
 #define MAX_SIG_LEN 100
 
-extern ECCVerifyHandle *verifyContext;
-extern CChainParams *libnexaParams;
+extern volatile ECCVerifyHandle *verifyContext;
+extern volatile CChainParams *libnexaParams;
 
 // Must match the equivalent object in calling language code (e.g. PayAddressType)
 // Matches the CashAddrType enum used for address types in cashaddrenc.h with the addition of NONE
