@@ -776,7 +776,7 @@ build-win-64:
     needs: ["build-win-64-depends"]
     script:
         - ./autogen.sh
-        - - mkdir build; cd build
+        - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/x86_64-w64-mingw32
         - make -j `nproc`
         - ccache --show-stats
