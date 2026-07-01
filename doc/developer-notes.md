@@ -12,6 +12,7 @@
     * [DEBUG_LOCKORDER](#debug_lockorder)
     * [Memory Profiling](#memory-profiling)
   * [Locking/mutex usage notes](#locking/mutex-usage-notes)
+    * [Lockorders](#lockorders-within-the-nexa-full-node)
   * [Threads](#threads)
   * [Ignoring IDE/editor files](#ignoring-ide/editor-files)
 * [Development guidelines](#development-guidelines)
@@ -265,6 +266,45 @@ Re-architecting the core code so there are better-defined interfaces
 between the various components is a goal, with any necessary locking
 done by the components (e.g. see the self-contained CKeyStore class
 and its cs_KeyStore lock for example).
+
+### Lockorders within the Nexa full node
+
+The following is a list of current lockorders that need to be adhered to in order to
+prevent any deadlocking within the Nexa full node.  The lines below show the ordering
+read from left to right.
+
+NOTE: the TX_ADMISSION_PAUSE is actually a CORRAL but it behaves very much like a lock
+so the ordering must also be maintained along with traditional locks.
+
+
+- cs_vrecv -> csmain -> cs_vsend -> cs_orphanpool -> cs_xval -> cs_txmempool
+- csMiningCandidate -> cs_main
+- cs_main -> cv_send -> cs->filter
+- cs_main -> cs_blockvalidationthread-> cs_wallet
+- cs_objectdownloader -> csblockvalidationthread
+- cs_main -> cs_objDownloader -> cs_inflight
+- cs_main -> cs_vNodes
+- cs_main -> cs_utxo
+- cs_main -> cs->vSend -> cs_objDownLoader -> cs_vNodes -> cs_filter
+- cs_main -> cs_txmempool -> cs_objDownloader
+- cs_main -> cs_mapBlockindex -> cs_objDownloader -> cs_chainLock
+- cs_main -> cs_setBanned
+- cs_main -> TX_ADMISSION_PAUSE -> cs_wallet
+- cs_main -> cs_wallet -> cs_mapBlockindex
+- cs_main -> cs_txmempool -> csCommitq -> csCommitq2
+- cs_main -> cs_LastBlockFile -> cs_mapBlockindex 
+- cs_wallet -> cs_txmempool
+- cs_accept-> cs_wallet-> cs_orphanpool-> cs_txmempool- >cs_utxo
+- cs_orphanpool -> cs_utxo
+- cs_inflight -> cs_vsend-> cs_priorityQ
+- cs_vNodes -> cs_vNodesDisconnected
+- cs_vNodes -> cs_filter
+- cs_main -> cs_forest -> cs_info
+- cs_forest-> cs_mapBlockindex
+- cs_forest-> cs_txmempool
+- cs_main-> cs_forest -> cs_blockvalidationthread-> TX_ADMISSION_PAUSE -> cs_vNodes
+- cs_blockcache -> cs_chainLock
+
 
 ## Threads
 
