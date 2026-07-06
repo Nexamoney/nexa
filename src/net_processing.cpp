@@ -3413,64 +3413,6 @@ bool SendMessages(CNode *pto)
         }
 
         //
-        // Try sending tailstorm subblock announcements via headers
-        //
-        {
-            std::vector<uint256> vSubblocksToAnnounce;
-            {
-                // Make a copy so that we do not need to keep cs_inventory
-                LOCK(pto->cs_inventory);
-                vSubblocksToAnnounce.swap(pto->vSubblockHashesToAnnounce);
-            }
-
-            uint256 zero;
-            std::vector<CBlockHeader> vHeaders;
-            {
-                std::vector<ConstCBlockRef> pblocks(vSubblocksToAnnounce.size());
-                std::vector<uint256> pblocksHash(vSubblocksToAnnounce.size());
-                // Skip subblocks that we don't have
-                // Done outside the CNodeStateAccessor to prevent lock dependencies.
-                int pblockIdx = 0;
-                for (uint256 &hash : vSubblocksToAnnounce)
-                {
-                    if (tailstormForest.Find(hash, pblocks[pblockIdx]))
-                    {
-                        pblocksHash[pblockIdx] = hash;
-                        pblockIdx++;
-                    }
-                }
-
-                CNodeStateAccessor modablestate(nodestate, pto->GetId());
-                for (int i = 0; i < pblockIdx; i++)
-                {
-                    ConstCBlockRef pblock = pblocks[i];
-                    uint256 hash = pblocksHash[i];
-                    const CBlockHeader &header = pblock->GetBlockHeader();
-                    if (PeerHasSubblockHeader(modablestate, hash))
-                    {
-                        continue;
-                    }
-                    else
-                    {
-                        // update subblock header status for this peer
-                        modablestate->mapSubblockHeaders.emplace(hash, header.height);
-                    }
-
-                    vHeaders.push_back(header);
-                    LOG(NET, "%s: sending subblock header %s:%d to peer=%d\n", __func__, hash.ToString(),
-                        pblock->GetHeight(), pto->id);
-
-                    if (vHeaders.size() >= MAX_HEADERS_RESULTS)
-                        break;
-                }
-            }
-            if (!vHeaders.empty())
-            {
-                pto->PushMessage(NetMsgType::HEADERS, vHeaders);
-            }
-        }
-
-        //
         // Try sending block announcements via headers
         //
         {
@@ -3597,6 +3539,64 @@ bool SendMessages(CNode *pto)
                 }
                 pto->PushMessage(NetMsgType::HEADERS, vHeaders);
                 CNodeStateAccessor(nodestate, pto->GetId())->pindexBestHeaderSent = pBestIndex;
+            }
+        }
+
+        //
+        // Try sending tailstorm subblock announcements via headers
+        //
+        {
+            std::vector<uint256> vSubblocksToAnnounce;
+            {
+                // Make a copy so that we do not need to keep cs_inventory
+                LOCK(pto->cs_inventory);
+                vSubblocksToAnnounce.swap(pto->vSubblockHashesToAnnounce);
+            }
+
+            uint256 zero;
+            std::vector<CBlockHeader> vHeaders;
+            {
+                std::vector<ConstCBlockRef> pblocks(vSubblocksToAnnounce.size());
+                std::vector<uint256> pblocksHash(vSubblocksToAnnounce.size());
+                // Skip subblocks that we don't have
+                // Done outside the CNodeStateAccessor to prevent lock dependencies.
+                int pblockIdx = 0;
+                for (uint256 &hash : vSubblocksToAnnounce)
+                {
+                    if (tailstormForest.Find(hash, pblocks[pblockIdx]))
+                    {
+                        pblocksHash[pblockIdx] = hash;
+                        pblockIdx++;
+                    }
+                }
+
+                CNodeStateAccessor modablestate(nodestate, pto->GetId());
+                for (int i = 0; i < pblockIdx; i++)
+                {
+                    ConstCBlockRef pblock = pblocks[i];
+                    uint256 hash = pblocksHash[i];
+                    const CBlockHeader &header = pblock->GetBlockHeader();
+                    if (PeerHasSubblockHeader(modablestate, hash))
+                    {
+                        continue;
+                    }
+                    else
+                    {
+                        // update subblock header status for this peer
+                        modablestate->mapSubblockHeaders.emplace(hash, header.height);
+                    }
+
+                    vHeaders.push_back(header);
+                    LOG(NET, "%s: sending subblock header %s:%d to peer=%d\n", __func__, hash.ToString(),
+                        pblock->GetHeight(), pto->id);
+
+                    if (vHeaders.size() >= MAX_HEADERS_RESULTS)
+                        break;
+                }
+            }
+            if (!vHeaders.empty())
+            {
+                pto->PushMessage(NetMsgType::HEADERS, vHeaders);
             }
         }
 
