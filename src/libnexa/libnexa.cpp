@@ -92,6 +92,69 @@ SLAPI int Bin2Hex(const unsigned char *val, int length, char *result, unsigned i
     return (int)sz;
 }
 
+SLAPI int deriveExtPubKey(const unsigned char *encodedXpubkey, unsigned int index, unsigned char *derivedXpubkey)
+{
+    checkSigInit();
+    CExtPubKey xpub;
+    xpub.Decode(encodedXpubkey);
+    CExtPubKey childXPub;
+    if (index >= BIP32_HARDENED_KEY_LIMIT)
+    {
+        set_error(LIBNEXA_ERROR::RETURN_FAILURE, "key derivation failure -- index is hardened\n");
+        return -1;
+    }
+    bool result = xpub.Derive(childXPub, index);
+    if (!result)
+    {
+        set_error(LIBNEXA_ERROR::RETURN_FAILURE, "Xpubkey derivation failure\n");
+        return -1;
+    }
+    childXPub.Encode(derivedXpubkey);
+    set_error(LIBNEXA_ERROR::SUCCESS_NO_ERROR, "");
+    return BIP32_EXTKEY_SIZE;
+}
+
+/** Derive a BIP-0032 heirarchial deterministic wallet key */
+SLAPI int bip32DeriveChildExtKey(const unsigned char *secretSeed,
+    unsigned int secretSeedLen,
+    unsigned int *path,
+    unsigned int pathLen,
+    unsigned char *outputExtKey,
+    char *derivationString,
+    unsigned int derivationStringLen)
+{
+    CExtKey derivedSecret;
+    if ((secretSeedLen < 16) || (secretSeedLen > 64))
+    {
+        set_error(LIBNEXA_ERROR::INVALID_ARG, "invalid seed len, len was < 16 or > 64\n");
+        return -1;
+    }
+    checkSigInit();
+    std::string derivedPath;
+    bool ret = Bip32DeriveExtKey(secretSeed, secretSeedLen, path, pathLen, &derivedSecret, &derivedPath);
+    if (!ret)
+    {
+        set_error(LIBNEXA_ERROR::INVALID_ARG, "derivation error\n");
+        return -1;
+    }
+    if (outputExtKey != nullptr)
+        derivedSecret.Encode(outputExtKey);
+    if ((derivationString != nullptr) && (derivationStringLen > 0))
+    {
+        if (derivationStringLen > derivedPath.size())
+        {
+            strcpy(derivationString, derivedPath.c_str());
+        }
+        else
+        {
+            derivationString[0] = 0;
+        }
+    }
+    set_error(LIBNEXA_ERROR::SUCCESS_NO_ERROR, "");
+    return ret;
+}
+
+
 /** Derive a BIP-0044 heirarchial deterministic wallet key */
 SLAPI int hd44DeriveChildKey(const unsigned char *secretSeed,
     unsigned int secretSeedLen,
@@ -111,11 +174,13 @@ SLAPI int hd44DeriveChildKey(const unsigned char *secretSeed,
     }
     checkSigInit();
     std::string derivPath;
-    int ret = Hd44DeriveChildKey(
-        secretSeed, secretSeedLen, purpose, coinType, account, change, index, derivedSecret, nullptr);
+    int ret = Hd44DeriveChildKey(secretSeed, secretSeedLen, purpose, coinType, account, change, index, derivedSecret,
+        keypath ? &derivPath : nullptr);
     std::memcpy(secret, derivedSecret.begin(), 32);
-    // if (keypath != nullptr) keypath[0] = 0;
-    // strcpy(keypath, derivPath.c_str());
+    if (keypath != nullptr)
+    {
+        strcpy(keypath, derivPath.c_str());
+    }
     set_error(LIBNEXA_ERROR::SUCCESS_NO_ERROR, "");
     return ret;
 }

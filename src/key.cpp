@@ -21,7 +21,7 @@ const uint32_t BIP32_HARDENED_KEY_LIMIT = 0x80000000;
 static secp256k1_context *secp256k1_context_sign = nullptr;
 
 // key: master key seed (256bit)
-int Hd32DeriveChildKey(CKey key, int externalChainCounter, CKey &secret, std::string *keypath)
+int Bip32DeriveChildKey(CKey key, int externalChainCounter, CKey &secret, std::string *keypath)
 {
     CExtKey masterKey; // hd master key
     CExtKey accountKey; // key at m/0'
@@ -84,6 +84,35 @@ int Hd44DeriveChildKey(const unsigned char *secretSeed,
 
     // increment childkey index
     return index + 1;
+}
+
+bool Bip32DeriveExtKey(const unsigned char *secretSeed,
+    unsigned int secretSeedLen,
+    unsigned int *path,
+    unsigned int pathLen,
+    CExtKey *secret,
+    std::string *keypath)
+{
+    CExtKey k[2];
+    int curKey = 0;
+    k[curKey].SetMaster(secretSeed, secretSeedLen);
+    if (keypath)
+        *keypath = "m";
+    for (unsigned int i = 0; i < pathLen; i++)
+    {
+        curKey = !curKey;
+        k[!curKey].Derive(k[curKey], path[i]);
+        if (keypath)
+        {
+            keypath->append("/");
+            keypath->append(std::to_string(path[i] & ~BIP32_HARDENED_KEY_LIMIT));
+            if (path[i] >= BIP32_HARDENED_KEY_LIMIT)
+                keypath->append("'");
+        }
+    }
+    if (secret != nullptr)
+        *secret = k[curKey];
+    return true;
 }
 
 

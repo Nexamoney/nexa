@@ -93,6 +93,37 @@ class LibnexaTest(BitcoinTestFramework):
         child_key = res.hex()
         assert child_key == "3d078d4e940799e2cc3deca407fe1eba20f68b5c72de8e9e4e061958a29d0b0e"
 
+        (res,derPath) = libnexa.hd44DeriveChildKeyAndPath(master_key, purpose, coin_type, account, change, index)
+        child_key = res.hex()
+        assert child_key == "3d078d4e940799e2cc3deca407fe1eba20f68b5c72de8e9e4e061958a29d0b0e"
+        assert derPath == "m/44'/29223'/0'/0/1"
+
+    def test_bip32DeriveChildExtKey(self):
+        HARDENED = 0x80000000
+        master_key = bytes.fromhex("d52964419a5994799ddf80fac88a92ef926339cb009f5ebc2e5c345320b7e8a4")
+        path = [44 | HARDENED, 29223 | HARDENED, 0 | HARDENED, 0, 1]
+        extkey, derPath = libnexa.bip32DeriveChildExtKey(master_key, path)
+        assert derPath == "m/44'/29223'/0'/0/1"
+
+    def test_deriveExtPubKey(self):
+        HARDENED = 0x80000000
+        master_key = bytes.fromhex("d52964419a5994799ddf80fac88a92ef926339cb009f5ebc2e5c345320b7e8a4")
+        path = [44 | HARDENED, 29223 | HARDENED, 0 | HARDENED, 0, 1]
+        extkey5, derPath = libnexa.bip32DeriveChildExtKey(master_key, path)
+        key = extkey5[42:] # The private key starts at 41, and is 33 bytes with the type, but we do not pass the type into GetPubKey
+        pubkey5 = libnexa.GetPubKey(key)
+
+        # Get the extended private key of the first 4 items in the derivation path
+        extkey4, derPath = libnexa.bip32DeriveChildExtKey(master_key, path[0:4])
+        key = extkey4[42:]
+        # Swap in the pubkey for the privkey (equivalent to Neuter())
+        pubkey = libnexa.GetPubKey(key)
+        extpubkey4 = extkey4[0:41] + pubkey
+        # Do an extended pubkey derivation to get the 5th level in the derivation path
+        extpub5 = libnexa.deriveExtPubKey(extpubkey4,1)
+        pub5 = extpub5[41:]
+        # Compare that both methods got the same pubkey
+        assert pubkey5 == pub5
 
     def test_SignHashEDCSA(self):
         pass
@@ -421,6 +452,7 @@ class LibnexaTest(BitcoinTestFramework):
         assert found_pubkey == "03be3bae13f4a4b11c9fbcaf3a7f9d85bec9e20b6d59ab087aae0f17e2856703ea"
 
     def run_test(self):
+        # Make sure every api is tested
         libnexa_methods = libnexa_test_coverage.get_libnexa_api_methods()
         libnexa_tested_methods = [func for func in dir(LibnexaTest) if callable(getattr(LibnexaTest, func)) and not func.startswith("__")]
         for method in libnexa_methods:
@@ -431,7 +463,10 @@ class LibnexaTest(BitcoinTestFramework):
 
         assert libnexa_test_coverage.test_api_wrapper_arg_res_types(libnexa_methods) == True
 
+        # Call every api test
         self.test_libnexaVersion()
+        self.test_bip32DeriveChildExtKey()
+        self.test_deriveExtPubKey()
         self.test_get_libnexa_error()
         self.test_get_libnexa_error_string()
         self.test_encode64()

@@ -1,7 +1,7 @@
 #!/bin/bash
 # script modified from: https://gist.github.com/enh/b2dc8e2cbbce7fffffde2135271b10fd
 
-version=1.88.0
+version=1.91.0
 echo "Retrieving boost $version..."
 
 set -eu
@@ -10,7 +10,7 @@ dir_name=boost_$(sed 's#\.#_#g' <<< $version)
 archive=${dir_name}.tar.bz2
 if [ ! -f "$archive" ]; then
     curl -L "https://archives.boost.io/release/$version/source/$archive" -o $archive
-    # wget -O $archive "https://boostorg.jfrog.io/artifactory/main/release/$version/source/$archive" 
+    rm -rf boost  # Clean up any old boost that might exist
 else
   echo "Archive $archive already downloaded"
 fi
@@ -18,25 +18,23 @@ fi
 if [[ "$(uname -s)" == "Darwin" ]]; then
     echo "skipping checksum check on macos"
 else
-    echo "46d9d2c06637b219270877c9e16155cbd015b6dc84349af064c088e9b5b12f7b  boost_1_88_0.tar.bz2" | sha256sum --check || { echo "sha256sum of boost failed"; exit 1; }
+    echo "de5e6b0e4913395c6bdfa90537febd9028ea4c0735d2cdb0cd9b45d5f51264f5 $archive" | sha256sum --check || { echo "sha256sum of boost failed"; exit 1; }
 fi
 
 
-echo "Extracting..."
-if [ ! -d "$dir_name" ]; then
-  tar xf $archive
-else
+if [[ -d "$dir_name" || -d boost ]]; then
   echo "Archive $archive already unpacked into $dir_name"
+else
+  echo "Extracting..."  
+  tar xf $archive
 fi
 
-# Redo the symlink because it might point to the wrong boost version
-#if [ -L boost ]; then
-#  rm boost
-#fi
-#ln -s $dir_name boost
-if [ -d boost ]; then
-    rm -rf boost
+if [ ! -d boost ]; then
+    echo "renaming $dir_name to boost"  
+    mv $dir_name boost
+else
+    echo "Boost dir already exists"
 fi
-mv $dir_name boost
+
 
 echo "Done!"
