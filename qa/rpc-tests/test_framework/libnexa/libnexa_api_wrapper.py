@@ -2,6 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 from ctypes import *
+from typing import List, Tuple
 from test_framework.nodemessages import *
 from test_framework.constants import *
 from test_framework.ripemd160 import *
@@ -98,6 +99,10 @@ def init(libnexa_file=None):
     libnexa.Bin2Hex.argtypes = [ c_char_p, c_int, c_char_p, c_uint ]
     libnexa.hd44DeriveChildKey.restype = c_int
     libnexa.hd44DeriveChildKey.argtypes = [ c_char_p, c_uint, c_uint, c_uint, c_uint, c_bool, c_uint, c_char_p, c_char_p ]
+    libnexa.bip32DeriveChildExtKey.restype = c_int
+    libnexa.bip32DeriveChildExtKey.argtypes = [POINTER(c_char), c_uint, POINTER(c_uint), c_uint, c_char_p, c_char_p, c_uint ]
+    libnexa.deriveExtPubKey.restype = c_int
+    libnexa.deriveExtPubKey.argtypes = [POINTER(c_char), c_uint, POINTER(c_char)]
     libnexa.GetPubKey.restype = c_int
     libnexa.GetPubKey.argtypes = [ c_char_p, c_char_p, c_uint ]
     libnexa.SignHashEDCSA.restype = c_int
@@ -240,6 +245,33 @@ def hd44DeriveChildKey(seed: bytes, purpose: int, coin_type: int, account: int, 
     res_size = libnexa.hd44DeriveChildKey(seed, len(seed), purpose, coin_type, account, change, index, res_buf, null_ptr)
     # secret returned is always assumed to be 32 bytes
     return res_buf.raw[0:32]
+
+def hd44DeriveChildKeyAndPath(seed: bytes, purpose: int, coin_type: int, account: int, change: bool, index: int) -> (bytes, str):
+    res_buf = create_string_buffer(C_STR_BUF_SIZE)
+    derivPath_buf = create_string_buffer(C_STR_BUF_SIZE)
+    res_size = libnexa.hd44DeriveChildKey(seed, len(seed), purpose, coin_type, account, change, index, res_buf, derivPath_buf)
+    # secret returned is always assumed to be 32 bytes
+    return (res_buf.raw[0:32], derivPath_buf.value.decode('utf-8'))
+
+# This code is the minimum needed to test these two libnexa functions.  If this API is actually used in Python code
+# it would make a lot of sense to create ExtKey and ExtPubKey objects, decoding the returned bytes.
+def bip32DeriveChildExtKey(seed: bytes, path: List[int]) -> Tuple[bytes, str]:
+    res_buf = create_string_buffer(74)
+    derivPath_buf = create_string_buffer(C_STR_BUF_SIZE)
+    ArrayType = c_uint * len(path)
+    cpath = ArrayType(*path)
+    worked = libnexa.bip32DeriveChildExtKey(seed, len(seed), cpath, len(cpath), res_buf, derivPath_buf, C_STR_BUF_SIZE)
+    if not worked: return None
+    # Serialized Ext Key is fixed # of bytes
+    return (res_buf.raw, derivPath_buf.value.decode('utf-8'))
+
+# This code is the minimum needed to test these two libnexa functions.  If this API is actually used in Python code
+# it would make a lot of sense to create ExtKey and ExtPubKey objects, decoding the returned bytes.
+def deriveExtPubKey(extPub: bytes, nxt: int) -> bytes:
+    res_buf = create_string_buffer(C_STR_BUF_SIZE)
+    res_size = libnexa.deriveExtPubKey(extPub, nxt, res_buf)
+    # Serialized Ext Key is fixed # of bytes
+    return res_buf.raw[0:74]
 
 def GetPubKey(privkey_bytes: bytes) -> bytes:
     res_buf = create_string_buffer(C_STR_BUF_SIZE)

@@ -205,6 +205,7 @@ struct CExtPubKey
 
     void Encode(unsigned char code[BIP32_EXTKEY_SIZE]) const;
     void Decode(const unsigned char code[BIP32_EXTKEY_SIZE]);
+    /** Derives the nChild-th pubkey given this Xpub */
     bool Derive(CExtPubKey &out, unsigned int nChild) const;
 
     void Serialize(CSizeComputer &s) const

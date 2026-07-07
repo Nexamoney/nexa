@@ -72,7 +72,11 @@ SLAPI int decode64(const char *data, unsigned char *result, int resultMaxLen);
  */
 SLAPI int Bin2Hex(const unsigned char *val, int length, char *result, unsigned int resultLen);
 
-/** Derive a BIP-0044 heirarchial deterministic wallet key */
+/** Derive a BIP-0032 child xpubkey from a parent xpubkey.  Pass the parent encoded extpubkey in encodedXpubkey
+    and an array of byte in derivedXpubkey.  The array will be filled with the encoded child CExtPubKey */
+SLAPI int deriveExtPubKey(const unsigned char *encodedXpubkey, unsigned int index, unsigned char *derivedXpubkey);
+
+/** Derive a BIP-0044 hierarchial deterministic wallet key */
 SLAPI int hd44DeriveChildKey(const unsigned char *secretSeed,
     unsigned int secretSeedLen,
     unsigned int purpose,
@@ -82,6 +86,15 @@ SLAPI int hd44DeriveChildKey(const unsigned char *secretSeed,
     unsigned int index,
     unsigned char *secret,
     char *keypath);
+
+/** Derive a BIP-0044 heirarchial deterministic wallet key */
+SLAPI int bip32DeriveChildExtKey(const unsigned char *secretSeed,
+    unsigned int secretSeedLen,
+    unsigned int *path,
+    unsigned int pathLen,
+    unsigned char *outputExtKey,
+    char *derivationString,
+    unsigned int derivationStringLen);
 
 /** Given a private key, return its corresponding public key */
 SLAPI int GetPubKey(const unsigned char *keyData, unsigned char *result, unsigned int resultLen);

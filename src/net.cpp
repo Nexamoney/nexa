@@ -1237,7 +1237,7 @@ static void AcceptConnection(const ListenSocket &hListenSocket)
         mapInboundConnectionTracker[ipAddress].nLastConnectionTime = GetTime();
 
         LOG(NET | EVICT, "Number of connection attempts is %f for %s\n", nConnections, addr.ToString());
-        if (nConnections > 4 && !whitelisted && !addr.IsLocal()) // local connections are auto-whitelisted
+        if (nConnections > 10 && !whitelisted && !addr.IsLocal()) // local connections are auto-whitelisted
         {
             LOG(NET | EVICT, "Disconnecting %s: Too many connection attempts - connection dropped\n", addr.ToString());
             CloseSocket(hSocket);

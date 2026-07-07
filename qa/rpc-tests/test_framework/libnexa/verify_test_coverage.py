@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+import pdb
 import copy
 import os
 
@@ -11,6 +11,7 @@ def test_api_wrapper_arg_res_types(methods):
     list_arg_type = []
     list_res_type = []
     lines = []
+    sm = set(methods)
     with open(api_wrapper_abs_path, 'r') as file:
         for line in file:
             line = line.strip()
@@ -21,7 +22,13 @@ def test_api_wrapper_arg_res_types(methods):
                 list_arg_type.append(method)
             if line.startswith("libnexa." + str(method) +".restype"):
                 list_res_type.append(method)
-
+    # To help the developer, we will print the symbols that are missing types
+    symDiff = set(list_arg_type) ^ sm
+    if len(symDiff):
+        print(f"Missing arg_type from {symDiff}")
+    symDiff = set(list_res_type) ^ sm
+    if len(symDiff):
+        print(f"Missing res_type from {symDiff}")
     return list_arg_type == methods and list_res_type == methods
 
 

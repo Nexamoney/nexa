@@ -190,6 +190,7 @@ struct CExtKey
     void Encode(unsigned char code[BIP32_EXTKEY_SIZE]) const;
     void Decode(const unsigned char code[BIP32_EXTKEY_SIZE]);
     bool Derive(CExtKey &out, unsigned int nChild) const;
+    /** Neuter just creates a new object without the CKey (the private key is removed) */
     CExtPubKey Neuter() const;
     void SetMaster(const unsigned char *seed, unsigned int nSeedLen);
     template <typename Stream>
@@ -224,10 +225,10 @@ void ECC_Stop(void);
 /** Check that required EC support is available at runtime. */
 bool ECC_InitSanityCheck(void);
 
-/** Derive a BIP-0032 heirarchial deterministic wallet key */
-int Hd32DeriveChildKey(CKey key, int externalChainCounter, CKey &secret, std::string *keypath);
+/** Derive a BIP-0032 hierarchical deterministic wallet key */
+int Bip32DeriveChildKey(CKey key, int externalChainCounter, CKey &secret, std::string *keypath);
 
-/** Derive a BIP-0044 heirarchial deterministic wallet key */
+/** Derive a BIP-0044 hierarchical deterministic wallet key.  The appropriate paths are auto-hardened. */
 int Hd44DeriveChildKey(const unsigned char *secretSeed,
     unsigned int secretSeedLen,
     unsigned int purpose,
@@ -238,5 +239,14 @@ int Hd44DeriveChildKey(const unsigned char *secretSeed,
     CKey &secret,
     std::string *keypath);
 
+/** Derive an arbitrary hierarchical deterministic wallet ExtKey.  This key can be used to derive an xpubkey or
+    as a normal private key.  You must specify path hardening.
+*/
+bool Bip32DeriveExtKey(const unsigned char *secretSeed,
+    unsigned int secretSeedLen,
+    unsigned int *path,
+    unsigned int pathLen,
+    CExtKey *result,
+    std::string *keypath);
 
 #endif // NEXA_KEY_H

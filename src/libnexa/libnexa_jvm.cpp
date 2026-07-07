@@ -65,6 +65,30 @@ public:
     }
 };
 
+class LongArrayAccessor
+{
+public:
+    JNIEnv *env;
+    jlongArray &obj;
+    jlong *data;
+    size_t size;
+
+    std::vector<uint8_t> vec() { return std::vector<uint8_t>(data, data + size); }
+    LongArrayAccessor(JNIEnv *e, jlongArray &arg) : env(e), obj(arg)
+    {
+        size = env->GetArrayLength(obj);
+        data = env->GetLongArrayElements(obj, nullptr);
+    }
+
+    ~LongArrayAccessor()
+    {
+        size = 0;
+        if (data)
+            env->ReleaseLongArrayElements(obj, data, 0);
+    }
+};
+
+
 /*
 // credit: https://stackoverflow.com/questions/41820039/jstringjni-to-stdstringc-with-utf8-characters
 std::string toString(JNIEnv *env, jstring jStr)
@@ -104,9 +128,12 @@ std::string toString(JNIEnv *env, jstring jStr)
     return ret;
 }
 
-jint triggerJavaIllegalStateException(JNIEnv *env, const char *message)
+// Throw a org.nexa.libnexakotlin.LibNexaException with the given message.  This relies on LibNexaException
+// exposing a single-String JVM constructor (see @JvmOverloads on its definition in Error.kt), which is what
+// ThrowNew needs.  Falls back to nothing (returns 0) if the class cannot be found.
+jint triggerLibNexaException(JNIEnv *env, const char *message)
 {
-    jclass exc = env->FindClass("java/lang/IllegalStateException");
+    jclass exc = env->FindClass("org/nexa/libnexakotlin/LibNexaException");
     if (nullptr == exc)
         return 0;
     return env->ThrowNew(exc, message);
@@ -208,16 +235,103 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_decod
     auto dataBytes = DecodeBase64(data.c_str(), &invalid);
     if (invalid)
     {
-        triggerJavaIllegalStateException(env, "bad encoding");
+        triggerLibNexaException(env, "bad encoding");
         return jbyteArray();
     }
     return makeJByteArray(env, dataBytes);
 }
 
 /// libnexa-inconsistency: no Bin2Hex equivalent
+extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_deriveExtPubKey(JNIEnv *env,
+    jobject ths,
+    jbyteArray encodedXpubkey,
+    jlong index)
+{
+    if (index >= BIP32_HARDENED_KEY_LIMIT)
+    {
+        triggerLibNexaException(env, "key derivation failure -- index is hardened");
+        return nullptr;
+    }
+    if (index < 0)
+    {
+        triggerLibNexaException(env, "key derivation failure -- index is negative");
+        return nullptr;
+    }
+    ByteArrayAccessor serxpub(env, encodedXpubkey);
+    if (serxpub.size != BIP32_EXTKEY_SIZE)
+    {
+        triggerLibNexaException(env, "key derivation failure -- xpubkey is incorrect length");
+        return nullptr;
+    }
+    checkSigInit();
+    CExtPubKey xpub;
+    xpub.Decode((unsigned char *)serxpub.data);
+    CExtPubKey childXPub;
+    bool result = xpub.Derive(childXPub, index);
+    if (!result)
+    {
+        triggerLibNexaException(env, "key derivation failure");
+        return nullptr;
+    }
+    unsigned char encoded[BIP32_EXTKEY_SIZE];
+    childXPub.Encode(encoded);
+    return makeJByteArray(env, encoded, BIP32_EXTKEY_SIZE);
+}
 
 // many of the args are long so that the hardened selectors (i.e. 0x80000000) are not negative
-extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_deriveHd44ChildKey(JNIEnv *env,
+// Returns a 2 element Object[]: element 0 is the encoded ext key (byte[]), element 1 is the
+// human readable derivation path (String).
+extern "C" JNIEXPORT jobjectArray JNICALL Java_org_nexa_libnexakotlin_Native_deriveChildExtKey(JNIEnv *env,
+    jobject ths,
+    jbyteArray masterSecretBytes,
+    jlongArray pathArray)
+{
+    ByteArrayAccessor secretSeed(env, masterSecretBytes);
+    if ((secretSeed.size < 16) || (secretSeed.size > 64))
+    {
+        triggerLibNexaException(env, "key derivation failure -- master secret is incorrect length");
+        return nullptr;
+    }
+
+    // Convert the path, supplied as longs so the hardened selectors (i.e. 0x80000000) are not negative,
+    // into the unsigned int array expected by Bip32DeriveExtKey.
+    LongArrayAccessor pathElements(env, pathArray);
+    size_t pathLen = env->GetArrayLength(pathArray);
+    std::vector<unsigned int> path(pathLen);
+    for (size_t i = 0; i < pathLen; i++)
+    {
+        if ((pathElements.data[i] < 0) || (pathElements.data[i] > 0xFFFFFFFF))
+        {
+            triggerLibNexaException(env, "illegal derivation path");
+            return nullptr;
+        }
+        path[i] = (unsigned int)pathElements.data[i];
+    }
+    checkSigInit();
+
+    CExtKey derivedSecret;
+    std::string derivedPath;
+    int result = Bip32DeriveExtKey(
+        (unsigned char *)secretSeed.data, secretSeed.size, path.data(), pathLen, &derivedSecret, &derivedPath);
+
+    if (result < 0)
+    {
+        triggerLibNexaException(env, "key derivation failure");
+        return nullptr;
+    }
+
+    unsigned char encoded[BIP32_EXTKEY_SIZE];
+    derivedSecret.Encode(encoded);
+
+    jobjectArray ret = env->NewObjectArray(2, env->FindClass("java/lang/Object"), nullptr);
+    env->SetObjectArrayElement(ret, 0, makeJByteArray(env, encoded, BIP32_EXTKEY_SIZE));
+    env->SetObjectArrayElement(ret, 1, env->NewStringUTF(derivedPath.c_str()));
+    return ret;
+}
+
+
+// many of the args are long so that the hardened selectors (i.e. 0x80000000) are not negative
+extern "C" JNIEXPORT jobjectArray JNICALL Java_org_nexa_libnexakotlin_Native_deriveHd44ChildKey(JNIEnv *env,
     jobject ths,
     jbyteArray masterSecretBytes,
     jlong purpose,
@@ -226,61 +340,53 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_deriv
     jint change,
     jint index)
 {
-    size_t mslen = env->GetArrayLength(masterSecretBytes);
-    if ((mslen < 16) || (mslen > 64))
+    std::string derivedPath;
+    ByteArrayAccessor ms(env, masterSecretBytes);
+    if ((ms.size < 16) || (ms.size > 64))
     {
-        triggerJavaIllegalStateException(env, "key derivation failure -- master secret is incorrect length");
+        triggerLibNexaException(env, "key derivation failure -- master secret is incorrect length");
         return nullptr;
     }
-
-    jbyte *msdata = env->GetByteArrayElements(masterSecretBytes, 0);
 
     CKey secret;
-    Hd44DeriveChildKey((unsigned char *)msdata, mslen, purpose, coinType, account, change, index, secret, nullptr);
-
-    jbyteArray bArray = env->NewByteArray(32);
-    jbyte *data = env->GetByteArrayElements(bArray, 0);
+    Hd44DeriveChildKey(
+        (unsigned char *)ms.data, ms.size, purpose, coinType, account, change, index, secret, &derivedPath);
     if (secret.size() != 32)
     {
-        triggerJavaIllegalStateException(env, "key derivation failure -- derived secret is incorrect length");
+        triggerLibNexaException(env, "key derivation failure -- derived secret is incorrect length");
         return nullptr;
     }
-    memcpy(data, secret.begin(), 32);
-    env->ReleaseByteArrayElements(bArray, data, 0);
-    return bArray;
+
+    jobjectArray ret = env->NewObjectArray(2, env->FindClass("java/lang/Object"), nullptr);
+    env->SetObjectArrayElement(ret, 0, makeJByteArray(env, secret.begin(), secret.size()));
+    env->SetObjectArrayElement(ret, 1, env->NewStringUTF(derivedPath.c_str()));
+    return ret;
 }
+
 
 /** Given a private key, return its corresponding public key */
 extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_getPubKey(JNIEnv *env,
     jobject ths,
     jbyteArray arg)
 {
-    size_t len = env->GetArrayLength(arg);
-    jbyte *data = env->GetByteArrayElements(arg, nullptr);
-
-    if (len != 32)
+    ByteArrayAccessor ba(env, arg);
+    if (ba.size != 32)
     {
         std::stringstream err;
         err << "GetPubKey: Incorrect length for argument 'secret'. "
-            << "Expected 32, got " << len << ".";
-        triggerJavaIllegalStateException(env, err.str().c_str());
+            << "Expected 32, got " << ba.size << ".";
+        triggerLibNexaException(env, err.str().c_str());
         return nullptr;
     }
 
-    CKey k = LoadKey((const unsigned char *)data);
+    CKey k = LoadKey((const unsigned char *)ba.data);
     if (!k.IsValid())
     {
-        triggerJavaIllegalStateException(env, "invalid secret");
+        triggerLibNexaException(env, "invalid secret");
         return nullptr;
     }
     CPubKey pub = k.GetPubKey();
-    jbyteArray bArray = env->NewByteArray(pub.size());
-    jbyte *dest = env->GetByteArrayElements(bArray, 0);
-    memcpy(dest, pub.begin(), pub.size());
-
-    env->ReleaseByteArrayElements(arg, data, 0);
-    env->ReleaseByteArrayElements(bArray, dest, 0);
-    return bArray;
+    return makeJByteArray(env, pub.begin(), pub.size());
 }
 
 // libnexa-inconsistency: no SignHashEDCSA equivalent
@@ -388,7 +494,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_signO
 
     if (resultLen == 0)
     {
-        triggerJavaIllegalStateException(env, "signing operation failed");
+        triggerLibNexaException(env, "signing operation failed");
         return nullptr;
     }
     return makeJByteArray(env, result, resultLen);
@@ -416,7 +522,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_signO
 
     if (resultLen == 0)
     {
-        triggerJavaIllegalStateException(env, "signing operation failed");
+        triggerLibNexaException(env, "signing operation failed");
         return nullptr;
     }
     return makeJByteArray(env, result, resultLen);
@@ -440,7 +546,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_calcS
 
     if (resultLen == 0)
     {
-        triggerJavaIllegalStateException(env, "sighash calculation operation failed");
+        triggerLibNexaException(env, "sighash calculation operation failed");
         return nullptr;
     }
     return makeJByteArray(env, result, resultLen);
@@ -459,13 +565,13 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_signH
         std::stringstream err;
         err << "signHashSchnorr: Incorrect length for argument 'secret'. "
             << "Expected 32, got " << privkey.size << ".";
-        triggerJavaIllegalStateException(env, err.str().c_str());
+        triggerLibNexaException(env, err.str().c_str());
         return nullptr;
     }
 
     if (data.size != 32)
     {
-        triggerJavaIllegalStateException(env, "signHashSchnorr: Must sign a 32 byte hash.");
+        triggerLibNexaException(env, "signHashSchnorr: Must sign a 32 byte hash.");
         return nullptr;
     }
 
@@ -474,7 +580,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_signH
 
     if (resultLen == 0)
     {
-        triggerJavaIllegalStateException(env, "signHashSchnorr: Failed to sign data.");
+        triggerLibNexaException(env, "signHashSchnorr: Failed to sign data.");
         return nullptr;
     }
     return makeJByteArray(env, result, resultLen);
@@ -494,18 +600,18 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_signH
         std::stringstream err;
         err << "signHashSchnorrWithNonce: Incorrect length for argument 'secret'. "
             << "Expected 32, got " << privkey.size << ".";
-        triggerJavaIllegalStateException(env, err.str().c_str());
+        triggerLibNexaException(env, err.str().c_str());
         return nullptr;
     }
 
     if (data.size != 32)
     {
-        triggerJavaIllegalStateException(env, "signHashSchnorrWithNonce: Must sign a 32 byte hash.");
+        triggerLibNexaException(env, "signHashSchnorrWithNonce: Must sign a 32 byte hash.");
         return nullptr;
     }
     if (k.size != 32)
     {
-        triggerJavaIllegalStateException(env, "signHashSchnorrWithNonce: Private nonce must be 32 bytes.");
+        triggerLibNexaException(env, "signHashSchnorrWithNonce: Private nonce must be 32 bytes.");
         return nullptr;
     }
 
@@ -514,7 +620,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_signH
 
     if (resultLen == 0)
     {
-        triggerJavaIllegalStateException(env, "signHashSchnorrWithNonce: Failed to sign data.");
+        triggerLibNexaException(env, "signHashSchnorrWithNonce: Failed to sign data.");
         return nullptr;
     }
     return makeJByteArray(env, result, resultLen);
@@ -697,7 +803,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_org_nexa_libnexakotlin_Native_verifyB
     const CChainParams *cp = GetChainParams(static_cast<ChainSelector>(chainSelector));
     if (cp == nullptr)
     {
-        triggerJavaIllegalStateException(env, "Unknown blockchain selection");
+        triggerLibNexaException(env, "Unknown blockchain selection");
         return false;
     }
     size_t len = env->GetArrayLength(arg);
@@ -729,7 +835,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_nexa_libnexakotlin_Native_encodeCa
     {
         if (len != 20)
         {
-            triggerJavaIllegalStateException(env, "bad address argument length");
+            triggerLibNexaException(env, "bad address argument length");
             return nullptr;
         }
         uint160 tmp((const uint8_t *)data);
@@ -756,7 +862,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_nexa_libnexakotlin_Native_encodeCa
     }
     else
     {
-        triggerJavaIllegalStateException(env, "Address type cannot be encoded to cashaddr");
+        triggerLibNexaException(env, "Address type cannot be encoded to cashaddr");
         return nullptr;
     }
 
@@ -765,7 +871,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_nexa_libnexakotlin_Native_encodeCa
     const CChainParams *cp = GetChainParams((ChainSelector)chainSelector);
     if (cp == nullptr)
     {
-        triggerJavaIllegalStateException(env, "Unknown blockchain selection");
+        triggerLibNexaException(env, "Unknown blockchain selection");
         return nullptr;
     }
     std::string addrAsStr(EncodeCashAddr(dst, *cp));
@@ -780,7 +886,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_decod
     const CChainParams *cp = GetChainParams((ChainSelector)chainSelector);
     if (cp == nullptr)
     {
-        triggerJavaIllegalStateException(env, "Unknown blockchain selection");
+        triggerLibNexaException(env, "Unknown blockchain selection");
         return nullptr;
     }
 
@@ -808,12 +914,12 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_nexa_libnexakotlin_Native_groupIdT
     size_t len = env->GetArrayLength(arg);
     if (len < 32)
     {
-        triggerJavaIllegalStateException(env, "bad address argument length too small");
+        triggerLibNexaException(env, "bad address argument length too small");
         return nullptr;
     }
     if (len > 520)
     {
-        triggerJavaIllegalStateException(env, "bad address argument length too large");
+        triggerLibNexaException(env, "bad address argument length too large");
         return nullptr;
     }
     jbyte *data = env->GetByteArrayElements(arg, 0);
@@ -825,7 +931,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_nexa_libnexakotlin_Native_groupIdT
     const CChainParams *cp = GetChainParams((ChainSelector)chainSelector);
     if (cp == nullptr)
     {
-        triggerJavaIllegalStateException(env, "Unknown blockchain selection");
+        triggerLibNexaException(env, "Unknown blockchain selection");
         return nullptr;
     }
     std::string addrAsStr(EncodeGroupToken(grp, *cp));
@@ -840,7 +946,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_group
     const CChainParams *cp = GetChainParams((ChainSelector)chainSelector);
     if (cp == nullptr)
     {
-        triggerJavaIllegalStateException(env, "Unknown blockchain selection");
+        triggerLibNexaException(env, "Unknown blockchain selection");
         return nullptr;
     }
     auto addr = toString(env, addrstr);
@@ -848,12 +954,12 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_group
     size_t size = gid.bytes().size();
     if (size < 32) // min group id size
     {
-        triggerJavaIllegalStateException(env, "Address is not a group (too small)");
+        triggerLibNexaException(env, "Address is not a group (too small)");
         return nullptr;
     }
     if (size > 520) // max group id size
     {
-        triggerJavaIllegalStateException(env, "Address is not a group (too large)");
+        triggerLibNexaException(env, "Address is not a group (too large)");
         return nullptr;
     }
 
@@ -872,7 +978,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_decod
     const CChainParams *cp = GetChainParams(static_cast<ChainSelector>(chainSelector));
     if (cp == nullptr)
     {
-        triggerJavaIllegalStateException(env, "Unknown blockchain selection");
+        triggerLibNexaException(env, "Unknown blockchain selection");
         return nullptr;
     }
     CBitcoinSecret secret;
@@ -881,13 +987,13 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_decod
 
     if (!ok)
     {
-        triggerJavaIllegalStateException(env, "Invalid private key");
+        triggerLibNexaException(env, "Invalid private key");
         return nullptr;
     }
     const CKey key = secret.GetKey();
     if (!key.IsValid())
     {
-        triggerJavaIllegalStateException(env, "Private key outside allowed range");
+        triggerLibNexaException(env, "Private key outside allowed range");
         return nullptr;
     }
     return makeJByteArray(env, static_cast<const uint8_t *>(key.begin()), key.size());
@@ -977,7 +1083,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_creat
 
     if (!((falsePosRate >= 0) && (falsePosRate <= 1.0)))
     {
-        triggerJavaIllegalStateException(env, "incorrect false positive rate");
+        triggerLibNexaException(env, "incorrect false positive rate");
         return nullptr;
     }
 
@@ -988,14 +1094,14 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_creat
         jobject obj = env->GetObjectArrayElement(arg, i);
         if (!env->IsInstanceOf(obj, byteArrayClass))
         {
-            triggerJavaIllegalStateException(env, "incorrect element data type (must be ByteArray)");
+            triggerLibNexaException(env, "incorrect element data type (must be ByteArray)");
             return nullptr;
         }
         jbyteArray elem = (jbyteArray)obj;
         jbyte *elemData = env->GetByteArrayElements(elem, 0);
         if (elemData == NULL)
         {
-            triggerJavaIllegalStateException(env, "incorrect element data type (must be ByteArray)");
+            triggerLibNexaException(env, "incorrect element data type (must be ByteArray)");
             return nullptr;
         }
         size_t elemLen = env->GetArrayLength(elem);
@@ -1040,7 +1146,7 @@ MerkleBlock_Extract(JNIEnv *env, jobject ths, jint numTxes, jbyteArray merklePro
         size_t elemLen = env->GetArrayLength(elem);
         if (elemLen != HASH_LEN)
         {
-            triggerJavaIllegalStateException(env, "invalid hash: bad length");
+            triggerLibNexaException(env, "invalid hash: bad length");
             return nullptr;
         }
         hashes[i] = uint256((unsigned char *)elemData);
@@ -1095,7 +1201,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_org_nexa_libnexakotlin_Native_verifyH
     ByteArrayAccessor sig(env, jsig);
     if (hash.size != 32)
     {
-        triggerJavaIllegalStateException(env, "verifyHashSchnorr: Must verify a 32 byte hash.");
+        triggerLibNexaException(env, "verifyHashSchnorr: Must verify a 32 byte hash.");
         return false;
     }
 
@@ -1103,7 +1209,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_org_nexa_libnexakotlin_Native_verifyH
     CPubKey pubkey(pubkeybytes.vec());
     if (sig.size != 64)
     {
-        triggerJavaIllegalStateException(env, "verifyHashSchnorr: Schnorr signature must be 64 bytes.");
+        triggerLibNexaException(env, "verifyHashSchnorr: Schnorr signature must be 64 bytes.");
         return false;
     }
     return pubkey.VerifySchnorr(messageHash, sig.vec());
@@ -1125,7 +1231,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_org_nexa_libnexakotlin_Native_verifyD
     CPubKey pubkey(pubkeybytes.vec());
     if (sig.size != 64)
     {
-        triggerJavaIllegalStateException(env, "verifyHashSchnorr: Schnorr signature must be 64 bytes.");
+        triggerLibNexaException(env, "verifyHashSchnorr: Schnorr signature must be 64 bytes.");
         return false;
     }
     return pubkey.VerifySchnorr(messageHash, sig.vec());
@@ -1301,7 +1407,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_cre
     void *sm = CreateScriptMachine(flags, inputIdx, txb.data, txb.size, outpointb.data, outpointb.size, &error);
     if (sm == nullptr)
     {
-        triggerJavaIllegalStateException(env, error.c_str());
+        triggerLibNexaException(env, error.c_str());
     }
     return ((jlong)sm);
 }
@@ -1325,12 +1431,12 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_cre
 
     if (!satisfier.IsPushOnly())
     {
-        triggerJavaIllegalStateException(env, "satisfier is not push-only");
+        triggerLibNexaException(env, "satisfier is not push-only");
         return 0;
     }
     if (!constraint.IsPushOnly())
     {
-        triggerJavaIllegalStateException(env, "constraint is not push-only");
+        triggerLibNexaException(env, "constraint is not push-only");
         return 0;
     }
 
@@ -1342,13 +1448,13 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_cre
     ScriptMachine ssm(flags, noSis, maxOps, 0);
     if (!ssm.Eval(satisfier))
     {
-        triggerJavaIllegalStateException(env, ScriptErrorString(ssm.getError()));
+        triggerLibNexaException(env, ScriptErrorString(ssm.getError()));
         return 0;
     }
     ScriptMachine csm(flags, noSis, maxOps, 0);
     if (!csm.Eval(constraint))
     {
-        triggerJavaIllegalStateException(env, ScriptErrorString(csm.getError()));
+        triggerLibNexaException(env, ScriptErrorString(csm.getError()));
         return 0;
     }
 
@@ -1364,7 +1470,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_cre
     }
     else
     {
-        triggerJavaIllegalStateException(env, error.c_str());
+        triggerLibNexaException(env, error.c_str());
         return 0;
     }
     return ((jlong)smh);
@@ -1408,7 +1514,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_
     ScriptMachineData *smd = (ScriptMachineData *)smid;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return false;
     }
     return smd->sm->Continue();
@@ -1421,12 +1527,12 @@ extern "C" JNIEXPORT jboolean JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_
     ScriptMachineData *smd = (ScriptMachineData *)smid;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return false;
     }
     if (!smd->sm->isMoreSteps())
     {
-        triggerJavaIllegalStateException(env, "completed");
+        triggerLibNexaException(env, "completed");
         return false;
     }
     return smd->sm->Step();
@@ -1439,7 +1545,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_swap
 {
     ScriptMachineData *smd = (ScriptMachineData *)smid;
     if ((!smd) || (!smd->sm))
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
     else
     {
         Stack tmp = smd->sm->getStack();
@@ -1453,7 +1559,7 @@ extern "C" JNIEXPORT jstring Java_org_nexa_libnexakotlin_ScriptMachine_getError(
     ScriptMachineData *smd = (ScriptMachineData *)smid;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return nullptr;
     }
 
@@ -1469,7 +1575,7 @@ extern "C" JNIEXPORT void Java_org_nexa_libnexakotlin_ScriptMachine_clearError(J
     ScriptMachineData *smd = (ScriptMachineData *)smid;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return;
     }
     smd->sm->clearError();
@@ -1483,7 +1589,7 @@ extern "C" JNIEXPORT jint Java_org_nexa_libnexakotlin_ScriptMachine_getPos(JNIEn
     ScriptMachineData *smd = (ScriptMachineData *)smId;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return -1;
     }
     return smd->sm->getPos();
@@ -1499,12 +1605,12 @@ extern "C" JNIEXPORT jint Java_org_nexa_libnexakotlin_ScriptMachine_setPos(JNIEn
     ScriptMachineData *smd = (ScriptMachineData *)smId;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return -1;
     }
     if (pos < 0)
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return -1;
     }
     return smd->sm->setPos(pos);
@@ -1519,7 +1625,7 @@ extern "C" JNIEXPORT jlong Java_org_nexa_libnexakotlin_ScriptMachine_clone(JNIEn
     ScriptMachineData *smd = (ScriptMachineData *)smId;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return 0;
     }
     return (jlong)SmClone((void *)smId);
@@ -1533,7 +1639,7 @@ extern "C" JNIEXPORT jstring Java_org_nexa_libnexakotlin_ScriptMachine_getBMD(JN
     ScriptMachineData *smd = (ScriptMachineData *)smId;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return nullptr;
     }
     return env->NewStringUTF(smd->sm->bigNumModulo.str(16).c_str());
@@ -1549,7 +1655,7 @@ extern "C" JNIEXPORT jstring Java_org_nexa_libnexakotlin_ScriptMachine_setBMD(JN
     ScriptMachineData *smd = (ScriptMachineData *)smId;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return nullptr;
     }
     std::string bmdHex = toString(env, jbmdHex);
@@ -1569,7 +1675,7 @@ extern "C" JNIEXPORT bool Java_org_nexa_libnexakotlin_ScriptMachine_modify(JNIEn
     ScriptMachineData *smd = (ScriptMachineData *)smId;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return false;
     }
     ByteArrayAccessor d(env, data);
@@ -1632,18 +1738,18 @@ extern "C" JNIEXPORT jstring Java_org_nexa_libnexakotlin_ScriptMachine_getRegist
     ScriptMachineData *smd = (ScriptMachineData *)smid;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return nullptr;
     }
 
     if (regNum >= NUM_SCRIPT_REGISTERS)
     {
-        triggerJavaIllegalStateException(env, "register number is too large");
+        triggerLibNexaException(env, "register number is too large");
         return nullptr;
     }
     if (regNum < 0)
     {
-        triggerJavaIllegalStateException(env, "register number is negative");
+        triggerLibNexaException(env, "register number is negative");
         return nullptr;
     }
     const StackItem &item = smd->sm->arrRegisters[regNum];
@@ -1661,18 +1767,18 @@ extern "C" JNIEXPORT jstring Java_org_nexa_libnexakotlin_ScriptMachine_setRegist
     ScriptMachineData *smd = (ScriptMachineData *)smid;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return nullptr;
     }
 
     if (regNum >= NUM_SCRIPT_REGISTERS)
     {
-        triggerJavaIllegalStateException(env, "register number is too large");
+        triggerLibNexaException(env, "register number is too large");
         return nullptr;
     }
     if (regNum < 0)
     {
-        triggerJavaIllegalStateException(env, "register number is negative");
+        triggerLibNexaException(env, "register number is negative");
         return nullptr;
     }
 
@@ -1691,7 +1797,7 @@ extern "C" JNIEXPORT jstring Java_org_nexa_libnexakotlin_ScriptMachine_setRegist
         t = 4;
     else
     {
-        triggerJavaIllegalStateException(env, "unknown data type");
+        triggerLibNexaException(env, "unknown data type");
         return nullptr;
     }
 
@@ -1701,7 +1807,7 @@ extern "C" JNIEXPORT jstring Java_org_nexa_libnexakotlin_ScriptMachine_setRegist
         std::string hex = toString(env, jhex);
         if (!IsHex(hex))
         {
-            triggerJavaIllegalStateException(env, "value is not hex");
+            triggerLibNexaException(env, "value is not hex");
             return nullptr;
         }
 
@@ -1724,8 +1830,7 @@ extern "C" JNIEXPORT jstring Java_org_nexa_libnexakotlin_ScriptMachine_setRegist
                     neg = true;
                 else if (sign != "00")
                 {
-                    triggerJavaIllegalStateException(
-                        env, "bignum hex must end in the number's sign: 00 for +, 80 for negative");
+                    triggerLibNexaException(env, "bignum hex must end in the number's sign: 00 for +, 80 for negative");
                     return nullptr;
                 }
                 std::string mag = hex.substr(0, hex.length() - 2);
@@ -1767,7 +1872,7 @@ extern "C" JNIEXPORT jstring Java_org_nexa_libnexakotlin_ScriptMachine_getStackI
     ScriptMachineData *smd = (ScriptMachineData *)smid;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return nullptr;
     }
 
@@ -1796,7 +1901,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_rese
     ScriptMachineData *smd = (ScriptMachineData *)smid;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return;
     }
     smd->sm->ResetResourceUseStats();
@@ -1817,7 +1922,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_setR
     ScriptMachineData *smd = (ScriptMachineData *)smid;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return;
     }
 
@@ -1845,13 +1950,13 @@ extern "C" JNIEXPORT void JNICALL Java_org_nexa_libnexakotlin_ScriptMachineResou
     ScriptMachineData *smd = (ScriptMachineData *)smid;
     if ((!smd) || (!smd->sm))
     {
-        triggerJavaIllegalStateException(env, "internal error: no script machine");
+        triggerLibNexaException(env, "internal error: no script machine");
         return;
     }
     jclass clss = env->GetObjectClass(ths);
     if (clss == nullptr)
     {
-        triggerJavaIllegalStateException(env, "Cannot access MachineResources object class");
+        triggerLibNexaException(env, "Cannot access MachineResources object class");
         return;
     }
 
@@ -1865,7 +1970,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_nexa_libnexakotlin_ScriptMachineResou
     if (sigsField == nullptr || ieField == nullptr || oeField == nullptr || msbField == nullptr || msiField == nullptr)
     {
         env->DeleteLocalRef(clss);
-        triggerJavaIllegalStateException(env, "A MachineResources field name has changed");
+        triggerLibNexaException(env, "A MachineResources field name has changed");
         return;
     }
 

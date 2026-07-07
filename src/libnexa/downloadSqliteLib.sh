@@ -1,6 +1,7 @@
 #!/bin/bash
 
-version=3500400
+version=3530200
+archiveSha256=8a310d0a16c7a90cacd4c884e70faa51c902afed2a89f63aaa0126ab83558a32
 echo "Retrieving SQlite $version..."
 
 set -eu
@@ -8,7 +9,7 @@ set -eu
 dir_name=sqlite-amalgamation-${version}
 archive=sqlite-amalgamation-${version}.zip
 if [ ! -f "$archive" ]; then
-    curl -L "https://www.sqlite.org/2025/sqlite-amalgamation-$version.zip" -o $archive
+    curl -L "https://www.sqlite.org/2026/sqlite-amalgamation-$version.zip" -o $archive
     # wget -O $archive "https://www.sqlite.org/2023/sqlite-amalgamation-$version.zip"
 else
   echo "Archive $archive already downloaded"
@@ -18,7 +19,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     echo "skipping checksum check on macos"
 else
   # openssl dgst -sha3-256 sqlite-amalgamation-3500400.zip
-    echo "1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032 sqlite-amalgamation-3500400.zip" | sha256sum --check || { echo "sha256sum of sqlite3 failed"; exit 1; }
+    echo "$archiveSha256 $archive" | sha256sum --check || { echo "sha256sum of sqlite3 failed"; exit 1; }
 fi
 
 echo "Extracting..."

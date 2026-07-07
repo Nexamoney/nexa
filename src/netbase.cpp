@@ -781,6 +781,7 @@ bool CloseSocket(SOCKET &hSocket)
 #ifdef WIN32
     int ret = closesocket(hSocket);
 #else
+    shutdown(hSocket, SHUT_RDWR);
     int ret = close(hSocket);
 #endif
     if (ret)
