@@ -617,6 +617,12 @@ protected:
     int maxRequestedRegion;
     CCriticalSection corral;
     CCond cond;
+#ifdef DEBUG
+    std::thread::id requestingThread;
+#ifdef __linux__
+    pid_t requestingTid;
+#endif
+#endif
 
 public:
     CThreadCorral() : curRegion(0), curCount(0), maxRequestedRegion(0) {}
@@ -638,6 +644,12 @@ public:
                 curRegion = region;
                 maxRequestedRegion = 0;
                 curCount = 1;
+#ifdef DEBUG
+                requestingThread = std::this_thread::get_id();
+#ifdef __linux__
+                requestingTid = static_cast<pid_t>(syscall(SYS_gettid));
+#endif
+#endif
                 return;
             }
             // If the current region is mine, and no higher priority regions want to run, then I can run

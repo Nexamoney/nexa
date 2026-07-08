@@ -75,7 +75,9 @@ Before Tailstorm, the minerData field was defined as 0.  It is now used to provi
 
 A block meets the proof of work requirement *if "K" - 1 distinct PoW puzzle solutions are provided* (where K is the targeted number of subblocks per summary block as per the Bobtail/Tailstorm papers, and -1 because this block has PoW as well).
 
-To compartmentalize the code, these PoW puzzle solutions do not have to be legal subblocks.  They could be arbitrary bytes.  However, the PoW puzzle includes the known hash of the previous (summary) block, so it is not possible to reuse old or forked solutions.  
+To compartmentalize the code, these PoW puzzle solutions do not have to be legal subblocks.  They could be arbitrary bytes.  However, the PoW puzzle includes the known hash of the previous (summary) block, so it is not possible to reuse old or forked solutions.
+
+The subblock POW proofs consists of the mining header commitment and the nonce for each subblock.  These are hashed with the previous summary block to form the final hash that must be below the POW target.
 
 
 
@@ -157,6 +159,27 @@ If a block not being added to the tip, its transactions no longer need to be con
 ## The minerData field in the block heaader
 
 The minerData field in pre-tailstorm blocks is empty and so when the miner data version is queried it returns with a "0".  Once tailstorm is activated subblocks will have the minerData version set to "1" with the minerData containing the previous subblock hash(s) that this subblock was mined on top of. Summary blocks will have a minerData version of "2" and have a full set of mining hashes and their respective nonce data for each subblock that was included in the Summary block.
+
+MinerData version 2 contains:
+```
+    // version is 2
+    uint8_t version;
+    // Grandparent hash (or 0s if there is no grandparent).  This is the uncle's parent summary block.
+    uint256 prevOfprevhash;
+    // Uncles are subblocks that were created for the prior summary block but didn't get included.
+    uint8_t nUncles;
+    // All uncles have the same nBits, but the value will be different than the current subbblocks because the
+    // the difficulty changes every block.
+    uint32_t nBitsUncle = 0;
+    // Number of subblocks
+    uint8_t nSubblocks = 0;
+    // The subblocks' nbits might be different than this summary block's because  the summary block need to compensate.
+    // for low work uncles.
+    uint32_t nBitsSubblock = 0;
+    // vSubblockProofs MUST contain subblocks first and then uncles. It is a vector of MiningCandidateHashes and nonces.
+    std::vector<std::pair<uint256, std::vector<uint8_t> > > vSubblockProofs;
+```
+
 
 ## Notes on Testing
 

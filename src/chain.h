@@ -188,6 +188,8 @@ public:
     //  don't load all headers into memory. In this way we still save RAM but give fast access to data we need often.
     uint32_t nHeight;
     int64_t height() const { return (int64_t)nHeight; }
+    // Matches CBlock API
+    int64_t GetHeight() const { return (int64_t)nHeight; }
 
     //! Which # file this block is stored in (blk?????.dat)
     int32_t nFile;
@@ -381,13 +383,15 @@ public:
         }
     }
 
-    uint256 GetBlockHash() const
+    uint256 GetHash() const
     {
         if (phashBlock)
             return *phashBlock;
         else
             return GetBlockHeader().GetHash();
     }
+    // Deprecated, all the other APIs are GetHash()
+    uint256 GetBlockHash() const { return GetHash(); }
 
     enum
     {

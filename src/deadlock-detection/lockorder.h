@@ -19,6 +19,9 @@
 
 #ifdef DEBUG_LOCKORDER // this ifdef covers the rest of the file
 
+/** Set this to false to prevent pausing if there is a lock order problem (when in debug mode). */
+extern std::atomic<bool> dbgAssertOnLockIssue;
+
 /**
  * CLockOrderTracker tracks the globally seen lock ordering for all locks and threads
  */

@@ -54,7 +54,7 @@ static CTreeNodeRef FindDagTipNode(std::set<CTreeNodeRef> &dag)
 
             // Adjust for when we have multiple subblocks at the same height. We always make
             // the first one we saw the activetip.
-            if (node->nSequenceId < activetip->nSequenceId && node->dagHeight == activetip->dagHeight)
+            if (activetip && (node->nSequenceId < activetip->nSequenceId) && (node->dagHeight == activetip->dagHeight))
             {
                 activetip = node;
             }
@@ -1622,8 +1622,10 @@ bool CTailstormForest::GetDagForBlock(ConstCBlockRef &pblock,
         if (fMatch)
         {
             assert(ret.vSubblockProofs.size() == dag.size());
-            *vDoubleSpendTxns = tree->vDoubleSpendTxns;
-            *mapInputs = tree->mapInputs;
+            if (vDoubleSpendTxns)
+                *vDoubleSpendTxns = tree->vDoubleSpendTxns;
+            if (mapInputs)
+                *mapInputs = tree->mapInputs;
         }
         else
         {
@@ -2453,10 +2455,27 @@ void CTailstormForest::Check()
 //! Get DAG internal information for display and debugging
 UniValue CTailstormForest::GetInternals(UniValue &info)
 {
-    auto unlinked = UniValue(UniValue::VARR);
+    auto unlinked = UniValue(UniValue::VOBJ);
     for (auto &mnu : mapNodesUnlinked)
     {
-        unlinked.push_back(mnu.second->hash.ToString());
+        auto uv = UniValue(UniValue::VOBJ);
+        auto &treenode = mnu.second;
+        auto &blk = treenode->subblock;
+        uv.pushKV(std::string("processed"), treenode->fProcessed);
+        uv.pushKV(std::string("roothash"), treenode->roothash.ToString());
+        uv.pushKV(
+            std::string("prevSummaryBlock"), std::to_string(blk->height - 1) + ":" + blk->hashPrevBlock.ToString());
+        uv.pushKV("txCount", (uint64_t)blk->txCount);
+        uv.pushKV("height", (uint64_t)blk->height);
+        auto setHashes = GetSubblockHashes(blk->GetBlockHeader());
+        auto dependsOn = UniValue(UniValue::VARR);
+        for (const auto &dep : setHashes)
+        {
+            std::string haveIt = (mapAllNodes.count(dep) != 0) ? "x" : "?";
+            dependsOn.push_back(haveIt + dep.ToString());
+        }
+        uv.pushKV("dependsOn", dependsOn);
+        unlinked.pushKV(treenode->hash.ToString(), uv);
     }
     info.pushKV("unlinked_subblock_list", unlinked);
 
@@ -2467,5 +2486,44 @@ UniValue CTailstormForest::GetInternals(UniValue &info)
             mnu.first.ToString(), std::to_string(mnu.second->nRootHeight) + ":" + mnu.second->roothash.ToString());
     }
     info.pushKV("subblock_to_grove_summaryblock", subblockToGrove);
+
+    CBlockIndex *tip = chainActive.Tip();
+    std::set<CTreeNodeRef> setBestDag;
+    tailstormForest.GetBestDagFor(tip->GetBlockHash(), setBestDag);
+
+    // Grab a snapshot of this list because its small and we cannot hold mapBlockIndex through tailstorm operations
+    std::set<CBlockIndex *, CBlockIndexWorkComparator> bicSnap;
+    {
+        READLOCK(cs_mapBlockIndex);
+        bicSnap = setBlockIndexCandidates;
+    }
+    auto summaryToMissing = UniValue(UniValue::VOBJ);
+    for (const auto &candidate : bicSnap)
+    {
+        const auto &hdr = candidate->GetBlockHeader();
+        auto mdata = ParseSummaryBlockMinerData(hdr.minerData);
+
+        std::vector<CInv> vGetData;
+        for (const auto &pair : mdata.vSubblockProofs)
+        {
+            const uint256 &miningHeaderCommitment = pair.first;
+            ConstCBlockRef subblock;
+            // Note, this will not work until tailstormForest.Find is upgraded to also accept
+            // miningHeaderCommitments.
+            if (!tailstormForest.Find(miningHeaderCommitment, subblock))
+            {
+                vGetData.emplace_back(MSG_BLOCK, miningHeaderCommitment);
+            }
+        }
+
+        auto missing = UniValue(UniValue::VARR);
+        if (!vGetData.empty())
+        {
+            for (const auto &mobj : vGetData)
+                missing.push_back(mobj.ToString());
+        }
+        summaryToMissing.pushKV(std::to_string(candidate->height()) + ":" + candidate->GetHash().ToString(), missing);
+    }
+    info.pushKV("missing_subblocks_by_mhc", summaryToMissing);
     return info;
 }

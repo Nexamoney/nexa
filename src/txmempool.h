@@ -182,6 +182,8 @@ public:
     bool IsDirty() const { return fDirty; }
     /** Get and Set methods for determining if this transaction is part of a read only chain */
     bool IsReadOnlyChain() const { return fReadOnlyChain; }
+
+    std::string details() const;
 };
 
 struct update_ancestor_state

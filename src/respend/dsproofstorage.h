@@ -58,8 +58,8 @@ public:
     void newBlockFound();
 
 private:
-    // m_lock guards all the following data structures
-    mutable CCriticalSection m_lock;
+    // dsproofStorageLock guards all the following data structures
+    mutable CCriticalSection dsproofStorageLock;
 
     std::map<int32_t, DoubleSpendProof> m_proofs;
     int m_nextId = 1;

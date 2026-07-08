@@ -32,7 +32,7 @@ BOOST_AUTO_TEST_CASE(GetBlockWorkEquivalentTime_test)
         blocks[i].SetBlockHeaderTime(1269211443 + i * params.nPowTargetSpacing);
         blocks[i].SetBlockHeaderBits(0x207fffff); /* target 0x7fffff000... */
         blocks[i].SetBlockHeaderChainWork(ArithToUint256(
-            i ? blocks[i - 1].GetBlockHeader().aChainWork() + blocks[i - 1].GetBlockWork() : arith_uint256(0)));
+            i ? blocks[i - 1].GetBlockHeader().aChainWork() + blocks[i - 1].GetBlockWork() : arith_uint256()));
     }
 
     for (int j = 0; j < 1000; j++)
@@ -162,8 +162,8 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test)
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params, &blocks[1]);
     currentPow = arith_uint256().SetCompact(nBits);
     // Because nBits truncates target, we don't end up with exactly 1/2 the target
-    BOOST_CHECK(currentPow <= arith_uint256().SetCompact(initialBits) / 2);
-    BOOST_CHECK(currentPow >= arith_uint256().SetCompact(initialBits - 1) / 2);
+    BOOST_CHECK(currentPow <= arith_uint256().SetCompact(initialBits) / arith_uint256(2));
+    BOOST_CHECK(currentPow >= arith_uint256().SetCompact(initialBits - 1) / arith_uint256(2));
     BOOST_CHECK(fabs(GetASERTApproximationError(&blocks[i - 1], nBits, &blocks[1])) < dMaxErr);
 
     // Jumping forward 2 days should return the target to the initial value
@@ -222,7 +222,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test)
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params, &blocks[1]);
     BOOST_CHECK(fabs(GetASERTApproximationError(&blocks[i - 1], nBits, &blocks[1])) < dMaxErr); // absolute
     BOOST_CHECK(fabs(GetASERTApproximationError(&blocks[i - 1], nBits, &blocks[i - 2])) < dMaxErr); // relative
-    currentPow = arith_uint256().SetCompact(nBits) / 2;
+    currentPow = arith_uint256().SetCompact(nBits) / arith_uint256(2);
     BOOST_CHECK_EQUAL(currentPow.GetCompact(), initialBits);
 
     // Jumping backward 2 days should bring target back to where we started
@@ -239,8 +239,8 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test)
     BOOST_CHECK(fabs(GetASERTApproximationError(&blocks[i - 1], nBits, &blocks[i - 2])) < dMaxErr); // relative
     currentPow = arith_uint256().SetCompact(nBits);
     // Because nBits truncates target, we don't end up with exactly 1/2 the target
-    BOOST_CHECK(currentPow <= arith_uint256().SetCompact(initialBits) / 2);
-    BOOST_CHECK(currentPow >= arith_uint256().SetCompact(initialBits - 1) / 2);
+    BOOST_CHECK(currentPow <= arith_uint256().SetCompact(initialBits) / arith_uint256(2));
+    BOOST_CHECK(currentPow >= arith_uint256().SetCompact(initialBits - 1) / arith_uint256(2));
 
     // And forward again
     blocks[i] = GetBlockIndex(&blocks[i - 1], 600 + 2 * 24 * 3600, nBits);
@@ -252,7 +252,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test)
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params, &blocks[1]);
     BOOST_CHECK(fabs(GetASERTApproximationError(&blocks[i - 1], nBits, &blocks[1])) < dMaxErr); // absolute
     BOOST_CHECK(fabs(GetASERTApproximationError(&blocks[i - 1], nBits, &blocks[i - 2])) < dMaxErr); // relative
-    currentPow = arith_uint256().SetCompact(nBits) / 2;
+    currentPow = arith_uint256().SetCompact(nBits) / arith_uint256(2);
     BOOST_CHECK_EQUAL(currentPow.GetCompact(), initialBits);
 
     // Iterate over the entire -2*24*3600..+2*24*3600 range to check that our integer approximation:
@@ -401,7 +401,7 @@ BOOST_AUTO_TEST_CASE(calculate_asert_test)
     prevTarget = nextTarget;
     nextTarget =
         CalculateASERT(prevTarget, params.nPowTargetSpacing, parent_time_diff + 288 * 0, 288, powLimit, nHalfLife);
-    BOOST_CHECK(nextTarget == prevTarget / 2);
+    BOOST_CHECK(nextTarget == prevTarget / arith_uint256(2));
     BOOST_CHECK(nextTarget == initialTarget);
 
     // Ramp up from initialTarget to PowLimit - should only take 4 doublings...
@@ -646,8 +646,8 @@ BOOST_AUTO_TEST_CASE(tailstorm_summary_work_adjustment_with_uncles_test)
         const arith_uint256 actualSummaryTarget = arith_uint256().SetCompact(actualSummaryBits);
 
         const arith_uint256 currentIncludedWork =
-            (scenario.nUncles * GetWorkForDifficultyBits(scenario.nBitsUncle)) +
-            (scenario.nSubblocks * defaultWork);
+            (arith_uint256(scenario.nUncles) * GetWorkForDifficultyBits(scenario.nBitsUncle)) +
+            (arith_uint256(scenario.nSubblocks) * defaultWork);
         arith_uint256 requiredSummaryWork = rawDefaultWork;
         const arith_uint256 expectedBlockWork = rawDefaultWork * params.tailstorm_k;
         if (currentIncludedWork < expectedBlockWork)

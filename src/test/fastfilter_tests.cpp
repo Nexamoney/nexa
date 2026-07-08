@@ -137,7 +137,7 @@ BOOST_AUTO_TEST_CASE(fastfilter_tests)
         CFastFilter<4 * 1024 * 1024, 2> filt;
         CFastFilter<4 * 1024 * 1024, 8> filt2;
 
-        arith_uint256 num(0);
+        arith_uint256 num;
         int collisions = 0;
         int collisions2 = 0;
         for (int i = 0; i < 100000; i++)

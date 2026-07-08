@@ -74,6 +74,12 @@
 
 using namespace std;
 
+template <class DataType>
+std::string ReadOnlyTweak(const DataType &value, CTweak<DataType> *item, bool validate)
+{
+    return "This configuration parameter cannot be changed after startup.";
+}
+
 #ifdef DEBUG_LOCKORDER
 std::atomic<bool> lockdataDestructed{false};
 LockData lockdata;
@@ -543,6 +549,11 @@ CTweakRef<std::string> subverOverrideTweak("net.subversionOverride",
     &subverOverride,
     &SubverValidator);
 
+// see at doc/bu-parallel-validation.md to get the details
+CTweak<unsigned int> numScriptCheckQueues("test.scriptCheckQueues",
+    "Number of script check queues (default 4)",
+    4,
+    &ReadOnlyTweak);
 CTweak<unsigned int> numMsgHandlerThreads("net.msgHandlerThreads",
     "Max message handler threads. Auto detection is zero (default: 0).",
     0);

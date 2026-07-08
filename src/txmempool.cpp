@@ -624,6 +624,7 @@ bool CTxMemPool::_addUnchecked(const CTxMemPoolEntry &entry, bool fCurrentEstima
 {
     const uint256 &txid = entry.GetTx().GetId();
     const uint256 &txidem = entry.GetTx().GetIdem();
+    LOG(MEMPOOL, "Adding tx to txpool: id:%s, idem:%s", txid.ToString(), txidem.ToString());
     // Add to memory pool without checking anything.
     // Used by main.cpp AcceptToMemoryPool(), which DOES do
     // all the appropriate checks.
@@ -757,6 +758,9 @@ void CTxMemPool::removeUnchecked(TxIdIter it)
     const CTransaction &tx = it->GetTx();
     const CTransactionRef &txref = it->GetSharedTx();
     const uint256 &hash = tx.GetId();
+    const uint256 &txidem = tx.GetIdem();
+    LOG(MEMPOOL, "Removing tx from txpool: id:%s, idem:%s", hash.ToString(), txidem.ToString());
+
     uint32_t idx = 0;
     for (const CTxIn &txin : tx.vin)
     {
@@ -1056,7 +1060,7 @@ void CTxMemPool::_removeConflicts(const CTransaction &tx, std::list<CTransaction
         // Any tx that used this input as a read only needs to be removed.
         if (!txin.IsReadOnly()) // UTXO is being consumed
         {
-            LOG(MEMPOOL, "Consumed UTXO %s. mapRoTx size: %d", txin.prevout.GetHex(), mapRoTx.size());
+            // LOG(MEMPOOL, "Consumed UTXO %s. mapRoTx size: %d", txin.prevout.GetHex(), mapRoTx.size());
             auto it2 = mapRoTx.find(txin.prevout);
             if (it2 != mapRoTx.end())
             {
@@ -1070,6 +1074,19 @@ void CTxMemPool::_removeConflicts(const CTransaction &tx, std::list<CTransaction
             }
         }
     }
+}
+
+
+std::string CTxMemPoolEntry::details() const
+{
+    std::string ret;
+    ret.append("txpool entry id: ");
+    ret.append(GetTx().GetId().GetHex());
+    ret.append("  idem: ");
+    ret.append(GetTx().GetIdem().GetHex());
+    ret.append("  numancestors: ");
+    ret.append(std::to_string(nCountWithAncestors));
+    return ret;
 }
 
 
@@ -1113,12 +1130,12 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef> &vtx,
             {
                 if (!tx->vin[i].IsReadOnly()) // UTXO is being consumed
                 {
-                    LOG(MEMPOOL, "remove for block %d Consumed UTXO %s", nBlockHeight, tx->vin[i].prevout.GetHex());
+                    // LOG(MEMPOOL, "Remove for block %d Consumed UTXO %s", nBlockHeight, tx->vin[i].prevout.GetHex());
                     // So remove all txes that use the UTXO
                     auto it2 = mapRoTx.find(tx->vin[i].prevout);
                     if (it2 != mapRoTx.end())
                     {
-                        LOG(MEMPOOL, "UTXO %s has %d RO children", it2->second.size());
+                        // LOG(MEMPOOL, "UTXO %s has %d RO children", it2->second.size());
                         for (const auto &cinp : it2->second)
                         {
                             const uint256 &dephash = cinp.ptx->GetId();
@@ -1157,6 +1174,8 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef> &vtx,
             TxIdIter it = mapTx.find(hash);
             if (it == mapTx.end())
             {
+                LOG(MEMPOOL, "Block tx missing in txpool so not removing: idem:%s  id:%s\n", tx->GetIdem().ToString(),
+                    hash.ToString());
                 continue;
             }
 
@@ -1211,6 +1230,7 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef> &vtx,
         // Remove Transactions that were in the block from the mempool.
         for (TxIdIter it : setTxnsInBlock)
         {
+            LOG(MEMPOOL, "Erase block tx from txpool: %s\n", it->details());
 #ifdef DEBUG
             setAncestorsFromBlock.erase(it);
 #endif
@@ -1225,6 +1245,18 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef> &vtx,
         // issue if it did.
         if (!setAncestorsFromBlock.empty())
         {
+            LOG(MEMPOOL, "Ancestors in the txpool when they should not be.\nAncestors:\n");
+            for (TxIdIter it : setAncestorsFromBlock)
+            {
+                LOG(MEMPOOL, "  %s\n", it->details());
+                for (auto &tx : vtx)
+                {
+                    if (tx->GetId() == it->GetTx().GetId())
+                    {
+                        LOG(MEMPOOL, "  Extra TX is in this block\n", it->details());
+                    }
+                }
+            }
             DbgAssert(!"Ancestors in the mempool when they should not be", );
             for (TxIdIter it : setAncestorsFromBlock)
             {

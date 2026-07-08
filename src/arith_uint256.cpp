@@ -7,6 +7,7 @@
 #include "arith_uint256.h"
 
 #include "crypto/common.h"
+#include "logging.h"
 #include "uint256.h"
 #include "utilstrencodings.h"
 
@@ -199,16 +200,28 @@ void base_uint<BITS>::setdouble(double val)
     }
 }
 
-template <unsigned int BITS>
-std::string base_uint<BITS>::GetHex() const
+template <>
+std::string base_uint<256>::GetHex() const
 {
     return ArithToUint256(*this).GetHex();
 }
 
-template <unsigned int BITS>
-void base_uint<BITS>::SetHex(const char *psz)
+template <>
+void base_uint<256>::SetHex(const char *psz)
 {
     *this = UintToArith256(uint256S(psz));
+}
+
+template <>
+std::string base_uint<320>::GetHex() const
+{
+    assert(0); // fn not used
+}
+
+template <>
+void base_uint<320>::SetHex(const char *psz)
+{
+    assert(0); // fn not used
 }
 
 template <unsigned int BITS>
@@ -265,7 +278,7 @@ arith_uint256 FromCompact(uint32_t nCompact)
     bool fOverflow;
     bnTarget.SetCompact(nCompact, &fNegative, &fOverflow);
     if (fNegative || fOverflow)
-        return arith_uint256(0);
+        return arith_uint256();
     return bnTarget;
 }
 
@@ -333,3 +346,13 @@ arith_uint256 UintToArith256(const uint256 &a)
         b.pn[x] = ReadLE32(a.begin() + x * 4);
     return b;
 }
+
+template base_uint<320>::base_uint(const std::string &);
+template base_uint<320> &base_uint<320>::operator<<=(unsigned int);
+template base_uint<320> &base_uint<320>::operator>>=(unsigned int);
+template base_uint<320> &base_uint<320>::operator*=(uint32_t b32);
+template base_uint<320> &base_uint<320>::operator*=(const base_uint<320> &b);
+template base_uint<320> &base_uint<320>::operator/=(const base_uint<320> &b);
+template int base_uint<320>::CompareTo(const base_uint<320> &) const;
+template bool base_uint<320>::EqualTo(uint64_t) const;
+template unsigned int base_uint<320>::bits() const;

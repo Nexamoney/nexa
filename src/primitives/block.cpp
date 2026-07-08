@@ -130,7 +130,7 @@ arith_uint256 GetWorkForDifficultyBits(uint32_t nBits)
     bool fNegative;
     bool fOverflow;
     bnTarget.SetCompact(nBits, &fNegative, &fOverflow);
-    if (fNegative || fOverflow || bnTarget == arith_uint256(0))
+    if (fNegative || fOverflow || bnTarget == arith_uint256())
         return 0;
     // We need to compute 2**256 / (bnTarget+1), but we can't represent 2**256
     // as it's too large for a arith_uint256. However, as 2**256 is at least as large

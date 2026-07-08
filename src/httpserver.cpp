@@ -120,8 +120,11 @@ public:
             std::unique_ptr<WorkItem> i = nullptr;
             {
                 std::unique_lock<std::mutex> lock(cs_workQueue);
+                // The cond/enqueue logic is very clean, yet still an instance was seen where the queue was not empty
+                // but the thread was still waiting.  It is possibly an OS level bug (there have been some).
+                // It is not onerous for a CPU to wake up every quarter second and check.
                 while (running && queue.empty())
-                    cond.wait(lock);
+                    cond.wait_for(lock, std::chrono::milliseconds(250));
                 if (!running)
                     break;
                 i = std::move(queue.front());

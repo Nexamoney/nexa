@@ -187,6 +187,7 @@ static const uint64_t MIN_DISK_SPACE_FOR_BLOCK_FILES = 550 * 1024 * 1024;
 /** A cache to store headers that have arrived but can not yet be connected **/
 extern CCriticalSection csUnconnectedHeaders;
 extern std::map<uint256, std::pair<CBlockHeader, int64_t> > mapUnConnectedHeaders GUARDED_BY(csUnconnectedHeaders);
+extern CTweak<unsigned int> numScriptCheckQueues;
 
 
 /** Register with a network node to receive its signals */

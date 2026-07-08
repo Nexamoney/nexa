@@ -31,12 +31,43 @@ bool CheckProofOfWork(const uint256 &hash, const uint256 &prevhash, unsigned int
     return CheckProofOfWork(hash, prevhash, target, params, nullptr);
 }
 
+bool CheckProofOfWork(const uint256 &hash,
+    const uint256 &prevhash,
+    unsigned int nBits,
+    const Consensus::Params &params,
+    arith_uint256 *hashout)
+{
+    bool fNegative;
+    bool fOverflow;
+    arith_uint256 target;
+    target.SetCompact(nBits, &fNegative, &fOverflow);
+
+    // Check range
+    if (fNegative || target == 0 || fOverflow || target > UintToArith256(params.powLimit))
+        return false;
+    return CheckProofOfWork(hash, prevhash, target, params, hashout);
+}
+
+
 bool CheckProofOfWork(uint256 hash,
     uint256 prevhash,
     const arith_uint256 &bnTarget,
     const Consensus::Params &params,
     arith_uint256 *hashout)
 {
+    // Note for tailstorm to distinguish uncles from children, the POW MUST involve prevhash!
+
+    if (params.powAlgorithm == 0)
+    {
+        auto tmp = UintToArith256(hash);
+        if (hashout != nullptr)
+            *hashout = tmp;
+        // Check proof of work matches claimed amount
+        if (UintToArith256(hash) > bnTarget)
+            return false;
+
+        return true;
+    }
     if (params.powAlgorithm == 1)
     {
         // This algorithm uses the hash as a priv key to sign sha256(hash) using deterministic k.
@@ -72,14 +103,36 @@ bool CheckProofOfWork(uint256 hash,
         CSHA256 sha;
         sha.Write(&vchSig[0], vchSig.size());
         sha.Finalize(hash.begin());
+
+        auto tmp = UintToArith256(hash);
+        if (hashout != nullptr)
+            *hashout = tmp;
+        // Check proof of work matches claimed amount
+        if (tmp > bnTarget)
+            return false;
+        return true;
     }
-
-    auto tmp = UintToArith256(hash);
-    if (hashout != nullptr)
-        *hashout = tmp;
-    // Check proof of work matches claimed amount
-    if (UintToArith256(hash) > bnTarget)
-        return false;
-
-    return true;
+    if (params.powAlgorithm == 2)
+    {
+        uint256 h1;
+        if (!prevhash.IsNull())
+        {
+            CSHA256Writer combine;
+            combine << hash << prevhash;
+            uint256 h = combine.GetHash();
+            h1 = sha256(h);
+        }
+        else
+        {
+            h1 = sha256(hash);
+        }
+        auto tmp = UintToArith256(h1);
+        if (hashout != nullptr)
+            *hashout = tmp;
+        // Check proof of work matches claimed amount
+        if (tmp > bnTarget)
+            return false;
+        return true;
+    }
+    assert(0); // Unknown POW algorithm
 }

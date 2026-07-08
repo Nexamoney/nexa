@@ -45,6 +45,9 @@ void TestThread(CSharedCriticalSection *mutexA, CSharedCriticalSection *mutexB)
 
 BOOST_AUTO_TEST_CASE(TEST_9)
 {
+    // Stop the DbgAssert on lock problems in this test because we are deliberately generating lock problems.
+    auto saved = dbgAssertOnLockIssue.load();
+    dbgAssertOnLockIssue = false;
     CSharedCriticalSection mutexA;
     CSharedCriticalSection mutexB;
     std::thread thread1(TestThread, &mutexA, &mutexB);
@@ -55,6 +58,7 @@ BOOST_AUTO_TEST_CASE(TEST_9)
     thread2.join();
     BOOST_CHECK(lock_exceptions == 1);
     lockdata.ordertracker.clear();
+    dbgAssertOnLockIssue = saved;
 }
 
 #else

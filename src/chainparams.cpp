@@ -8,6 +8,7 @@
 #include "chainparamsbase.h"
 #include "chainparamsseeds.h"
 #include "consensus/merkle.h"
+#include "key.h"
 #include "policy/policy.h"
 #include "versionbits.h" // bip135 added
 
@@ -122,62 +123,20 @@ static SatoshiBlock CreateSatoshiGenesisBlock(uint32_t nTime,
 }
 #endif
 
-
-// Temporarily here until we settle on the Genesis blocks
-#include "key.h"
-
-static uint256 sha256(uint256 data)
-{
-    uint256 ret;
-    CSHA256 sha;
-    sha.Write(data.begin(), 256 / 8);
-    sha.Finalize(ret.begin());
-    return ret;
-}
-
-bool CheckPow(uint256 hash, unsigned int nBits, const Consensus::Params &params)
-{
-    bool fNegative;
-    bool fOverflow;
-    arith_uint256 bnTarget;
-
-    if (params.powAlgorithm == 1)
-    {
-        // This algorithm uses the hash as a priv key to sign sha256(hash) using deterministic k.
-        // This means that any hardware optimization will need to implement signature generation.
-        // What we really want is signature validation to be implemented in hardware, so more thought needs to
-        // happen.
-        uint256 h1 = sha256(hash);
-        CKey k; // Use hash as a private key
-        k.Set(hash.begin(), hash.end(), false);
-        if (!k.IsValid())
-            return false; // If we can't POW fails
-        std::vector<uint8_t> vchSig;
-        if (!k.SignSchnorr(h1, vchSig))
-            return false; // Sign sha256(hash) with hash
-
-        // sha256 the signed data to get back to 32 bytes
-        CSHA256 sha;
-        sha.Write(&vchSig[0], vchSig.size());
-        sha.Finalize(hash.begin());
-    }
-
-    bnTarget.SetCompact(nBits, &fNegative, &fOverflow);
-
-    // Check range
-    if (fNegative || (bnTarget == arith_uint256(0)) || fOverflow || bnTarget > UintToArith256(params.powLimit))
-        return false;
-
-    // Check proof of work matches claimed amount
-    if (UintToArith256(hash) > bnTarget)
-        return false;
-
-    return true;
-}
-
 bool MineIt(CBlockHeader &blockHeader, unsigned long int tries, const Consensus::Params &cparams)
 {
     assert(blockHeader.size != 0); // Size must be properly calculated before we can figure out the hash
+
+    arith_uint256 bnTarget;
+    {
+        bool fNegative;
+        bool fOverflow;
+        bnTarget.SetCompact(blockHeader.nBits, &fNegative, &fOverflow);
+        // Check range
+        if (fNegative || (bnTarget == arith_uint256()) || fOverflow || bnTarget > UintToArith256(cparams.powLimit))
+            return false;
+    }
+
     unsigned long int count = 0;
     for (unsigned int x = 0; x < 8; x++)
     {
@@ -196,7 +155,8 @@ bool MineIt(CBlockHeader &blockHeader, unsigned long int tries, const Consensus:
         if ((tries & ((1 << 12) - 1)) == 0)
             printf("nonce: %s\n", GetHex(blockHeader.nonce).c_str());
         uint256 mhash = ::GetMiningHash(headerCommitment, blockHeader.nonce);
-        if (CheckPow(mhash, blockHeader.nBits, cparams))
+        if (CheckProofOfWork(mhash, blockHeader.hashPrevBlock, bnTarget, cparams, nullptr))
+        // if (CheckPow(mhash, blockHeader.nBits, cparams))
         {
             // printf("pow hash: %s\n", mhash.GetHex().c_str());
             return true;
@@ -361,6 +321,7 @@ public:
         consensus.fPowAllowMinDifficultyBlocks = true;
         consensus.fPowNoRetargeting = true;
         consensus.powAlgorithm = 1;
+        consensus.nASERTAnchorAt = 2;
         consensus.initialSubsidy = 10 * 1000000 * COIN;
         consensus.coinbaseMaturity = COINBASE_MATURITY_TESTNET;
         // The half life for the ASERT DAA. For every (nASERTHalfLife) seconds behind schedule the blockchain gets,
@@ -566,19 +527,24 @@ public:
         // 19 for n in bech32
         base58Prefixes[SCRIPT_TEMPLATE_ADDRESS] = std::vector<unsigned char>(1, 8);
         cashaddrPrefix = strNetworkID;
+        consensus.coinbaseMaturity = COINBASE_MATURITY_STORMTEST;
 
         consensus.nSubsidyHalvingInterval = 210000 * 5; // 2 minute blocks rather than 10 min -> * 5
         std::vector<unsigned char> nonce;
         std::vector<unsigned char> hardCodedNonce;
 
         uint256 hashGenesis;
-#if 0
+#if 1
         // slower mining like -testnet: use fPowNoRetargeting = false;
-        uint32_t tgtBits = 506382016;
-        consensus.fPowAllowMinDifficultyBlocks = true;
+        uint32_t tgtBits = 0x1f0fffff; // 0x207fffff; // easiest possible
+        consensus.fPowAllowMinDifficultyBlocks = false;
         consensus.fPowNoRetargeting = false;
         nonce = hardCodedNonce = ParseHex("82333300");
         hashGenesis = uint256S("9d5165fd725811a2fcc4519735d79e7c7ea38d1b97d4ab4ce8d2b9a2b78e8fe9");
+        consensus.nPowTargetSpacing = 30;
+        consensus.tailstorm_k = 40;
+        consensus.powAlgorithm = 1;
+        consensus.nASERTAnchorAt = 2;
 #else
         // faster mining of nearly 1 per second- use fPowNoReTargeting = true;
         uint32_t tgtBits = 0x1f0effff;
@@ -586,6 +552,8 @@ public:
         consensus.fPowNoRetargeting = true;
         nonce = hardCodedNonce = ParseHex("e8382500");
         hashGenesis = uint256S("0c33d2c4023d3071f4f71741556a0c4585586d28804f991d9266a2ee4aab58e6");
+        consensus.nPowTargetSpacing = 2 * 60;
+        consensus.powAlgorithm = 1;
 #endif
 
         bool fNegative;
@@ -593,20 +561,18 @@ public:
         arith_uint256 tmp;
         tmp.SetCompact(tgtBits, &fNegative, &fOverflow);
         consensus.powLimit = ArithToUint256(tmp);
-        consensus.nPowTargetSpacing = 2 * 60;
-        consensus.powAlgorithm = 1;
+
         consensus.initialSubsidy = 10 * 1000000 * COIN;
-        consensus.coinbaseMaturity = COINBASE_MATURITY_TESTNET;
         // Fork1 rules always valid on stormnet
         consensus.fork1Height = 0;
         consensus.nextForkActivationTime = NEXT_FORK_ACTIVATION_TIME;
 
         // The half life for the ASERT DAA. For every (nASERTHalfLife) seconds behind schedule the blockchain gets,
         // difficulty is cut in half. Doubled if blocks are ahead of schedule.
-        // Two days (in seconds)
-        consensus.nASERTHalfLife = 2 * 24 * 60 * 60;
+        // (in seconds)  10 min is massively over-reactive (but great for testing)
+        consensus.nASERTHalfLife = 10 * 60;
 
-        genesis = CreateGenesisBlock("this is nexa stormtest", CScript() << OP_1, 1626275623, nonce, tgtBits, 0 * COIN);
+        genesis = CreateGenesisBlock("this is nexa stormtest", CScript() << OP_1, 1781010927, nonce, tgtBits, 0 * COIN);
         // Uncomment this code block when you want to enable extremely fast mining like found on regtest
         /*
         {
@@ -620,7 +586,7 @@ public:
         }
         */
 
-#if 0
+#if 1
         // recalculate GB if needed (note that this code will not work with the java nexa shared library because it
         // must start before the random numbers (initialized in ECC_Start are hooked up).
         ECC_Start();
@@ -653,7 +619,6 @@ public:
         consensus.nBlockSizeMultiplier = BLOCK_SIZE_MULTIPLIER;
         consensus.nNextMaxBlockSize = DEFAULT_NEXT_MAX_BLOCK_SIZE_FORK1;
 
-        consensus.tailstorm_k = 8;
         consensus.tailstormEnforceDepth = DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS;
         assert(consensus.tailstorm_k >= 2);
 

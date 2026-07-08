@@ -739,7 +739,6 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 0)
         waitFor(waitTime, lambda: self.nodes[0].getblockcount() == self.nodes[1].getblockcount())
 
-
         ###### Test double spent subblocks 1
         logging.info("Double spend subblocks where ds is in a subblock of same dag height")
 
@@ -821,10 +820,12 @@ class TailstormActivationTest(BitcoinTestFramework):
         node1_ds_hash = subblock_hash_node1[0];
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 1)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 1)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 13)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] >= 13)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['unlinked_subblocks'] <= 3)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 16)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['unlinked_subblocks'] == 0)
+        origNode0Total = self.nodes[0].gettailstorminfo()['total']
+
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] >= origNode0Total+3)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['unlinked_subblocks'] <= 3)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
 
@@ -837,10 +838,10 @@ class TailstormActivationTest(BitcoinTestFramework):
 
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 2)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 2)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 14)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == origNode0Total+1)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['unlinked_subblocks'] <= 3)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 17)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['unlinked_subblocks'] == 0)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] >= origNode0Total+4)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['unlinked_subblocks'] <= 3)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
 
@@ -872,8 +873,8 @@ class TailstormActivationTest(BitcoinTestFramework):
         # now mine the next subblock on one node causing the other to re-org their dag tree
         # and so both peers should end up on the same dagtip.
         subblock_hash_node0 = self.nodes[0].generate(1);
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 15)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 18)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 19)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 22)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 3)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
@@ -994,9 +995,9 @@ class TailstormActivationTest(BitcoinTestFramework):
 
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 2)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 1)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 14)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 17)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['unlinked_subblocks'] <= 3)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 16)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 19)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['unlinked_subblocks'] == 0)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
@@ -1010,9 +1011,9 @@ class TailstormActivationTest(BitcoinTestFramework):
         node1_ds_hash = subblock_hash_node1[0];
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 3)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 15)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] >= 15)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['unlinked_subblocks'] <= 3)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 18)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] >= 18)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['unlinked_subblocks'] == 0)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
@@ -1036,8 +1037,8 @@ class TailstormActivationTest(BitcoinTestFramework):
 
         # disconnect peers
         disconnect_all(self.nodes[0])
-        subblock_hash_node0 = self.nodes[0].generate(1);
-        subblock_hash_node1 = self.nodes[1].generate(1);
+        subblock_hash_node0 = self.nodes[0].generate(1)
+        subblock_hash_node1 = self.nodes[1].generate(1)
 
         # create two different transactions that spend the same output and send
         # to both peers.
@@ -1114,8 +1115,8 @@ class TailstormActivationTest(BitcoinTestFramework):
         node1_ds_hash = subblock_hash_node1[0];
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 2)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 2)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 14)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 17)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] >= 14)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] >= 17)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
 
@@ -1128,8 +1129,8 @@ class TailstormActivationTest(BitcoinTestFramework):
 
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 3)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 16)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 19)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] >= 16)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] >= 19)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
 

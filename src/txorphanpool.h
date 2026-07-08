@@ -124,6 +124,8 @@ public:
 };
 extern CTxOrphanPool orphanpool;
 
-uint64_t ProcessOrphans(const std::vector<CTransactionRef> &vWorkQueue);
+/** Look at all the orphans for one of the passed transactions being an ancestor.  If it has an ancestor in the
+    passed set of transactions, then re-evaluate it since it may no longer be an orphan. */
+uint64_t ProcessOrphans(const std::vector<CTransactionRef> &possibleAncestors);
 
 #endif

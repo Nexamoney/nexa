@@ -93,16 +93,14 @@ void PruneSubblocks(ConstCBlockRef pblock)
     {
         // Prune subblocks but leave enough for checking and enforcing the validity
         // of summary blocks up to the enforce depth.
-        if (pindexBestHeader != nullptr)
-        {
-            auto tsEnforce = Params().GetConsensus().tailstormEnforceDepth;
-            const uint32_t nBlockHeight =
-                std::max((uint32_t)pindexBestHeader->height(), pblock->GetBlockHeader().height);
-            const uint32_t nHeightToPrune = nBlockHeight > tsEnforce ? nBlockHeight - tsEnforce - 1 : 0;
+        // We need to prune by trailing our actual chain tip.  If we pruned by the best header (for example)
+        // then if the headers get too far ahead of our tip, we will prune away needed subblocks.
+        auto tsEnforce = Params().GetConsensus().tailstormEnforceDepth;
+        const uint32_t nBlockHeight = std::min((uint32_t)chainActive.Height(), pblock->GetBlockHeader().height);
+        const uint32_t nHeightToPrune = (nBlockHeight > tsEnforce) ? (nBlockHeight - tsEnforce - 1) : 0;
 
-            LOCK(tailstormForest.cs_forest);
-            tailstormForest.ClearByHeight(nHeightToPrune);
-        }
+        LOCK(tailstormForest.cs_forest);
+        tailstormForest.ClearByHeight(nHeightToPrune);
     }
 }
 

@@ -72,41 +72,6 @@ std::unordered_set<uint256, Hasher> setBlocksAlreadyChecked GUARDED_BY(cs_Blocks
 // We don't let this set grow unbounded just in case we forget to erase values later.
 const unsigned int MAX_SETBLOCKSALREADYCHECKED_SIZE = 5000;
 
-struct CBlockIndexWorkComparator
-{
-    bool operator()(CBlockIndex *pa, CBlockIndex *pb) const
-    {
-        // First sort by most total work, ...
-        if (pa->chainWork() > pb->chainWork())
-            return false;
-        if (pa->chainWork() < pb->chainWork())
-            return true;
-
-        // ... then by block arrival sequence.
-        //
-        // Although in general the sequence id orders block by time, in the case of a block race, the
-        // sequence id can be swapped such that the winning block will have the lower sequence_id. This
-        // swapping of id's only is important when/if the node is shutdown and restarts where there were
-        // two or more blocks present at the same height. Then upon restarting the node will stay on the
-        // same block before shutdown regardless of the original time of arrival.
-        if (pa->nSequenceId < pb->nSequenceId)
-            return false;
-        if (pa->nSequenceId > pb->nSequenceId)
-            return true;
-
-        // Use pointer address as tie breaker (should only happen with blocks
-        // loaded from disk, as those all have id 0).
-        if (pa < pb)
-            return false;
-        if (pa > pb)
-            return true;
-
-        // Identical blocks.
-        return false;
-    }
-};
-
-
 /**
  * The set of all CBlockIndex entries with BLOCK_VALID_TRANSACTIONS (for itself and all ancestors) and
  * as good as our current tip or better. Entries may be failed, though, and pruning nodes may be
@@ -280,8 +245,8 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
                 nExpectedChainWork = pindexPrev->chainWork();
 
             // add up the work from all the block types.
-            nExpectedChainWork += (ret.nUncles * GetWorkForDifficultyBits(ret.nBitsUncle));
-            nExpectedChainWork += (ret.nSubblocks * GetWorkForDifficultyBits(ret.nBitsSubblock));
+            nExpectedChainWork += (arith_uint256(ret.nUncles) * GetWorkForDifficultyBits(ret.nBitsUncle));
+            nExpectedChainWork += (arith_uint256(ret.nSubblocks) * GetWorkForDifficultyBits(ret.nBitsSubblock));
             nExpectedChainWork += (GetWorkForDifficultyBits(block.nBits));
         }
 
@@ -815,8 +780,8 @@ bool LoadBlockIndexDB()
         }
         CBlockIndex *pBestHeader = pindexBestHeader.load();
         if ((pBestHeader == nullptr || pindex->chainWork() >= pBestHeader->chainWork()) &&
-            pindex->chainWork() >= pBestIndexOnStartup->chainWork() && pindex->IsValid(BLOCK_VALID_TRANSACTIONS) &&
-            (pindex->IsLinked() || pindex->pprev == nullptr))
+            (pBestIndexOnStartup == nullptr || pindex->chainWork() >= pBestIndexOnStartup->chainWork()) &&
+            pindex->IsValid(BLOCK_VALID_TRANSACTIONS) && (pindex->IsLinked() || pindex->pprev == nullptr))
         {
             setBlockIndexCandidates.insert(pindex);
         }
@@ -2695,7 +2660,7 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
         {
             // Some subblocks were not found in the dag that match this blocks minerData
             tailstormForest.AddSummaryBlockOrphan(pblock);
-            LOG(DAG, "Some subblocks not found in block. Defer summary block orphan %s", pblock->GetHash().ToString());
+            LOG(DAG, "Some subblocks in block not found. Defer summary block orphan %s", pblock->GetHash().ToString());
             return false;
         }
 

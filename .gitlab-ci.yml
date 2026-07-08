@@ -377,6 +377,13 @@ build-ubuntu:
         - ../configure --enable-shared --enable-debug --enable-zmq --enable-glibc-back-compat --enable-reduce-exports --cache-file=config.cache --prefix=$PWD/../depends/x86_64-linux-gnu CPPFLAGS=-DDEBUG_LOCKORDER
         - make -j `nproc`
         - ccache --show-stats
+    after_script:
+        - |
+            if [ "$CI_JOB_STATUS" = "failed" ]; then
+                mkdir -p build/ci-failure-logs
+                find build/src/test src/test -maxdepth 1 -name '*.log' -type f -exec cp -f {} build/ci-failure-logs/ \; 2>/dev/null || true
+                [ ! -f src/test-suite.log ] || cp -f src/test-suite.log build/ci-failure-logs/
+            fi
     dependencies:
         - build-ubuntu-deps
     artifacts:
@@ -384,15 +391,9 @@ build-ubuntu:
         paths:
             - ./build/src/nexad
             - ./build/src/nexa-cli
-            - ./build/src/nexa-miner
-            - ./build/src/nexa-tx
-            - ./build/src/test/
             - ./build/src/test/test_nexa
-            - ./build/src/bench/bench_nexa
             - ./build/qa/*
-            - ./build/src/test/*.log
-            - ./src/test/*.log
-            - ./src/test-suite.log
+            - ./build/ci-failure-logs/
             - ./build/src/.libs/libnexa.*
     rules:
       - if: ($CI_PIPELINE_SOURCE != "schedule" || $EXTENDED_TESTS == "True")
