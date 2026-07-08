@@ -143,6 +143,10 @@ struct Params
     // The half life for the ASERT DAA. For every (nASERTHalfLife) seconds behind schedule the blockchain gets,
     // difficulty is cut in half. Doubled if blocks are ahead of schedule.
     int64_t nASERTHalfLife;
+    // Set the ASERT anchor block to a specific block by height.
+    // Useful for test networks to avoid recreating the genesis block to ensure a recent anchor time.
+    // It is recommended on test networks to anchor at block 2 because ASERT uses time of the anchor's parent.
+    uint64_t nASERTAnchorAt = 0;
 
     /** Fork activation time */
     uint64_t nextForkActivationTime;

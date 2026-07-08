@@ -1437,7 +1437,8 @@ UniValue submitminingsolution(const UniValue &params, bool fHelp)
     }
 
     CValidationState state;
-    UniValue uvsub = SubmitBlock(block, state); // returns string on failure
+    UniValue uvsub;
+    uvsub = SubmitBlock(block, state); // returns string on failure
 
     if (state.IsInvalid() && state.GetRejectCode() == REJECT_CONFLICT)
     {

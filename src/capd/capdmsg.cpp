@@ -70,13 +70,13 @@ arith_uint256 aPriorityToPowTarget(PriorityType priority, size_t msgContentSize)
     if (priority < 1.0)
     {
         PriorityType priInv = (((PriorityType)1) / priority) * PRIORITY_CONVERSION_FRAC;
-        ret = MIN_LOCAL_MSG_DIFFICULTY / PRIORITY_CONVERSION_FRAC * arith_uint256((uint64_t)priInv);
+        ret = (MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(PRIORITY_CONVERSION_FRAC)) * arith_uint256((uint64_t)priInv);
     }
     else
     {
         arith_uint256 v;
         v.setdouble(priority * PRIORITY_CONVERSION_FRAC);
-        ret = (MIN_LOCAL_MSG_DIFFICULTY / v) * PRIORITY_CONVERSION_FRAC;
+        ret = (MIN_LOCAL_MSG_DIFFICULTY / v) * ((uint64_t)PRIORITY_CONVERSION_FRAC);
     }
 
     return ret;

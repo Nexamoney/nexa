@@ -47,9 +47,8 @@ public:
     /** Hash of the parent block */
     uint256 hashPrevBlock;
     /** Difficulty target specified in a compact format (see detailed docs for exact format).
-        This field refers to the PoW puzzle difficulty of this (sub)block only.  The actual
-        work in this block is this work times the number of subblocks.
-        (all subblocks must have the same difficulty as the referencing block).
+        This field refers to the PoW puzzle difficulty of this (sub)block only, NOT the entire work in this block.
+        The actual work of this block is this work plus the work in all the subblocks.
      */
     uint32_t nBits;
     /** Hash of a specific ancestor block (see detailed docs for exact ancestor) */
@@ -335,6 +334,7 @@ struct CSummaryBlockMinerData
     // The subblocks' nbits might be different than this summary block's because  the summary block need to compensate.
     // for low work uncles.
     uint32_t nBitsSubblock = 0;
+    // vSubblockProofs MUST contain subblocks first and then uncles
     std::vector<std::pair<uint256, std::vector<uint8_t> > > vSubblockProofs;
 };
 CSummaryBlockMinerData ParseSummaryBlockMinerData(const std::vector<unsigned char> &data);

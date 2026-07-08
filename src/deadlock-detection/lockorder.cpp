@@ -9,6 +9,7 @@
 #ifdef DEBUG_LOCKORDER // this ifdef covers the rest of the file
 
 extern std::atomic<bool> lockdataDestructed;
+std::atomic<bool> dbgAssertOnLockIssue = true;
 
 void CLockOrderTracker::potential_lock_order_issue_detected(LockStackEntry &this_lock,
     LockStackEntry &other_lock,
@@ -29,6 +30,8 @@ void CLockOrderTracker::potential_lock_order_issue_detected(LockStackEntry &this
 
     CLockLocation &thisLock = this_lock.second;
     CLockLocation &otherLock = other_lock.second;
+    const auto &thisName = thisLock.GetMutexName();
+    const auto &otherName = otherLock.GetMutexName();
 
     LOGA("POTENTIAL LOCK ORDER ISSUE DETECTED\n");
     if (possible_misname == true)
@@ -43,6 +46,39 @@ void CLockOrderTracker::potential_lock_order_issue_detected(LockStackEntry &this
         tid, thisLock.GetMutexName().c_str(), thisLock.GetLineNumber(), thisLock.GetFileName().c_str(),
         otherLock.GetMutexName().c_str(), otherLock.GetLineNumber(), otherLock.GetFileName().c_str());
     LOGA("We have previously locked these locks in the reverse order\n");
+    std::string log = "This order:\n";
+    char buf[1024];
+    for (auto &set : seenLockLocations)
+    {
+        if (set.first.find(thisName) != std::string::npos)
+        {
+            for (auto &entry : set.second)
+            {
+                if (entry.find(otherName) != std::string::npos)
+                {
+                    std::snprintf(buf, sizeof(buf), "  locked %s then locked %s\n", set.first.c_str(), entry.c_str());
+                    log += buf;
+                }
+            }
+        }
+    }
+    LOGA("%s\n", log);
+    log = "Reverse order:\n";
+    for (auto &set : seenLockLocations)
+    {
+        if (set.first.find(otherName) != std::string::npos)
+        {
+            for (auto &entry : set.second)
+            {
+                if (entry.find(thisName) != std::string::npos)
+                {
+                    std::snprintf(buf, sizeof(buf), "locked %s then locked %s\n", set.first.c_str(), entry.c_str());
+                    log += buf;
+                }
+            }
+        }
+    }
+    LOGA("%s\n", log);
     LOGA("full lock order dump: \n");
     for (auto &set : seenLockLocations)
     {
@@ -51,6 +87,8 @@ void CLockOrderTracker::potential_lock_order_issue_detected(LockStackEntry &this
             LOGA("locked %s then locked %s\n", set.first.c_str(), entry.c_str());
         }
     }
+    if (dbgAssertOnLockIssue)
+        DbgAssert(!"potential lock order issue detected", );
     throw std::logic_error("potential lock order issue detected");
 }
 

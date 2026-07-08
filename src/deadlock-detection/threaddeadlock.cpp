@@ -240,6 +240,7 @@ void AssertLockHeldInternal(const char *pszName, const char *pszFile, unsigned i
     // this thread is holding locks but none are the one we are checking for
     fprintf(stderr, "Assertion failed: lock %s not held in %s:%i; locks held:\n%s", pszName, pszFile, nLine,
         _LocksHeld().c_str());
+    DbgAssert(!"AssertLockHeld failure", );
     throw std::logic_error("AssertLockHeld failure");
 }
 

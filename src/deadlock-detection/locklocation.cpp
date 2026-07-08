@@ -4,8 +4,29 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "locklocation.h"
+#include <cstring>
+#include <string>
 
 #ifdef DEBUG_LOCKORDER // this ifdef covers the rest of the file
+
+static std::string variableName(const char *p)
+{
+    // remove the object prefix, e.g. x in x.y or x->y
+    const char *dot = std::strrchr(p, '.');
+    const char *gt = std::strrchr(p, '>');
+
+    const char *start = nullptr;
+
+    if (dot && gt)
+        start = (dot > gt) ? dot : gt;
+    else if (dot)
+        start = dot;
+    else if (gt)
+        start = gt;
+
+    return (start ? std::string(start + 1) : std::string(p));
+}
+
 
 CLockLocation::CLockLocation(const char *pszName,
     const char *pszFile,
@@ -14,7 +35,7 @@ CLockLocation::CLockLocation(const char *pszName,
     OwnershipType eOwnershipIn,
     LockType eLockTypeIn)
 {
-    mutexName = pszName;
+    mutexName = variableName(pszName);
     sourceFile = pszFile;
     sourceLine = nLine;
     fTry = fTryIn;

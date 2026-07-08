@@ -247,8 +247,10 @@ static bool CpuMineBlockHasherNextChain(int &ntries,
             {
                 // Found a solution
                 found = true;
-                printf("%s: proof-of-work found  \n  mining puzzle solution: %s  \n                  target: %s\n",
-                    now().c_str(), finalHash.GetHex().c_str(), hashTarget.GetHex().c_str());
+                printf("%s: proof-of-work found  \n  mining puzzle solution: %s  \n                  target: %s\n      "
+                       "            miningHash: %s                  nonce: %s\n",
+                    now().c_str(), finalHash.GetHex().c_str(), hashTarget.GetHex().c_str(), miningHash.GetHex().c_str(),
+                    HexStr(nonce).c_str());
                 break;
             }
             if (ntries-- < 1)

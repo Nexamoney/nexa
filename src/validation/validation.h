@@ -239,4 +239,40 @@ bool ProcessAcceptBlock(CNode *pfrom,
 //! Check whether the block associated with this index entry is pruned or not.
 bool IsBlockPruned(const CBlockIndex *pblockindex);
 
+struct CBlockIndexWorkComparator
+{
+    bool operator()(CBlockIndex *pa, CBlockIndex *pb) const
+    {
+        // First sort by most total work, ...
+        if (pa->chainWork() > pb->chainWork())
+            return false;
+        if (pa->chainWork() < pb->chainWork())
+            return true;
+
+        // ... then by block arrival sequence.
+        //
+        // Although in general the sequence id orders block by time, in the case of a block race, the
+        // sequence id can be swapped such that the winning block will have the lower sequence_id. This
+        // swapping of id's only is important when/if the node is shutdown and restarts where there were
+        // two or more blocks present at the same height. Then upon restarting the node will stay on the
+        // same block before shutdown regardless of the original time of arrival.
+        if (pa->nSequenceId < pb->nSequenceId)
+            return false;
+        if (pa->nSequenceId > pb->nSequenceId)
+            return true;
+
+        // Use pointer address as tie breaker (should only happen with blocks
+        // loaded from disk, as those all have id 0).
+        if (pa < pb)
+            return false;
+        if (pa > pb)
+            return true;
+
+        // Identical blocks.
+        return false;
+    }
+};
+
+extern std::set<CBlockIndex *, CBlockIndexWorkComparator> setBlockIndexCandidates GUARDED_BY(cs_mapBlockIndex);
+
 #endif

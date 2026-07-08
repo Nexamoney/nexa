@@ -600,6 +600,8 @@ libnexa_common_a_SOURCES = \
   keystore.cpp \
   netaddress.cpp \
   netbase.cpp \
+  pow.cpp \
+  pow.h \
   prevector.h \
   primitives/block.cpp \
   primitives/block.h \

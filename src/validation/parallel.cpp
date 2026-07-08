@@ -32,8 +32,6 @@ extern CTweak<bool> parallelTweak;
 
 using namespace std;
 
-// see at doc/bu-parallel-validation.md to get the details
-static const unsigned int nScriptCheckQueues = 4;
 static const unsigned int nDagScriptCheckQueues = 1;
 
 std::unique_ptr<CParallelValidation> PV;
@@ -83,8 +81,9 @@ bool CScriptCheck::operator()()
     return true;
 }
 
-CParallelValidation::CParallelValidation() : nThreads(0), semThreadCount(nScriptCheckQueues)
+CParallelValidation::CParallelValidation() : nThreads(0), semThreadCount(numScriptCheckQueues.Value())
 {
+    auto nScriptCheckQueues = numScriptCheckQueues.Value();
     // There are nScriptCheckQueues which are used to validate blocks in parallel. Each block
     // that validates will use one script check queue which must *not* be shared with any other
     // validating block. Furthermore, each script check queue has a number of threads which it
@@ -622,7 +621,7 @@ bool CParallelValidation::HandleBlockMessageHelper(CNode *pfrom, const string &s
 
             {
                 LOCK(cs_blockvalidationthread);
-                if (mapBlockValidationThreads.size() >= nScriptCheckQueues)
+                if (pblock->IsSummaryBlock() && (mapBlockValidationThreads.size() >= numScriptCheckQueues.Value()))
                 {
                     uint64_t nLargestBlockSize = 0;
                     bool fCompeting = false;
@@ -705,6 +704,7 @@ bool CParallelValidation::HandleBlockMessageHelper(CNode *pfrom, const string &s
 
 void HandleBlockMessageThread(CNodeRef noderef, const string strCommand, ConstCBlockRef pblock)
 {
+    RenameThread("BlockMsg");
     boost::thread::id this_id(boost::this_thread::get_id());
     CNode *pfrom = noderef.get();
     const uint256 &hash = pblock->GetHash();

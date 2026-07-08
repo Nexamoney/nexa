@@ -24,7 +24,7 @@ DoubleSpendProofStorage::DoubleSpendProofStorage() : m_recentRejects(120000, 0.0
 DoubleSpendProofStorage::~DoubleSpendProofStorage() { m_timer.cancel(); }
 DoubleSpendProof DoubleSpendProofStorage::proof(int proof) const
 {
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
     auto iter = m_proofs.find(proof);
     if (iter != m_proofs.end())
         return iter->second;
@@ -33,7 +33,7 @@ DoubleSpendProof DoubleSpendProofStorage::proof(int proof) const
 
 std::pair<bool, int32_t> DoubleSpendProofStorage::add(const DoubleSpendProof &proof)
 {
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
 
     uint256 hash = proof.GetHash();
     auto lookupIter = m_dspIdLookupTable.find(hash);
@@ -58,7 +58,7 @@ std::pair<bool, int32_t> DoubleSpendProofStorage::add(const DoubleSpendProof &pr
 
 void DoubleSpendProofStorage::addOrphan(const DoubleSpendProof &proof, NodeId peerId)
 {
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
     const auto res = add(proof);
     if (!res.first) // it was already in the storage
         return;
@@ -71,7 +71,7 @@ void DoubleSpendProofStorage::addOrphan(const DoubleSpendProof &proof, NodeId pe
 std::list<std::pair<int, int> > DoubleSpendProofStorage::findOrphans(const COutPoint &prevOut)
 {
     std::list<std::pair<int, int> > answer;
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
     auto iter = m_prevTxIdLookupTable.find(prevOut.hash.GetCheapHash());
     if (iter == m_prevTxIdLookupTable.end())
         return answer;
@@ -101,7 +101,7 @@ std::list<std::pair<int, int> > DoubleSpendProofStorage::findOrphans(const COutP
 int DoubleSpendProofStorage::orphanCount(int proofId) { return m_orphans.count(proofId); }
 void DoubleSpendProofStorage::claimOrphan(int proofId)
 {
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
     auto orphan = m_orphans.find(proofId);
     if (orphan != m_orphans.end())
     {
@@ -126,7 +126,7 @@ void DoubleSpendProofStorage::claimOrphan(int proofId)
 
 void DoubleSpendProofStorage::remove(int proof)
 {
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
     auto iter = m_proofs.find(proof);
     if (iter == m_proofs.end())
         return;
@@ -165,7 +165,7 @@ void DoubleSpendProofStorage::remove(int proof)
 
 DoubleSpendProof DoubleSpendProofStorage::lookup(const uint256 &proofId) const
 {
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
     auto lookupIter = m_dspIdLookupTable.find(proofId);
     if (lookupIter == m_dspIdLookupTable.end())
         return DoubleSpendProof();
@@ -174,7 +174,7 @@ DoubleSpendProof DoubleSpendProofStorage::lookup(const uint256 &proofId) const
 
 bool DoubleSpendProofStorage::exists(const uint256 &proofId) const
 {
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
     return m_dspIdLookupTable.find(proofId) != m_dspIdLookupTable.end();
 }
 
@@ -185,7 +185,7 @@ void DoubleSpendProofStorage::periodicCleanup(const boost::system::error_code &e
     m_timer.expires_from_now(boost::posix_time::minutes(1));
     m_timer.async_wait(std::bind(&DoubleSpendProofStorage::periodicCleanup, this, std::placeholders::_1));
 
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
     auto expire = GetTime() - SECONDS_TO_KEEP_ORPHANS;
     auto iter = m_orphans.begin();
     while (iter != m_orphans.end())
@@ -209,19 +209,19 @@ void DoubleSpendProofStorage::periodicCleanup(const boost::system::error_code &e
 
 bool DoubleSpendProofStorage::isRecentlyRejectedProof(const uint256 &proofHash) const
 {
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
     return m_recentRejects.contains(proofHash);
 }
 
 void DoubleSpendProofStorage::markProofRejected(const uint256 &proofHash)
 {
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
     m_recentRejects.insert(proofHash);
 }
 
 void DoubleSpendProofStorage::newBlockFound()
 {
-    LOCK(m_lock);
+    LOCK(dsproofStorageLock);
     m_recentRejects.reset();
 }
 

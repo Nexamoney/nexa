@@ -2109,6 +2109,7 @@ void static ProcessOneShot()
 
 void ThreadOpenConnections()
 {
+    RenameThread("OpenCnxns");
     // Connect to all "connect" peers
     if (mapArgs.count("-connect") && mapMultiArgs["-connect"].size() > 0)
     {
@@ -2328,6 +2329,7 @@ void ThreadOpenConnections()
 
 void ThreadOpenAddedConnections()
 {
+    RenameThread("OpenAddedCnxns");
     //  This intial sleep fixes a timing issue where a remote peer may be trying to connect using addnode
     //  at the same time this thread is starting up causing both an outbound and an inbound -addnode connection
     //  to be possible, when it should not be.
@@ -2545,6 +2547,7 @@ static bool threadProcessMessages(CNode *pnode)
 
 void ThreadMessageHandler()
 {
+    RenameThread("MsgHandler");
     while (shutdown_threads.load() == false)
     {
         // Start or Stop threads as determined by the numMsgHandlerThreads tweak

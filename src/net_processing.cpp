@@ -1362,15 +1362,16 @@ bool ProcessMessage(CNode *pfrom,
                     if (hashSalt.IsNull())
                         hashSalt = GetRandHash();
                     uint64_t hashAddr = addr.GetHash();
-                    uint256 hashRand = ArithToUint256(
-                        UintToArith256(hashSalt) ^ (hashAddr << 32) ^ ((GetTime() + hashAddr) / (24 * 60 * 60)));
+                    uint256 hashRand = ArithToUint256(UintToArith256(hashSalt) ^ arith_uint256(hashAddr << 32) ^
+                                                      arith_uint256((GetTime() + hashAddr) / (24 * 60 * 60)));
+
                     hashRand = Hash(BEGIN(hashRand), END(hashRand));
                     std::multimap<uint256, CNode *> mapMix;
                     for (CNode *pnode : vNodes)
                     {
                         unsigned int nPointer;
                         memcpy(&nPointer, &pnode, sizeof(nPointer));
-                        uint256 hashKey = ArithToUint256(UintToArith256(hashRand) ^ nPointer);
+                        uint256 hashKey = ArithToUint256(UintToArith256(hashRand) ^ arith_uint256(nPointer));
                         hashKey = Hash(BEGIN(hashKey), END(hashKey));
                         mapMix.insert(std::make_pair(hashKey, pnode));
                     }
@@ -1972,7 +1973,6 @@ bool ProcessMessage(CNode *pfrom,
                     {
                         bool fSynced = false;
                         IsInitialSyncCompleteInit(&fSynced);
-                        tailstormForest.Clear();
                         uiInterface.ResetDagViewer();
                     }
                 }

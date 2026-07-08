@@ -273,6 +273,7 @@ unsigned int TxMayAlreadyHave(const int type, const uint256 &hash)
 
 void ThreadCommitToMempool()
 {
+    RenameThread("TxCommit");
     while (shutdown_threads.load() == false)
     {
         {
@@ -609,6 +610,7 @@ void _CommitTxToMempool()
 
 void ThreadTxAdmission()
 {
+    RenameThread("TxAdmission");
     while (shutdown_threads.load() == false)
     {
         // Process at most this many transactions before letting the commit thread take over
@@ -1477,7 +1479,7 @@ TransactionClass ParseTransactionClass(const std::string &s)
 }
 
 
-uint64_t ProcessOrphans(const std::vector<CTransactionRef> &vWorkQueue)
+uint64_t ProcessOrphans(const std::vector<CTransactionRef> &possibleAncestors)
 {
     // NOTE: you must not return early since EraseByTime() must always be checked
     std::vector<CTxInputData> vEnqueue;
@@ -1508,7 +1510,7 @@ uint64_t ProcessOrphans(const std::vector<CTransactionRef> &vWorkQueue)
         }
 
         // Recursively process any orphan transactions that depended on this one.
-        for (auto tx : vWorkQueue)
+        for (auto tx : possibleAncestors)
         {
             for (unsigned int j = 0; j < tx->vout.size(); j++)
             {

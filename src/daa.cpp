@@ -98,6 +98,10 @@ const CBlockIndex *GetASERTAnchorBlockCache() noexcept { return cachedAnchor.loa
 static const CBlockIndex *GetASERTAnchorBlock(const CBlockIndex *const pindex, const Consensus::Params &params)
 {
     assert(pindex);
+    // if the tip is below the desired anchor block, just return it.
+    // This is a workaround for the first few blocks in test networks.
+    if (pindex->nHeight < params.nASERTAnchorAt)
+        return pindex;
 
     // - We check if we have a cached result, and if we do and it is really the
     //   ancestor of pindex, then we return it.
@@ -122,16 +126,19 @@ static const CBlockIndex *GetASERTAnchorBlock(const CBlockIndex *const pindex, c
         // The below code leverages CBlockIndex::pskip to walk back efficiently.
         if ((anchor->pskip != nullptr))
         {
-            // skip backward
-            anchor = anchor->pskip;
-            continue; // continue skipping
+            // skip backward if we are looking for the genesis block, or
+            // if we aren't past block 1
+            if (anchor->pskip->nHeight >= params.nASERTAnchorAt)
+            {
+                anchor = anchor->pskip;
+                continue; // continue skipping
+            }
         }
-        // Tailstorm: If in regtest, use block 1 as the anchor, so that we can reuse the genesis block
-        // but still have a recent anchor block time
-        if (params.fPowAllowMinDifficultyBlocks)
+        // If in regtest or stormtest, use block 1 as the anchor, so that we can reuse the genesis block
+        // when the chain is reset, but still have a recent anchor block time.
+        if (params.nASERTAnchorAt)
         {
-            auto tmp = anchor->pprev;
-            if (tmp->pprev == nullptr)
+            if (anchor->nHeight == params.nASERTAnchorAt)
                 break;
         }
         anchor = anchor->pprev;
@@ -210,11 +217,17 @@ uint32_t GetNextASERTWorkRequired(const CBlockIndex *pindexPrev,
         // Tailstorm solves K PoW subblocks per summary block, so the subblock baseline target
         // is K times easier than the non-tailstorm ASERT target.
         arith_uint256 defaultTarget = nextTarget * params.tailstorm_k;
-        if (defaultTarget > powLimit)
+        arith_uint320 kTarget = nextTarget;
+        kTarget *= params.tailstorm_k;
+        if (kTarget > arith_uint320(powLimit))
         {
-            LOGA("warning: tailstorm target difficulty is too easy! %s > %s", defaultTarget.ToString(),
-                powLimit.ToString());
+            // LOGA("Warning: tailstorm target difficulty is too easy! %s > %s clamping to POW limit",
+            //     defaultTarget.ToString(), powLimit.ToString());
             defaultTarget = powLimit; // We can't get any easier than this
+        }
+        else
+        {
+            defaultTarget = kTarget.reduceTo256();
         }
 
         // For a normal subblock, use the default target directly.
@@ -232,8 +245,8 @@ uint32_t GetNextASERTWorkRequired(const CBlockIndex *pindexPrev,
             // add up the work from all the uncle blocks and subblocks.
             arith_uint256 nCurrentWorkInBlock = 0;
             {
-                nCurrentWorkInBlock += (ret.nUncles * GetWorkForDifficultyBits(ret.nBitsUncle));
-                nCurrentWorkInBlock += (ret.nSubblocks * GetWorkForDifficultyBits(ret.nBitsSubblock));
+                nCurrentWorkInBlock += (arith_uint256(ret.nUncles) * GetWorkForDifficultyBits(ret.nBitsUncle));
+                nCurrentWorkInBlock += (arith_uint256(ret.nSubblocks) * GetWorkForDifficultyBits(ret.nBitsSubblock));
             }
 
             // The summary block is itself a Tailstorm subblock, so it should never be easier than
@@ -260,12 +273,11 @@ uint32_t GetNextASERTWorkRequired(const CBlockIndex *pindexPrev,
             refBlockTarget, params.nPowTargetSpacing, nTimeDiff, nHeightDiff, powLimit, params.nASERTHalfLife);
     }
 
-    // nextTarget is bounded by powLimit on every path:
-    //   - The non-tailstorm path returns CalculateASERT() directly, which clamps.
-    //   - The tailstorm non-summary path uses defaultTarget, explicitly clamped above.
-    //   - The tailstorm summary path derives its target from a work value that is
-    //     >= GetWorkForTarget(defaultTarget); inverting a larger-or-equal work gives
-    //     a smaller-or-equal target, so the result is still <= defaultTarget <= powLimit.
+    // If the next target is near our powLimit, the work in subblocks can easily cause the summary block target
+    // to be easier than the powLimit.  But in that (or any other) case, clamp to the powLimit.
+    // No subblock or summary block is allowed to be easier to solve than powLimit!
+    if (nextTarget > powLimit)
+        nextTarget = powLimit;
     return nextTarget.GetCompact();
 }
 
@@ -279,13 +291,27 @@ arith_uint256 CalculateASERT(const arith_uint256 &refTarget,
     const int64_t nHalfLife) noexcept
 {
     // Input target must never be zero nor exceed powLimit.
-    assert(refTarget > 0);
+    assert(refTarget > arith_uint256((uint64_t)0));
     assert(refTarget <= powLimit);
 
-    // We need leading zero bits in powLimit in order to leave headroom to
-    // handle intermediate overflows easily in the fixed-point ASERT math.
-    // This assertion requires at least 18 leading zero bits.
-    assert((powLimit >> 238) == 0);
+    // This is left commented out here as an option, but we have increased the available bits for ASERT to use,
+    // allowing it to accurately calculate extremely easy targets.  This is very useful for testing.
+    // If we do not have the bits for ASERT, fall back to a simple algorithm.
+    /*
+    if (!((refTarget >> 238) == 0))
+    {
+        LOGA("ASERT: target is too large, not enough precision.  Using a simple proportional algorithm");
+        if ((nTimeDiff == 0)||(nHeightDiff == 0)) return powLimit;
+        int64_t secPerBlock16 = nTimeDiff*16/nHeightDiff;  // we * by 16 to get some (fixed point) decimal precision
+        int64_t factor = secPerBlock16/nPowTargetSpacing;  // desired/actual, so if < 16 we need to speed up
+        if (factor < 12) factor = 12;  // clamp to 25% moves
+        if (factor > 20) factor = 20;  // clamp to 25% moves
+        arith_uint256 ret = refTarget*arith_uint256(factor);
+        if (ret < refTarget) return powLimit;  // overflow with just 4 bits decimal precision extra, give up
+        ret/=arith_uint256(16); // Remove the decimal precision we put in right in the beginning
+        return powLimit;
+    }
+    */
 
     // Height diff should NOT be negative.
     assert(nHeightDiff >= 0);
@@ -324,7 +350,8 @@ arith_uint256 CalculateASERT(const arith_uint256 &refTarget,
         65536 +
         ((+195766423245049ull * frac + 971821376ull * frac * frac + 5127ull * frac * frac * frac + (1ull << 47)) >> 48);
     // this is always < 2^241 since refTarget < 2^224
-    arith_uint256 nextTarget = refTarget * factor;
+    arith_uint320 nextTarget = refTarget;
+    nextTarget *= factor;
 
     // multiply by 2^(integer part) / 65536
     shifts -= 16;
@@ -340,7 +367,7 @@ arith_uint256 CalculateASERT(const arith_uint256 &refTarget,
         {
             // If we had wider integers, the final value of nextTarget would
             // be >= 2^256 so it would have just ended up as powLimit anyway.
-            nextTarget = powLimit;
+            return powLimit;
         }
         else
         {
@@ -352,14 +379,17 @@ arith_uint256 CalculateASERT(const arith_uint256 &refTarget,
     if (nextTarget == 0)
     {
         // 0 is not a valid target, but 1 is.
-        nextTarget = arith_uint256(1);
+        return arith_uint256(1);
     }
-    else if (nextTarget > powLimit)
+    // since powLimit must be < arith_uint256.MAXINT, this also detects 256 bit overflows
+    else if (nextTarget > arith_uint320(powLimit))
     {
-        nextTarget = powLimit;
+        return powLimit;
     }
-    // we return from only 1 place for copy elision
-    return nextTarget;
+    auto ret = nextTarget.reduceTo256();
+    // LOGA("ASERT: next: %s  prior: %s dTime: %d idealTime: %d  dHeight: %d exponent: %d  ", ret.ToString(),
+    //     refTarget.ToString(), nTimeDiff, (nPowTargetSpacing * (nHeightDiff + 1)), nHeightDiff, exponent);
+    return ret;
 }
 
 uint32_t GetNextWorkRequired(const CBlockIndex *pindexPrev, const CBlockHeader *pblock, const Consensus::Params &params)

@@ -22,16 +22,34 @@ public:
     explicit uint_error(const std::string &str) : std::runtime_error(str) {}
 };
 
+class ZpcAvoider // Zero pointer case avoider -- so base_uint(0) calls base_uint(uint64_t).
+{
+public:
+    ZpcAvoider(const uint32_t *d) : data(d) {}
+    const uint32_t *data;
+};
+
 /** Template base class for unsigned big integers. */
 template <unsigned int BITS>
 class base_uint
 {
+    // Make every base_uint a friend of every other so we can convert
+    template <unsigned int B>
+    friend class base_uint;
+
 protected:
     enum
     {
         WIDTH = BITS / 32
     };
+    // Note that the least significant word is pn[0]
     uint32_t pn[WIDTH];
+
+    explicit base_uint(const ZpcAvoider &underlyingStorage)
+    {
+        for (int i = 0; i < WIDTH; i++)
+            pn[i] = underlyingStorage.data[i];
+    }
 
 public:
     base_uint()
@@ -53,7 +71,7 @@ public:
         return *this;
     }
 
-    base_uint(uint64_t b)
+    explicit base_uint(uint64_t b)
     {
         pn[0] = (unsigned int)b;
         pn[1] = (unsigned int)(b >> 32);
@@ -156,7 +174,7 @@ public:
         return *this;
     }
 
-    base_uint &operator+=(uint64_t b64)
+    base_uint &operator+=(unsigned long long int b64)
     {
         base_uint b;
         b = b64;
@@ -164,11 +182,67 @@ public:
         return *this;
     }
 
+    template <typename T = uint64_t, std::enable_if_t<!std::is_same_v<T, unsigned long long>, int> = 0>
+    base_uint &operator+=(uint64_t b64)
+    {
+        base_uint b;
+        b = b64;
+        *this += b;
+        return *this;
+    }
+    base_uint &operator+=(uint32_t bn)
+    {
+        base_uint b;
+        b = bn;
+        *this += b;
+        return *this;
+    }
+    base_uint &operator+=(int bn)
+    {
+        if (bn < 0)
+            *this -= -bn;
+        else
+        {
+            base_uint b;
+            b = bn;
+            *this += b;
+        }
+        return *this;
+    }
+
+    base_uint &operator-=(unsigned long long int b64)
+    {
+        base_uint b;
+        b = b64;
+        *this += -b;
+        return *this;
+    }
+    template <typename T = uint64_t, std::enable_if_t<!std::is_same_v<T, unsigned long long>, int> = 0>
     base_uint &operator-=(uint64_t b64)
     {
         base_uint b;
         b = b64;
         *this += -b;
+        return *this;
+    }
+
+    base_uint &operator-=(uint32_t bn)
+    {
+        base_uint b;
+        b = bn;
+        *this += -b;
+        return *this;
+    }
+    base_uint &operator-=(int bn)
+    {
+        if (bn < 0)
+            *this += -bn;
+        else
+        {
+            base_uint b;
+            b = bn;
+            *this += -b;
+        }
         return *this;
     }
 
@@ -223,6 +297,24 @@ public:
     friend inline const base_uint operator>>(const base_uint &a, int shift) { return base_uint(a) >>= shift; }
     friend inline const base_uint operator<<(const base_uint &a, int shift) { return base_uint(a) <<= shift; }
     friend inline const base_uint operator*(const base_uint &a, uint32_t b) { return base_uint(a) *= b; }
+    friend inline const base_uint operator*(const base_uint &a, uint64_t b) { return base_uint(a) *= b; }
+    friend inline const base_uint operator*(const base_uint &a, int b) { return base_uint(a) *= b; }
+    friend inline const base_uint operator+(const base_uint &a, uint32_t b) { return base_uint(a) += b; }
+    friend inline const base_uint operator+(const base_uint &a, uint64_t b) { return base_uint(a) += b; }
+    template <typename T = uint64_t, std::enable_if_t<!std::is_same_v<T, unsigned long long>, int> = 0>
+    friend inline const base_uint operator+(const base_uint &a, unsigned long long int b)
+    {
+        return base_uint(a) += b;
+    }
+    friend inline const base_uint operator+(const base_uint &a, int b) { return base_uint(a) += b; }
+    friend inline const base_uint operator-(const base_uint &a, uint32_t b) { return base_uint(a) -= b; }
+    friend inline const base_uint operator-(const base_uint &a, uint64_t b) { return base_uint(a) -= b; }
+    template <typename T = uint64_t, std::enable_if_t<!std::is_same_v<T, unsigned long long>, int> = 0>
+    friend inline const base_uint operator-(const base_uint &a, unsigned long long int b)
+    {
+        return base_uint(a) -= b;
+    }
+    friend inline const base_uint operator-(const base_uint &a, int b) { return base_uint(a) -= b; }
     friend inline bool operator==(const base_uint &a, const base_uint &b)
     {
         return memcmp(a.pn, b.pn, sizeof(a.pn)) == 0;
@@ -232,9 +324,13 @@ public:
         return memcmp(a.pn, b.pn, sizeof(a.pn)) != 0;
     }
     friend inline bool operator>(const base_uint &a, const base_uint &b) { return a.CompareTo(b) > 0; }
+    friend inline bool operator>(const base_uint &a, unsigned int b) { return a.CompareTo(base_uint(b)) > 0; }
     friend inline bool operator<(const base_uint &a, const base_uint &b) { return a.CompareTo(b) < 0; }
+    friend inline bool operator<(const base_uint &a, unsigned int b) { return a.CompareTo(base_uint(b)) < 0; }
     friend inline bool operator>=(const base_uint &a, const base_uint &b) { return a.CompareTo(b) >= 0; }
+    friend inline bool operator>=(const base_uint &a, unsigned int b) { return a.CompareTo(base_uint(b)) >= 0; }
     friend inline bool operator<=(const base_uint &a, const base_uint &b) { return a.CompareTo(b) <= 0; }
+    friend inline bool operator<=(const base_uint &a, unsigned int b) { return a.CompareTo(base_uint(b)) <= 0; }
     friend inline bool operator==(const base_uint &a, uint64_t b) { return a.EqualTo(b); }
     friend inline bool operator!=(const base_uint &a, uint64_t b) { return !a.EqualTo(b); }
     std::string GetHex() const;
@@ -264,6 +360,7 @@ public:
     arith_uint256(const base_uint<256> &b) : base_uint<256>(b) {}
     arith_uint256(uint64_t b) : base_uint<256>(b) {}
     explicit arith_uint256(const std::string &str) : base_uint<256>(str) {}
+    explicit arith_uint256(const ZpcAvoider &underlyingStorage) : base_uint<256>(underlyingStorage) {}
     /**
      * The "compact" format is a representation of a whole
      * number N using an unsigned 32bit number similar to a
@@ -289,10 +386,35 @@ public:
 
     friend uint256 ArithToUint256(const arith_uint256 &);
     friend arith_uint256 UintToArith256(const uint256 &);
+    friend class arith_uint320;
 };
 
 arith_uint256 FromCompact(uint32_t);
 uint256 ArithToUint256(const arith_uint256 &);
 arith_uint256 UintToArith256(const uint256 &);
+
+// This class is used in the ASERT DAA to avoid overflowing 256 bit numbers
+class arith_uint320 : public base_uint<320>
+{
+public:
+    arith_uint320() {}
+    arith_uint320(const base_uint<320> &b) : base_uint<320>(b) {}
+    arith_uint320(const arith_uint256 &b) : base_uint<320>()
+    {
+        int i;
+        for (i = 0; i < arith_uint256::WIDTH; i++)
+            pn[i] = b.pn[i];
+        for (; i < WIDTH; i++)
+        {
+            pn[i] = 0;
+        }
+    }
+    arith_uint256 reduceTo256()
+    {
+        // This works because the least sig word is index 0, and because this object is larger than 256 bits.
+        return arith_uint256(ZpcAvoider(&pn[0]));
+    }
+};
+
 
 #endif // NEXA_ARITH_UINT256_H

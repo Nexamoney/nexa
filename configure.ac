@@ -281,7 +281,7 @@ if test "x$enable_debug" = xyes; then
     fi
 
     if test "x$GXX" = xyes; then
-        CXXFLAGS="$CXXFLAGS -g3 -O0"
+        CXXFLAGS="$CXXFLAGS -g3 -O0 -fno-eliminate-unused-debug-types"
     fi
 fi
 

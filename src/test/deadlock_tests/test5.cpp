@@ -61,6 +61,9 @@ void TestThread2()
 
 BOOST_AUTO_TEST_CASE(TEST_5)
 {
+    // Stop the DbgAssert on lock problems in this test because we are deliberately generating lock problems.
+    auto saved = dbgAssertOnLockIssue.load();
+    dbgAssertOnLockIssue = false;
     std::thread thread1(TestThread1);
     std::thread thread2(TestThread2);
     while(!lock_exceptions) ;
@@ -69,6 +72,7 @@ BOOST_AUTO_TEST_CASE(TEST_5)
     thread2.join();
     BOOST_CHECK(lock_exceptions == 1);
     lockdata.ordertracker.clear();
+    dbgAssertOnLockIssue = saved;
 }
 
 #else

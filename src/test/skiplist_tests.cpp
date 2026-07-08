@@ -77,7 +77,7 @@ BOOST_AUTO_TEST_CASE(getlocator_test)
     for (unsigned int i = 0; i < vBlocksSide.size(); i++)
     {
         // Add 1<<128 to the hashes, so GetLow64() still returns the height.
-        vHashSide[i] = ArithToUint256(i + 50000 + (arith_uint256(1) << 128));
+        vHashSide[i] = ArithToUint256(arith_uint256(i) + 50000 + (arith_uint256(1) << 128));
         vBlocksSide[i].SetBlockHeaderHeight(i + 50000);
         vBlocksSide[i].pprev = i ? &vBlocksSide[i - 1] : &vBlocksMain[49999];
         vBlocksSide[i].phashBlock = &vHashSide[i];

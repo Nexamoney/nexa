@@ -1228,8 +1228,9 @@ public:
         return idstr;
     }
 
-    //! Disconnects after receiving all the blocks we are waiting for.  Typically this happens if the node is
-    // responding slowly compared to other nodes.
+    /** Disconnects after receiving all the blocks we are waiting for.  Typically this happens if the node is
+        responding slowly compared to other nodes.
+    */
     void InitiateGracefulDisconnect()
     {
         if (!fDisconnectRequest)

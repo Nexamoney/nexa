@@ -15,8 +15,13 @@ class CBlockIndex;
 class uint256;
 class arith_uint256;
 
-/** Check whether a block hash satisfies the proof-of-work requirement specified by nBits */
+/** Check whether a block hash satisfies the proof-of-work requirement specified by nBits. */
 bool CheckProofOfWork(const uint256 &hash, const uint256 &prevhash, unsigned int nBits, const Consensus::Params &);
+bool CheckProofOfWork(const uint256 &hash,
+    const uint256 &prevhash,
+    unsigned int nBits,
+    const Consensus::Params &params,
+    arith_uint256 *hashout);
 
 bool CheckProofOfWork(uint256 hash,
     uint256 prevhash,
