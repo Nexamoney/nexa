@@ -3544,6 +3544,12 @@ void UpdateTip(CBlockIndex *pindexNew)
     DbgAssert(txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("Updating tip during tx processing"));
 
     chainActive.SetTip(pindexNew);
+    tailstormForest.SetBestGroveForSummaryTip();
+    // The best grove MUST be built on top of the tip of the summary block chain.
+    // The txpool contains transactions on top of the chainActive tip so if the wrong grove is being used
+    // a transaction can be added to the pool that is not valid.
+    auto bestGrove = tailstormForest._BestGrove();
+    DbgAssert(bestGrove == nullptr || (bestGrove->id() == chainActive.Tip()->GetHash()), );
 
     // If the chain tip has changed previously rejected transactions
     // might be now valid, e.g. due to a nLockTime'd tx becoming valid,
@@ -3807,7 +3813,6 @@ bool ConnectTip(CValidationState &state,
         // Flush coin state and set coins tip
         bool result = view.Flush();
         assert(result);
-        tailstormForest.SetBestGrove();
         LOG(BENCH, "      - Flush Coins %.3fms\n", GetStopwatchMicros() - nStart);
 
         // Remove transactions from the mempool, both those confirmed in the block and conflicting transactions.
