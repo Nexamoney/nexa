@@ -141,6 +141,12 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
         return state.DoS(100, error("%s: premature fee pool use", __func__), REJECT_INVALID, "bad-fee-pool");
     }
 
+    // Check miner data field is correct
+    if (GetMinerDataVersion(block.minerData) > 2)
+    {
+        return state.DoS(100, error("%s: bad miner data version", __func__), REJECT_INVALID, "bad-miner-data-version");
+    }
+
     if (fSummaryBlock)
     {
         const CBlockIndex *ancestor = pindexPrev->GetChildsConsensusAncestor();
@@ -162,11 +168,6 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
         }
     }
 
-    // Check miner data field is correct
-    if (GetMinerDataVersion(block.minerData) > 2)
-    {
-        return state.DoS(100, error("%s: bad miner data version", __func__), REJECT_INVALID, "bad-miner-data-version");
-    }
     if (!IsUpgrade2Pending(pindexPrev) && !IsUpgrade2Activated(pindexPrev) && (block.NumSubblocks() > 0))
     {
         return state.DoS(100, error("%s: premature miner data use", __func__), REJECT_INVALID, "bad-miner-data");
@@ -225,15 +226,47 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
 
     if (fSummaryBlock)
     {
-        auto ret = ParseSummaryBlockMinerData(block.minerData);
+        auto minerData = ParseSummaryBlockMinerData(block.minerData);
 
         if (IsTailstormSummaryBlock(block))
         {
-            if ((ret.vSubblockProofs.size() != chainparams.GetConsensus().tailstorm_k - 1) &&
-                (ret.vSubblockProofs.size() != (ret.nUncles + ret.nSubblocks)))
+            if ((minerData.vSubblockProofs.size() != chainparams.GetConsensus().tailstorm_k - 1) &&
+                (minerData.vSubblockProofs.size() != (minerData.nUncles + minerData.nSubblocks)))
             {
                 return state.DoS(
                     100, error("%s(): incomplete miner data", __func__), REJECT_INVALID, "bad-miner-data-size");
+            }
+
+            // The genesis block and block 1 have no grandparent so the minerData field MUST be 0
+            if (nHeight < 2)
+            {
+                if (minerData.prevOfprevhash != uint256())
+                {
+                    return state.DoS(100, error("%s: height too low for grandparent hash", __func__), REJECT_INVALID,
+                        "bad-miner-data-grandparent-hash");
+                }
+            }
+            // After that the minerData prevOfprevhash field MUST be correct if we have uncles.
+            else
+            {
+                if (minerData.nUncles != 0)
+                {
+                    if (minerData.prevOfprevhash != pindexPrev->pprev->GetHash())
+                    {
+                        return state.DoS(100, error("%s: height>=2 but incorrect grandparent hash", __func__),
+                            REJECT_INVALID, "bad-miner-data-uncles-but-incorrect-grandparent-hash");
+                    }
+                }
+                else // We don't have uncles so the field must be correct or 0
+                {
+                    if (!(minerData.prevOfprevhash == pindexPrev->pprev->GetHash() ||
+                            minerData.prevOfprevhash == uint256()))
+                    {
+                        return state.DoS(100,
+                            error("%s: height>=2, no uncles but incorrect grandparent hash", __func__), REJECT_INVALID,
+                            "bad-miner-no-uncles-bad-grandparent-hash");
+                    }
+                }
             }
         }
 
@@ -245,8 +278,9 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
                 nExpectedChainWork = pindexPrev->chainWork();
 
             // add up the work from all the block types.
-            nExpectedChainWork += (arith_uint256(ret.nUncles) * GetWorkForDifficultyBits(ret.nBitsUncle));
-            nExpectedChainWork += (arith_uint256(ret.nSubblocks) * GetWorkForDifficultyBits(ret.nBitsSubblock));
+            nExpectedChainWork += (arith_uint256(minerData.nUncles) * GetWorkForDifficultyBits(minerData.nBitsUncle));
+            nExpectedChainWork +=
+                (arith_uint256(minerData.nSubblocks) * GetWorkForDifficultyBits(minerData.nBitsSubblock));
             nExpectedChainWork += (GetWorkForDifficultyBits(block.nBits));
         }
 

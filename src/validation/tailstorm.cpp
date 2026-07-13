@@ -191,6 +191,8 @@ std::vector<uint8_t> GenerateMinerData(const uint32_t tailstorm_k,
         uint8_t nSubblocks = 0;
         uint32_t nBitsUncle = 0;
         uint32_t nBitsSubblock = 0;
+        // We know that the set has exactly the right number of uncles and subblocks so we can just add them in.
+        // uncles first
         for (CTreeNodeRef node : setBestDag)
         {
             // Count up how many of each subblock type there are. We'll need to
@@ -203,8 +205,19 @@ std::vector<uint8_t> GenerateMinerData(const uint32_t tailstorm_k,
                 // all be the same so we only need one.
                 if (!nBitsUncle)
                     nBitsUncle = node->subblock->nBits;
+                else
+                {
+                    assert(nBitsUncle == node->subblock->nBits);
+                }
+                vMinerData.push_back(std::pair(node->subblock->GetMiningHeaderCommitment(), node->subblock->nonce));
             }
-            else
+        }
+        // subblocks last
+        for (CTreeNodeRef node : setBestDag)
+        {
+            // Count up how many of each subblock type there are. We'll need to
+            // pack this data into the mineData field
+            if (!node->fUncle)
             {
                 nSubblocks++;
 
@@ -212,9 +225,12 @@ std::vector<uint8_t> GenerateMinerData(const uint32_t tailstorm_k,
                 // all be the same so we only need one.
                 if (!nBitsSubblock)
                     nBitsSubblock = node->subblock->nBits;
+                else
+                {
+                    assert(nBitsSubblock == node->subblock->nBits);
+                }
+                vMinerData.push_back(std::pair(node->subblock->GetMiningHeaderCommitment(), node->subblock->nonce));
             }
-
-            vMinerData.push_back(std::pair(node->subblock->GetMiningHeaderCommitment(), node->subblock->nonce));
         }
 
         ds.reserve(sizeof(uint8_t) + 32 + sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint32_t) +

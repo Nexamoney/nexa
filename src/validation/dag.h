@@ -348,8 +348,8 @@ public:
     //! Atomically get the dag active tip
     uint256 GetDagActiveTip();
 
-    //! Get all Uncles for this node, whether they be subblocks or
-    //  summary blocks, which can then be added to a trees Uncle map
+    /** Get all Uncles for this node, whether they be subblocks or
+        summary blocks, which can then be added to a trees Uncle map */
     std::map<uint256, CTreeNodeRef> GetUncles(CTreeNodeRef node);
 
     //! Remove a node and any descendants from the forest
