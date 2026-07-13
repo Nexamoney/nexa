@@ -176,7 +176,7 @@ MinerData version 2 contains:
     // The subblocks' nbits might be different than this summary block's because  the summary block need to compensate.
     // for low work uncles.
     uint32_t nBitsSubblock = 0;
-    // vSubblockProofs MUST contain subblocks first and then uncles. It is a vector of MiningCandidateHashes and nonces.
+    // vSubblockProofs MUST contain uncles first and then subblocks. It is a vector of MiningCandidateHashes and nonces.
     std::vector<std::pair<uint256, std::vector<uint8_t> > > vSubblockProofs;
 ```
 
