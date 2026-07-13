@@ -22,6 +22,7 @@
 #include "unlimited.h"
 #include "utilmoneystr.h"
 #include "utiltranslate.h"
+#include "validation/dag.h" // just for locking cs_forest to maintain lock order
 #include "wallet/grouptokencache.h"
 
 #include <algorithm>
@@ -744,6 +745,7 @@ void GroupMelt(CWalletTx &wtxNew, const CGroupTokenID &grpID, CAmount totalNeede
         throw JSONRPCError(RPC_INVALID_PARAMS, strError);
     }
 
+    LOCK(tailstormForest.cs_forest); // maintain locking order
     CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
     LOCK(wallet->cs_wallet);
 
@@ -833,6 +835,7 @@ bool GroupSend(CWalletTx &wtxNew,
     std::string *strError,
     bool fRPC)
 {
+    LOCK(tailstormForest.cs_forest);
     CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
     LOCK(wallet->cs_wallet);
 
@@ -1209,6 +1212,7 @@ extern UniValue token(const UniValue &params, bool fHelp)
     }
     else if (operation == "authority")
     {
+        LOCK(tailstormForest.cs_forest);
         CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
         LOCK(wallet->cs_wallet);
 
@@ -1470,6 +1474,7 @@ extern UniValue token(const UniValue &params, bool fHelp)
         CWalletTx wtx;
         std::string strTokenTicker = "";
         {
+            LOCK(tailstormForest.cs_forest); // maintain locking order
             CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
             LOCK(wallet->cs_wallet);
             unsigned int curparam = 1;
@@ -1644,6 +1649,7 @@ extern UniValue token(const UniValue &params, bool fHelp)
 
     else if (operation == "mint")
     {
+        LOCK(tailstormForest.cs_forest); // maintain locking order
         CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
         LOCK(wallet->cs_wallet); // because I am reserving UTXOs for use in a tx
         CGroupTokenID grpID;

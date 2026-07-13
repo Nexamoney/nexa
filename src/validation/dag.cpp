@@ -561,7 +561,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
                 else
                 {
                     // Set "bestGrove" to the best dag in the Forest.
-                    tailstormForest.SetBestGrove();
+                    tailstormForest.SetBestGroveForSummaryTip();
                 }
             }
 
@@ -2043,20 +2043,22 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
         }
     }
 
-    tailstormForest.SetBestGrove();
+    tailstormForest.SetBestGroveForSummaryTip();
 }
 
-void CTailstormForest::SetBestGrove()
+void CTailstormForest::SetBestGroveForSummaryTip()
 {
     AssertLockHeld(tailstormForest.cs_forest);
     DbgAssert(
         txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("Do not have corral pause during activate best tree"));
 
-    if (!chainActive.Tip())
+    auto summaryTip = chainActive.Tip();
+    auto originalBestGrove = bestGrove;
+    if (!summaryTip)
         return;
 
     // Cycle through all the trees of each grove and find the chainWork
-    arith_uint256 nMaxChainWork = chainActive.Tip()->chainWork();
+    arith_uint256 nMaxChainWork = summaryTip->chainWork();
     bestGrove = nullptr;
 
     // Find all groves
@@ -2066,18 +2068,22 @@ void CTailstormForest::SetBestGrove()
 
     for (auto &grove : setAllGroves)
     {
-        arith_uint256 nTreeChainWork = grove->tree->pindexSummaryRoot->chainWork();
-        std::set<CTreeNodeRef> dag;
-        GetBestDagFor(grove->roothash, dag);
-        for (auto node : dag)
+        // Do not include any groves that would cause the chain to switch
+        if (grove->roothash == summaryTip->GetHash())
         {
-            nTreeChainWork += GetWorkForDifficultyBits(node->subblock->nBits);
-        }
-        if (nTreeChainWork > nMaxChainWork)
-        {
-            nMaxChainWork = nTreeChainWork;
-            DbgAssert(grove->view, );
-            bestGrove = grove;
+            arith_uint256 nTreeChainWork = grove->tree->pindexSummaryRoot->chainWork();
+            std::set<CTreeNodeRef> dag;
+            GetBestDagFor(grove->roothash, dag);
+            for (auto node : dag)
+            {
+                nTreeChainWork += GetWorkForDifficultyBits(node->subblock->nBits);
+            }
+            if (nTreeChainWork > nMaxChainWork)
+            {
+                nMaxChainWork = nTreeChainWork;
+                DbgAssert(grove->view, );
+                bestGrove = grove;
+            }
         }
     }
 }

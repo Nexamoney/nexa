@@ -1054,6 +1054,9 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
             return state.Invalid(false, REJECT_CONFLICT, "txn-txpool-conflict");
         }
     }
+
+    uint256 coinsBlockHash;
+    int coinsBlockHeight = 0;
     {
         // view is used for storing normal coins
         CCoinsView dummy;
@@ -1073,9 +1076,19 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
         bool fSpendsCoinbase = false;
         CAmount inChainInputValue;
         {
+            auto grove = tailstormForest._BestGrove();
             READLOCK(pool.cs_txmempool);
             CCoinsViewCache *ptip = fTailstormEnabled ? tailstormForest.bestGroveCoins() : pcoinsTip;
             assert(ptip);
+            if (fTailstormEnabled)
+            {
+                if (grove != nullptr)
+                {
+                    coinsBlockHash = grove->id();
+                    coinsBlockHeight = grove->summaryRootHeight();
+                }
+            }
+
             CCoinsViewMemPool viewMemPool(ptip, mempool);
             view.SetBackend(viewMemPool);
             coinstip.SetBackend(*ptip);
@@ -1445,9 +1458,9 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
     // typically too much logging, but useful when optimizing tx validation
     LOG(BENCH,
         "ValidateTransaction success, time: %d, txid: %s, len: %d, sigops: %u, Vin: "
-        "%llu, Vout: %llu txidem: %s\n",
+        "%llu, Vout: %llu txidem: %s  over block %s:%s\n",
         interval, tx->GetId().ToString(), nSize, (unsigned int)nSigOps, tx->vin.size(), tx->vout.size(),
-        tx->GetIdem().ToString());
+        tx->GetIdem().ToString(), coinsBlockHash.ToString(), coinsBlockHeight);
     nTxValidationTime << interval;
 
     // Update txn per second. We must do it here although technically the txn isn't in the mempool yet but

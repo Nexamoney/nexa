@@ -165,6 +165,8 @@ protected:
 public:
     CTailstormGrove(CCoinsViewCache *coinsCache);
     ~CTailstormGrove();
+    uint256 id() { return roothash; }
+    uint64_t summaryRootHeight() { return nRootHeight; }
 
 protected:
     void Clear();
@@ -332,8 +334,13 @@ public:
         _pcoinsTip = coinsCache;
     }
 
-    //! Set the coins tip for the active dag
-    void SetBestGrove();
+
+    /** Set the coins tip for the active dag, finding the best dag that is a child of the current (summary block)
+        chain tip
+    */
+    void SetBestGroveForSummaryTip();
+
+    CTailstormGroveRef _BestGrove() { return bestGrove; }
 
     //! Reset bestGrove to null
     void _ClearBestGrove()
