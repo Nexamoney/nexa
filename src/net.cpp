@@ -413,7 +413,7 @@ int DisconnectSubNetNodes(const CSubNet &subNet)
     {
         if (subNet.Match((CNetAddr)pnode->addr))
         {
-            pnode->fDisconnect = true;
+            pnode->CloseSocketDisconnect("Disconnecting subnet nodes");
             nDisconnected++;
         }
     }
@@ -501,24 +501,8 @@ CNode *ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure
 
 void CNode::CloseSocketDisconnect(const std::string &reason)
 {
-    // if this is an outbound node that was not added via addenode then decrement the counter.
-    if (fAutoOutbound)
-        requester.nOutbound--;
-
+    LOG(NET, "Disconnecting %s: %s\n", GetLogName(), reason);
     fDisconnect = true;
-    if (hSocket != INVALID_SOCKET)
-    {
-        LOG(NET, "disconnecting peer %s, %s\n", GetLogName(), reason);
-        CloseSocket(hSocket);
-    }
-
-    // in case this fails, we'll empty the recv buffer when the CNode is deleted
-    TRY_LOCK(cs_vRecvMsg, lockRecv);
-    if (lockRecv)
-    {
-        vRecvMsg.clear();
-        vRecvMsg_handshake.clear();
-    }
 }
 
 void CNode::PushVersion()
@@ -705,9 +689,10 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes)
 
         if (IsMessageOversized(msg))
         {
-            fDisconnect = true;
-            LOG(NET, "Oversized message (%ld bytes vs %ld allowed) from peer=%i, disconnecting\n", msg.hdr.nMessageSize,
-                GetMaxAllowedNetMessage(), GetId());
+            std::string err = tfm::format("Oversized message (%ld bytes vs %ld allowed) from peer=%i, disconnecting\n",
+                msg.hdr.nMessageSize, GetMaxAllowedNetMessage(), GetId());
+            CloseSocketDisconnect(err);
+            LOG(NET, "%s\n", err);
             return false;
         }
 
@@ -915,8 +900,10 @@ int SocketSendData(CNode *pnode, bool fSendTwo = false) EXCLUSIVE_LOCKS_REQUIRED
                 int nErr = WSAGetLastError();
                 if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
                 {
-                    LOG(NET, "socket send error '%s' to %s\n", NetworkErrorString(nErr), pnode->GetLogName());
-                    pnode->fDisconnect = true;
+                    std::string err =
+                        tfm::format("socket send error '%s' to %s\n", NetworkErrorString(nErr), pnode->GetLogName());
+                    LOG(NET, "%s\n", err);
+                    pnode->CloseSocketDisconnect(err);
                 }
             }
             // couldn't send anything at all
@@ -1045,7 +1032,7 @@ bool AttemptToEvictConnection(const unsigned int nMaxInbound)
                 continue;
             if (!node->fInbound)
                 continue;
-            if (node->fDisconnect)
+            if (node->IsDisconnecting())
                 continue;
             if (fDropNetworkNode && node->fClient)
                 continue;
@@ -1060,7 +1047,7 @@ bool AttemptToEvictConnection(const unsigned int nMaxInbound)
                 ((GetStopwatchMicros() - node->nStopwatchConnected) > 60 * 1000000))
             {
                 LOG(EVICT, "node %s evicted, slow ping\n", node->GetLogName());
-                node->fDisconnect = true;
+                node->CloseSocketDisconnect("node evicted, slow ping");
                 return true;
             }
         }
@@ -1075,7 +1062,7 @@ bool AttemptToEvictConnection(const unsigned int nMaxInbound)
     // de-prioritized based on bytes in and bytes out.  A whitelisted peer will always get a connection and there is
     // no need here to check whether the peer is whitelisted or not.
     std::sort(vEvictionCandidatesByActivity.begin(), vEvictionCandidatesByActivity.end(), CompareNodeActivityBytes);
-    vEvictionCandidatesByActivity[0]->fDisconnect = true;
+    vEvictionCandidatesByActivity[0]->CloseSocketDisconnect("Evicted");
 
     // Update the connection tracker
     {
@@ -1324,7 +1311,15 @@ void CleanupDisconnectedNodes()
                 pnode->grantOutbound.Release();
 
                 // close socket and cleanup
-                pnode->CloseSocketDisconnect("disconnected from us");
+
+                // if this is an outbound node that was not added via addenode then decrement the counter.
+                if (pnode->fAutoOutbound)
+                    requester.nOutbound--;
+
+                if (pnode->hSocket != INVALID_SOCKET)
+                {
+                    CloseSocket(pnode->hSocket);
+                }
 
                 // Release this one reference.
                 pnode->Release();
@@ -1405,6 +1400,7 @@ void CleanupDisconnectedNodes()
 
 void ThreadSocketHandler()
 {
+    RenameThread("SocketHandler");
     unsigned int nPrevNodeCount = 0;
     // This variable is incremented if something happens.  If it is zero at the bottom of the loop, we delay.  This
     // solves spin loop issues where the select does not block but no bytes can be transferred (traffic shaping limited,
@@ -1599,7 +1595,7 @@ void ThreadSocketHandler()
                         {
                             receiveShaper.leak(nBytes);
                             if (!pnode->ReceiveMsgBytes(recvMsgBuf, nBytes))
-                                pnode->fDisconnect = true;
+                                pnode->CloseSocketDisconnect("ReceiveMsgBytes failed");
                             int64_t tmp = GetTime();
                             pnode->recvGap << (tmp - pnode->nLastRecv);
                             pnode->nLastRecv = tmp;
@@ -1610,22 +1606,25 @@ void ThreadSocketHandler()
                         else if (nBytes == 0)
                         {
                             // socket closed gracefully
-                            if (!pnode->fDisconnect)
-                                LOG(NET, "Node %s socket closed\n", pnode->GetLogName());
-                            pnode->fDisconnect = true;
+                            if (!pnode->IsDisconnecting())
+                                pnode->CloseSocketDisconnect(
+                                    tfm::format("Node %s socket closed\n", pnode->GetLogName()));
                             continue;
                         }
                         else if (nBytes < 0)
                         {
-                            // error
+                            // error or nothing is available
                             int nErr = WSAGetLastError();
                             if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR &&
                                 nErr != WSAEINPROGRESS)
                             {
-                                if (!pnode->fDisconnect)
-                                    LOG(NET, "Node %s socket recv error '%s'\n", pnode->GetLogName(),
-                                        NetworkErrorString(nErr));
-                                pnode->fDisconnect = true;
+                                if (!pnode->IsDisconnecting())
+                                {
+                                    std::string err = tfm::format("Node %s socket recv error '%s'\n",
+                                        pnode->GetLogName(), NetworkErrorString(nErr));
+                                    LOG(NET, "%s\n", err);
+                                    pnode->CloseSocketDisconnect(err);
+                                }
                                 continue;
                             }
                         }
@@ -1737,26 +1736,26 @@ void ThreadSocketHandler()
                     {
                         LOG(NET, "Node %s: no message sent or received after startup, %d %d from %d\n",
                             pnode->GetLogName(), pnode->nLastRecv != 0, pnode->nLastSend != 0, pnode->id);
-                        pnode->fDisconnect = true;
+                        pnode->CloseSocketDisconnect("No message sent or received after startup");
                     }
                     else if (nTime - pnode->nLastSend > TIMEOUT_INTERVAL)
                     {
                         LOG(NET, "Node %s: socket sending timeout: %is\n", pnode->GetLogName(),
                             nTime - pnode->nLastSend);
-                        pnode->fDisconnect = true;
+                        pnode->CloseSocketDisconnect("Socket sending timeout");
                     }
                     else if (nTime - pnode->nLastRecv > TIMEOUT_INTERVAL)
                     {
                         LOG(NET, "Node %s: socket receive timeout: %is\n", pnode->GetLogName(),
                             nTime - pnode->nLastRecv);
-                        pnode->fDisconnect = true;
+                        pnode->CloseSocketDisconnect("Socket receive timeout");
                     }
                     else if (pnode->nPingNonceSent &&
                              pnode->nPingUsecStart + (TIMEOUT_INTERVAL * 1000000) < (int64_t)GetStopwatchMicros())
                     {
                         LOG(NET, "Node %s: ping timeout: %fs\n", pnode->GetLogName(),
                             0.000001 * (GetStopwatchMicros() - pnode->nPingUsecStart));
-                        pnode->fDisconnect = true;
+                        pnode->CloseSocketDisconnect("Ping timeout");
                     }
                 }
             }
@@ -2172,7 +2171,7 @@ void ThreadOpenConnections()
                     // If sync is not yet complete then disconnect any pruned outbound connections
                     if (!fReindex && IsInitialBlockDownload() && !(pnode->nServices & NODE_NETWORK))
                     {
-                        pnode->fDisconnect = true;
+                        pnode->CloseSocketDisconnect("Sync is not complete, so disconnecting pruned outbound");
                     }
                 }
             }
@@ -2525,7 +2524,9 @@ static bool threadProcessMessages(CNode *pnode)
     bool fSleep = true;
     // Receive messages from the net layer and put them into the receive queue.
     if (!g_nodeSignals.ProcessMessages(pnode))
-        pnode->fDisconnect = true;
+    {
+        pnode->CloseSocketDisconnect("ProcessMessages failed");
+    }
 
     // Discover if there's more work to be done
     if (pnode->nSendSize < nMaxSendBufferSize)
@@ -3511,7 +3512,7 @@ void CNode::DisconnectIfBanned()
         }
         else
         {
-            fDisconnect = true;
+            CloseSocketDisconnect("Banned");
             dosMan.Ban(addr, cleanSubVer, (BanReason)nBanType.load());
         }
     }

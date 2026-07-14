@@ -49,7 +49,7 @@ namespace dbwrapper_private
 {
 /** Handle database error by throwing dbwrapper_error exception.
  */
-void HandleError(const leveldb::Status &status);
+void HandleError(const leveldb::Status &status, const std::string &path = "");
 
 /** Work around circular dependency, as well as for testing in dbwrapper_tests.
  * Database obfuscation should be considered an implementation detail of the

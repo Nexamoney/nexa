@@ -885,7 +885,7 @@ void CRequestManager::SendRequests()
                     if (next.noderef.get() != nullptr)
                     {
                         // Do not request from this node if it was disconnected
-                        if (next.noderef.get()->fDisconnect || next.noderef.get()->fDisconnectRequest)
+                        if (next.noderef.get()->IsDisconnecting())
                         {
                             continue;
                         }
@@ -1170,7 +1170,7 @@ void CRequestManager::SendTxnRequests(OdMap &mapTxns)
                         if (next.noderef.get() != nullptr)
                         {
                             // Node was disconnected so we can't request from it
-                            if (next.noderef.get()->fDisconnect || next.noderef.get()->fDisconnectRequest)
+                            if (next.noderef.get()->IsDisconnecting())
                             {
                                 continue;
                             }
@@ -1337,7 +1337,7 @@ void CRequestManager::RequestNextBlocksToDownload(CNode *pto)
         nBlocksInFlight = mapRequestManagerNodeState[pto->GetId()].nBlocksInFlight;
     }
 
-    if (!pto->fDisconnectRequest && !pto->fDisconnect && !pto->fClient && nBlocksInFlight < pto->nMaxBlocksInTransit)
+    if (!pto->IsDisconnecting() && !pto->fClient && nBlocksInFlight < pto->nMaxBlocksInTransit)
     {
         std::vector<CBlockIndex *> vToDownload;
 
@@ -1691,7 +1691,7 @@ bool CRequestManager::MarkBlockAsReceived(const uint256 &hash, CNode *pnode)
                 //
                 // We disconnect a peer only if their average response time is more than 5 times the overall average.
                 static int nStartDisconnections GUARDED_BY(cs_overallaverage) = BEGIN_PRUNING_PEERS;
-                if (!pnode->fDisconnectRequest &&
+                if (!pnode->IsDisconnecting() &&
                     (nOutbound >= nMaxOutConnections - 1 || nOutbound >= nStartDisconnections) &&
                     IsInitialBlockDownload() && nIterations > nOverallRange &&
                     nAvgTime > nOverallAverageResponseTime * 5)
@@ -1881,18 +1881,19 @@ void CRequestManager::DisconnectOnDownloadTimeout(CNode *pnode, const Consensus:
     // to unreasonably increase our timeout.
     LOCK(cs_objDownloader);
     NodeId nodeid = pnode->GetId();
-    if (!pnode->fDisconnect && mapRequestManagerNodeState[nodeid].vBlocksInFlight.size() > 0)
+    if (!pnode->IsDisconnecting() && mapRequestManagerNodeState[nodeid].vBlocksInFlight.size() > 0)
     {
         if (nNow >
             mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince +
                 consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER))
         {
-            LOGA("Timeout downloading block %s from peer %s, disconnecting. Requested at %ld currently %ld difference "
-                 "%ld\n",
+            std::string err = tfm::format(
+                "Timeout downloading block %s from peer %s, disconnecting. Requested at %ld currently %ld diff %ld\n",
                 mapRequestManagerNodeState[nodeid].vBlocksInFlight.front().hash.ToString(), pnode->GetLogName(),
                 mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince, nNow,
                 nNow - mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince);
-            pnode->fDisconnect = true;
+            LOG(NET, "%s\n", err);
+            pnode->CloseSocketDisconnect(err);
         }
     }
 }

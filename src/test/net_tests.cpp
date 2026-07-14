@@ -19,15 +19,30 @@ extern CTweak<int> maxConnections;
 bool AttemptToEvictConnection(const unsigned int nMaxInbound);
 void CleanupDisconnectedNodes();
 
+class CNodeTest : public CNode
+{
+public:
+    CNodeTest(SOCKET hSocketIn, const CAddress &addrIn, const std::string &addrNameIn = "", bool fInboundIn = false)
+        : CNode(hSocketIn, addrIn, addrNameIn, fInboundIn)
+    {
+    }
+
+    void testOnlyResetDisconnect() { fDisconnect = false; }
+    void testOnlyGracefulDisconnect()
+    {
+        if (fDisconnectRequest)
+        {
+            fDisconnect = true;
+        }
+    }
+};
+
 // Simulate a graceful disconnect has occurred
 static void GracefulDisconnect(std::vector<CNode *> &_vNodes)
 {
     for (auto pnode : _vNodes)
     {
-        if (pnode->fDisconnectRequest)
-        {
-            pnode->fDisconnect = true;
-        }
+        ((CNodeTest *)pnode)->testOnlyGracefulDisconnect();
     }
 }
 
@@ -191,12 +206,12 @@ BOOST_AUTO_TEST_CASE(cnode_simple_test)
     bool fInboundIn = false;
 
     // Test that fFeeler is false by default.
-    std::unique_ptr<CNode> pnode1(new CNode(hSocket, addr, pszDest, fInboundIn));
+    std::unique_ptr<CNodeTest> pnode1(new CNodeTest(hSocket, addr, pszDest, fInboundIn));
     BOOST_CHECK(pnode1->fInbound == false);
     BOOST_CHECK(pnode1->fFeeler == false);
 
     fInboundIn = true;
-    std::unique_ptr<CNode> pnode2(new CNode(hSocket, addr, pszDest, fInboundIn));
+    std::unique_ptr<CNodeTest> pnode2(new CNodeTest(hSocket, addr, pszDest, fInboundIn));
     BOOST_CHECK(pnode2->fInbound == true);
     BOOST_CHECK(pnode2->fFeeler == false);
 
@@ -658,166 +673,146 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     CAddress addr20(ipaddress(0xa0b0c005, 10004));
 
     // Setup Inbound Network Nodes
-    CNode *node1 = new CNode(INVALID_SOCKET, addr1, "", true);
+    CNodeTest *node1 = new CNodeTest(INVALID_SOCKET, addr1, "", true);
     node1->nTimeConnected = GetTime();
     node1->fWhitelisted = false;
     node1->fInbound = true;
     node1->fClient = false;
     node1->nActivityBytes = 1000;
-    node1->fDisconnect = false;
 
-    CNode *node2 = new CNode(INVALID_SOCKET, addr2, "", true);
+    CNodeTest *node2 = new CNodeTest(INVALID_SOCKET, addr2, "", true);
     node2->nTimeConnected = GetTime();
     node2->fWhitelisted = false;
     node2->fInbound = true;
     node2->fClient = false;
-    node2->fDisconnect = false;
     node2->nActivityBytes = 2000;
 
-    CNode *node3 = new CNode(INVALID_SOCKET, addr3, "", true);
+    CNodeTest *node3 = new CNodeTest(INVALID_SOCKET, addr3, "", true);
     node3->nTimeConnected = GetTime();
     node3->fWhitelisted = false;
     node3->fInbound = true;
     node3->fClient = false;
-    node3->fDisconnect = false;
     node3->nActivityBytes = 3000;
 
-    CNode *node4 = new CNode(INVALID_SOCKET, addr4, "", true);
+    CNodeTest *node4 = new CNodeTest(INVALID_SOCKET, addr4, "", true);
     node4->nTimeConnected = GetTime();
     node4->fWhitelisted = false;
     node4->fInbound = true;
     node4->fClient = false;
-    node4->fDisconnect = false;
     node4->nActivityBytes = 4000;
 
-    CNode *node5 = new CNode(INVALID_SOCKET, addr5, "", true);
+    CNodeTest *node5 = new CNodeTest(INVALID_SOCKET, addr5, "", true);
     node5->nTimeConnected = GetTime();
     node5->fWhitelisted = false;
     node5->fInbound = true;
     node5->fClient = false;
-    node5->fDisconnect = false;
     node5->nActivityBytes = 5000;
 
-    CNode *node6 = new CNode(INVALID_SOCKET, addr6, "", true);
+    CNodeTest *node6 = new CNodeTest(INVALID_SOCKET, addr6, "", true);
     node6->nTimeConnected = GetTime();
     node6->fWhitelisted = false;
     node6->fInbound = true;
     node6->fClient = false;
-    node6->fDisconnect = false;
     node6->nActivityBytes = 6000;
 
-    CNode *node7 = new CNode(INVALID_SOCKET, addr7, "", true);
+    CNodeTest *node7 = new CNodeTest(INVALID_SOCKET, addr7, "", true);
     node7->nTimeConnected = GetTime();
     node7->fWhitelisted = false;
     node7->fInbound = true;
     node7->fClient = false;
-    node7->fDisconnect = false;
     node7->nActivityBytes = 7000;
 
-    CNode *node8 = new CNode(INVALID_SOCKET, addr8, "", true);
+    CNodeTest *node8 = new CNodeTest(INVALID_SOCKET, addr8, "", true);
     node8->nTimeConnected = GetTime();
     node8->fWhitelisted = false;
     node8->fInbound = true;
     node8->fClient = false;
-    node8->fDisconnect = false;
     node8->nActivityBytes = 8000;
 
-    CNode *node9 = new CNode(INVALID_SOCKET, addr9, "", true);
+    CNodeTest *node9 = new CNodeTest(INVALID_SOCKET, addr9, "", true);
     node9->nTimeConnected = GetTime();
     node9->fWhitelisted = false;
     node9->fInbound = true;
     node9->fClient = false;
-    node9->fDisconnect = false;
     node9->nActivityBytes = 9000;
 
-    CNode *node10 = new CNode(INVALID_SOCKET, addr10, "", true);
+    CNodeTest *node10 = new CNodeTest(INVALID_SOCKET, addr10, "", true);
     node10->nTimeConnected = GetTime();
     node10->fWhitelisted = false;
     node10->fInbound = true;
     node10->fClient = false;
-    node10->fDisconnect = false;
     node10->nActivityBytes = 10000;
 
     // Setup outbound Network nodes
-    CNode *node11 = new CNode(INVALID_SOCKET, addr11, "", true);
+    CNodeTest *node11 = new CNodeTest(INVALID_SOCKET, addr11, "", true);
     node11->nTimeConnected = GetTime();
     node11->fWhitelisted = false;
     node11->fInbound = false;
     node11->fClient = false;
-    node11->fDisconnect = false;
     node11->nActivityBytes = 110;
 
-    CNode *node12 = new CNode(INVALID_SOCKET, addr12, "", true);
+    CNodeTest *node12 = new CNodeTest(INVALID_SOCKET, addr12, "", true);
     node12->nTimeConnected = GetTime();
     node12->fWhitelisted = false;
     node12->fInbound = false;
     node12->fClient = false;
-    node12->fDisconnect = false;
     node12->nActivityBytes = 120;
 
-    CNode *node13 = new CNode(INVALID_SOCKET, addr13, "", true);
+    CNodeTest *node13 = new CNodeTest(INVALID_SOCKET, addr13, "", true);
     node13->nTimeConnected = GetTime();
     node13->fWhitelisted = false;
     node13->fInbound = false;
     node13->fClient = false;
-    node13->fDisconnect = false;
     node13->nActivityBytes = 130;
 
-    CNode *node14 = new CNode(INVALID_SOCKET, addr14, "", true);
+    CNodeTest *node14 = new CNodeTest(INVALID_SOCKET, addr14, "", true);
     node14->nTimeConnected = GetTime();
     node14->fWhitelisted = false;
     node14->fInbound = false;
     node14->fClient = false;
-    node14->fDisconnect = false;
     node14->nActivityBytes = 140;
 
-    CNode *node15 = new CNode(INVALID_SOCKET, addr15, "", true);
+    CNodeTest *node15 = new CNodeTest(INVALID_SOCKET, addr15, "", true);
     node15->nTimeConnected = GetTime();
     node15->fWhitelisted = false;
     node15->fInbound = false;
     node15->fClient = false;
-    node15->fDisconnect = false;
     node15->nActivityBytes = 15000;
 
     // Setup fClients
-    CNode *node16 = new CNode(INVALID_SOCKET, addr16, "", true);
+    CNodeTest *node16 = new CNodeTest(INVALID_SOCKET, addr16, "", true);
     node16->nTimeConnected = GetTime();
     node16->fWhitelisted = false;
     node16->fInbound = true;
     node16->fClient = true;
-    node16->fDisconnect = false;
     node16->nActivityBytes = 16;
 
-    CNode *node17 = new CNode(INVALID_SOCKET, addr17, "", true);
+    CNodeTest *node17 = new CNodeTest(INVALID_SOCKET, addr17, "", true);
     node17->nTimeConnected = GetTime();
     node17->fWhitelisted = false;
     node17->fInbound = true;
     node17->fClient = true;
-    node17->fDisconnect = false;
     node17->nActivityBytes = 17;
 
-    CNode *node18 = new CNode(INVALID_SOCKET, addr18, "", true);
+    CNodeTest *node18 = new CNodeTest(INVALID_SOCKET, addr18, "", true);
     node18->nTimeConnected = GetTime();
     node18->fWhitelisted = false;
     node18->fInbound = true;
     node18->fClient = true;
-    node18->fDisconnect = false;
     node18->nActivityBytes = 18;
 
-    CNode *node19 = new CNode(INVALID_SOCKET, addr19, "", true);
+    CNodeTest *node19 = new CNodeTest(INVALID_SOCKET, addr19, "", true);
     node19->nTimeConnected = GetTime();
     node19->fWhitelisted = false;
     node19->fInbound = true;
     node19->fClient = true;
-    node19->fDisconnect = false;
     node19->nActivityBytes = 19;
 
-    CNode *node20 = new CNode(INVALID_SOCKET, addr20, "", true);
+    CNodeTest *node20 = new CNodeTest(INVALID_SOCKET, addr20, "", true);
     node20->nTimeConnected = GetTime();
     node20->fWhitelisted = false;
     node20->fInbound = true;
     node20->fClient = true;
-    node20->fDisconnect = false;
     node20->nActivityBytes = 20;
 
     /** Setup the basic network configuration of 3 outbound and 7 inbound network nodes */
@@ -852,7 +847,7 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     maxConnections.Set(11);
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 10UL); // vnodes will not change yet, only the fDisconnect flag will be set.
-    BOOST_CHECK_EQUAL(node1->fDisconnect, false); // peer with lowest activity should not be disconnected
+    BOOST_CHECK_EQUAL(node1->IsDisconnecting(), false); // peer with lowest activity should not be disconnected
 
     // Network slots full: basic check - all network nodes
     // We should be starting with 10 network nodes in vNodes (3 outbound, 7 inbound)
@@ -864,8 +859,8 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     maxConnections.Set(11);
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 10UL); // vnodes will not change yet, only the fDisconnect flag will be set.
-    BOOST_CHECK_EQUAL(node1->fDisconnect, true); // the peer with lowest activity should be disconnected
-    node1->fDisconnect = false; // reset the flag
+    BOOST_CHECK_EQUAL(node1->IsDisconnecting(), true); // the peer with lowest activity should be disconnected
+    node1->testOnlyResetDisconnect(); // reset the flag
 
     // Network slots full: basic check - all network nodes
     // We should be starting with 10 network nodes in vNodes (3 outbound, 7 inbound)
@@ -874,8 +869,8 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     maxConnections.Set(10);
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 10UL); // vnodes will not change yet, only the fDisconnect flag will be set.
-    BOOST_CHECK_EQUAL(node1->fDisconnect, true); // the peer with lowest activity should be disconnected
-    node1->fDisconnect = false; // reset the flag
+    BOOST_CHECK_EQUAL(node1->IsDisconnecting(), true); // the peer with lowest activity should be disconnected
+    node1->testOnlyResetDisconnect(); // reset the flag
 
     // Add a client until the client slots are full.
     // This should evict network nodes
@@ -884,9 +879,10 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     vNodes.push_back(node16); // add client
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 11UL); // vnodes will not change yet, only the fDisconnect flag will be set.
-    BOOST_CHECK_EQUAL(node1->fDisconnect, true); // the peer with lowest activity should be disconnected
-    BOOST_CHECK_EQUAL(node16->fDisconnect, false); // the client has lowest activity but should NOT be disconnected
-    node1->fDisconnect = false; // reset the flag
+    BOOST_CHECK_EQUAL(node1->IsDisconnecting(), true); // the peer with lowest activity should be disconnected
+    // the client has lowest activity but should NOT be disconnected
+    BOOST_CHECK_EQUAL(node16->IsDisconnecting(), false);
+    node1->testOnlyResetDisconnect(); // reset the flag
 
     // Try to evict a whiltelisted node. It should not be possible.
     nMaxInbound = 8;
@@ -894,9 +890,11 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     node1->fWhitelisted = true;
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 11UL); // vnodes will not change yet, only the fDisconnect flag will be set.
-    BOOST_CHECK_EQUAL(node2->fDisconnect, true); // the lowest activity "non-whitelisted" peer should be disconnected
-    BOOST_CHECK_EQUAL(node16->fDisconnect, false); // the client has lowest activity but should NOT be disconnected
-    node2->fDisconnect = false; // reset the flag
+    // the lowest activity "non-whitelisted" peer should be disconnected
+    BOOST_CHECK_EQUAL(node2->IsDisconnecting(), true);
+    // the client has lowest activity but should NOT be disconnected
+    BOOST_CHECK_EQUAL(node16->IsDisconnecting(), false);
+    node2->testOnlyResetDisconnect(); // reset the flag
     node1->fWhitelisted = false; // reset
 
     // Add more clients beyond the number that would be protected and make one of them
@@ -907,9 +905,10 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     vNodes.push_back(node17); // add client
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 12UL); // vnodes will not change yet, only the fDisconnect flag will be set.
-    BOOST_CHECK_EQUAL(node1->fDisconnect, false); // the network peer with lowest activity will not be disconnected
-    BOOST_CHECK_EQUAL(node16->fDisconnect, true); // the client has lowest activity will be disconnected
-    node16->fDisconnect = false; // reset the flag
+    // the network peer with lowest activity will not be disconnected
+    BOOST_CHECK_EQUAL(node1->IsDisconnecting(), false);
+    BOOST_CHECK_EQUAL(node16->IsDisconnecting(), true); // the client has lowest activity will be disconnected
+    node16->testOnlyResetDisconnect(); // reset the flag
 
     // Add more clients beyond the number that would be protected and make the clients
     // have the higher activity.
@@ -922,10 +921,11 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     node18->nActivityBytes = 100000;
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 13UL); // vnodes will not change yet, only the fDisconnect flag will be set.
-    BOOST_CHECK_EQUAL(node1->fDisconnect, true); // the network peer with lowest activity will not be disconnected
-    BOOST_CHECK_EQUAL(node16->fDisconnect, false); // the client has highest activity will not be disconnected
-    BOOST_CHECK_EQUAL(node17->fDisconnect, false); // the client has highest activity will not be disconnected
-    node1->fDisconnect = false; // reset the flag
+    // the network peer with lowest activity will not be disconnected
+    BOOST_CHECK_EQUAL(node1->IsDisconnecting(), true);
+    BOOST_CHECK_EQUAL(node16->IsDisconnecting(), false); // the client has highest activity will not be disconnected
+    BOOST_CHECK_EQUAL(node17->IsDisconnecting(), false); // the client has highest activity will not be disconnected
+    node1->testOnlyResetDisconnect(); // reset the flag
     node16->nActivityBytes = 16; // reset
     node17->nActivityBytes = 17; // reset
     node17->nActivityBytes = 18; // reset
@@ -957,8 +957,8 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     node20->nTimeConnected = nStartTime - 59;
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 20UL); // vnodes will not change yet, only the fDisconnect flag will be set->
-    BOOST_CHECK_EQUAL(node16->fDisconnect, true);
-    node16->fDisconnect = false;
+    BOOST_CHECK_EQUAL(node16->IsDisconnecting(), true);
+    node16->testOnlyResetDisconnect();
 
     nMaxInbound = 15;
     maxConnections.Set(20);
@@ -969,8 +969,8 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     node20->nTimeConnected = nStartTime - 59;
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 20UL); // vnodes will not change yet, only the fDisconnect flag will be set.
-    BOOST_CHECK_EQUAL(node17->fDisconnect, true);
-    node17->fDisconnect = false;
+    BOOST_CHECK_EQUAL(node17->IsDisconnecting(), true);
+    node17->testOnlyResetDisconnect();
 
     nMaxInbound = 15;
     maxConnections.Set(20);
@@ -981,8 +981,8 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     node20->nTimeConnected = nStartTime - 59;
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 20UL); // vnodes will not change yet, only the fDisconnect flag will be set.
-    BOOST_CHECK_EQUAL(node17->fDisconnect, true);
-    node17->fDisconnect = false;
+    BOOST_CHECK_EQUAL(node17->IsDisconnecting(), true);
+    node17->testOnlyResetDisconnect();
 
     nMaxInbound = 15;
     maxConnections.Set(20);
@@ -993,8 +993,8 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     node20->nTimeConnected = nStartTime - 59;
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 20UL); // vnodes will not change yet, only the fDisconnect flag will be set.
-    BOOST_CHECK_EQUAL(node16->fDisconnect, true);
-    node16->fDisconnect = false;
+    BOOST_CHECK_EQUAL(node16->IsDisconnecting(), true);
+    node16->testOnlyResetDisconnect();
 
     node16->nTimeConnected = nStartTime;
     node17->nTimeConnected = nStartTime;
@@ -1010,8 +1010,8 @@ BOOST_AUTO_TEST_CASE(test_attemptToEvict)
     node20->nTimeConnected = nStartTime - 59;
     BOOST_CHECK_EQUAL(AttemptToEvictConnection(nMaxInbound), true);
     BOOST_CHECK_EQUAL(vNodes.size(), 20UL); // vnodes will not change yet, only the fDisconnect flag will be set.
-    BOOST_CHECK_EQUAL(node1->fDisconnect, true);
-    node1->fDisconnect = false;
+    BOOST_CHECK_EQUAL(node1->IsDisconnecting(), true);
+    node1->testOnlyResetDisconnect();
 
     // Test the disconnection of nodes if max connections is reduced via the associated tweak.
     // The first call to CleanupDisconnectedNodes will only set the fDisconnect flag to true.

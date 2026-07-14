@@ -311,9 +311,8 @@ void static ProcessGetData(CNode *pfrom,
                             inv.type == MSG_FILTERED_BLOCK) &&
                         !pfrom->fWhitelisted)
                     {
-                        LOG(NET, "historical block serving limit reached, disconnect peer %s\n", pfrom->GetLogName());
                         // disconnect node because it wants info that we are not going to give it
-                        pfrom->fDisconnect = true;
+                        pfrom->CloseSocketDisconnect("historical block serving limit reached");
                         fSend = false;
                         noSendStr = "Historical block limit reached";
                         noSendReason = REJECT_RETRY;
@@ -326,11 +325,9 @@ void static ProcessGetData(CNode *pfrom,
                             ((nLocalServices & NODE_NETWORK) != NODE_NETWORK) &&
                             (chainActive.Tip()->height() - mi->height() > (int)NODE_NETWORK_LIMITED_MIN_BLOCKS + 2))))
                     {
-                        LOG(NET, "Ignore block request below NODE_NETWORK_LIMITED threshold from peer=%d\n",
-                            pfrom->GetId());
                         // disconnect node and prevent it from stalling (would
                         // otherwise wait for the missing block)
-                        pfrom->fDisconnect = true;
+                        pfrom->CloseSocketDisconnect("Ignore block request below NODE_NETWORK_LIMITED threshold");
                         fSend = false;
                         noSendStr = "Block too old";
                         noSendReason = REJECT_LIMITED;
@@ -934,8 +931,7 @@ bool ProcessMessage(CNode *pfrom,
         (strCommand == NetMsgType::FILTERLOAD || strCommand == NetMsgType::FILTERADD ||
             strCommand == NetMsgType::FILTERCLEAR))
     {
-        LOG(NET, "Inconsistent bloom filter settings peer %s\n", pfrom->GetLogName());
-        pfrom->fDisconnect = true;
+        pfrom->CloseSocketDisconnect("Inconsistent bloom filter settings");
         return false;
     }
 
@@ -1005,8 +1001,7 @@ bool ProcessMessage(CNode *pfrom,
         // Disconnect if we connected to ourself
         if (nNonce == nLocalHostNonce && nNonce > 1)
         {
-            LOGA("connected to self at %s, disconnecting\n", pfrom->addr.ToString());
-            pfrom->fDisconnect = true;
+            pfrom->CloseSocketDisconnect(tfm::format("connected to self at %s", pfrom->addr.ToString()));
             return true;
         }
 
@@ -1081,8 +1076,7 @@ bool ProcessMessage(CNode *pfrom,
             DbgAssert(pfrom->fInbound == false, pfrom->fFeeler = false);
             if (pfrom->fInbound == false)
             {
-                LOG(NET, "Disconnecting feeler to peer %s\n", pfrom->GetLogName());
-                pfrom->fDisconnect = true;
+                pfrom->CloseSocketDisconnect("Expected disconnect of feeler");
             }
         }
     }
@@ -1091,8 +1085,8 @@ bool ProcessMessage(CNode *pfrom,
     {
         // Must have a version message before anything else
         dosMan.Misbehaving(pfrom, 1, BanReasonBadConnectionHandshake);
-        pfrom->fDisconnect = true;
-        return error("%s receieved before VERSION message - disconnecting peer=%s", strCommand, pfrom->GetLogName());
+        pfrom->CloseSocketDisconnect("Received message before VERSION");
+        return error("%s received before VERSION message - disconnecting peer=%s", strCommand, pfrom->GetLogName());
     }
 
     else if (strCommand == NetMsgType::EXTVERSION && extVersionEnabled.Value() == true)
@@ -1102,7 +1096,7 @@ bool ProcessMessage(CNode *pfrom,
         if (pfrom->fSuccessfullyConnected == true)
         {
             dosMan.Misbehaving(pfrom, 1, BanReasonBadConnectionHandshake);
-            pfrom->fDisconnect = true;
+            pfrom->CloseSocketDisconnect("odd peer behavior: received verack message before extversion");
             return error("odd peer behavior: received verack message before extversion, disconnecting \n");
         }
 
@@ -1130,9 +1124,8 @@ bool ProcessMessage(CNode *pfrom,
         // The peer may be slow so disconnect them only, to give them another chance if they try to re-connect.
         // If they are a bad peer and keep trying to reconnect and still do not VERACK, they will eventually
         // get banned by the connection slot algorithm which tracks disconnects and reconnects.
-        pfrom->fDisconnect = true;
-        LOG(NET, "ERROR: disconnecting - VERACK not received within %d seconds for peer=%s version=%s\n",
-            VERACK_TIMEOUT, pfrom->GetLogName(), pfrom->cleanSubVer);
+        pfrom->CloseSocketDisconnect(
+            tfm::format("VERACK not received within %d seconds version=%s\n", VERACK_TIMEOUT, pfrom->cleanSubVer));
 
         // update connection tracker which is used by the connection slot algorithm.
         LOCK(cs_mapInboundConnectionTracker);
@@ -1149,7 +1142,7 @@ bool ProcessMessage(CNode *pfrom,
         if (pfrom->fSuccessfullyConnected == true)
         {
             dosMan.Misbehaving(pfrom, 1, BanReasonBadConnectionHandshake);
-            pfrom->fDisconnect = true;
+            pfrom->CloseSocketDisconnect("Duplicate VERACK messages");
             return error("duplicate verack messages");
         }
         pfrom->SetRecvVersion(std::min(pfrom->nVersion, PROTOCOL_VERSION));
@@ -1245,14 +1238,13 @@ bool ProcessMessage(CNode *pfrom,
             {
                 pfrom->PushMessageWithCookie(NetMsgType::REJECT, msgCookie | 0xFFFF, strCommand, REJECT_INVALID,
                     std::string("filter size was too small"));
-                LOG(NET, "Disconnecting %s: bloom filter size too small\n", pfrom->GetLogName());
-                pfrom->fDisconnect = true;
+                pfrom->CloseSocketDisconnect("bloom filter size too small");
                 return false;
             }
         }
         else
         {
-            pfrom->fDisconnect = true;
+            pfrom->CloseSocketDisconnect("Thin block message but not thin block capable");
             return false;
         }
     }
@@ -1388,8 +1380,7 @@ bool ProcessMessage(CNode *pfrom,
         addrman.Add(vAddrOk, pfrom->addr, 2 * 60 * 60);
         if (pfrom->fOneShot)
         {
-            LOG(NET, "Disconnecting %s: one shot\n", pfrom->GetLogName());
-            pfrom->fDisconnect = true;
+            pfrom->CloseSocketDisconnect("one shot");
         }
     }
 
@@ -1850,7 +1841,7 @@ bool ProcessMessage(CNode *pfrom,
                     // attack to prevent the node from syncing.
                     if (header.GetBlockTime() < GetAdjustedTime() - 24 * 60 * 60)
                     {
-                        pfrom->fDisconnect = true;
+                        pfrom->CloseSocketDisconnect("non-continuous-headers sequence during node sync");
                         return error("non-continuous-headers sequence during node sync - disconnecting peer=%s",
                             pfrom->GetLogName());
                     }
@@ -1943,7 +1934,7 @@ bool ProcessMessage(CNode *pfrom,
                     // only from peers that are not on our own fork.
                     if (state.GetRejectCode() == REJECT_CHECKPOINT)
                     {
-                        pfrom->fDisconnect = true;
+                        pfrom->CloseSocketDisconnect("Bad checkpoint");
                     }
 
                     int nDos = 0;
@@ -2051,6 +2042,7 @@ bool ProcessMessage(CNode *pfrom,
 
 
         bool fCanDirectFetch = CanDirectFetch(chainparams.GetConsensus());
+        bool newlyFirstHeadersReceived = false;
         {
             CNodeStateAccessor state(nodestate, pfrom->GetId());
             DbgAssert(state != nullptr, return false);
@@ -2076,10 +2068,13 @@ bool ProcessMessage(CNode *pfrom,
 
                 // Get the initial tailstorm subblocks when we get the first headers so
                 // that we can initiate a re-org if needed when the subblocks arrive.
-                if (state->fFirstHeadersReceived)
-                    GetInitialTailstormSubblocks(pfrom);
+                newlyFirstHeadersReceived = state->fFirstHeadersReceived;
             }
         }
+        // Get the initial tailstorm subblocks when we get the first headers so
+        // that we can initiate a re-org if needed when the subblocks arrive.
+        if (newlyFirstHeadersReceived)
+            GetInitialTailstormSubblocks(pfrom);
 
         // update the synced status.  This should come before we make calls to requester.AskFor().
         IsChainNearlySyncdInit();
@@ -2464,8 +2459,7 @@ bool ProcessMessage(CNode *pfrom,
     {
         if (CNode::OutboundTargetReached(false) && !pfrom->fWhitelisted)
         {
-            LOG(NET, "mempool request with bandwidth limit reached, disconnect peer %s\n", pfrom->GetLogName());
-            pfrom->fDisconnect = true;
+            pfrom->CloseSocketDisconnect("txpool request with bandwidth limit reached");
             return true;
         }
         std::vector<uint256> vtxid;
@@ -2513,8 +2507,7 @@ bool ProcessMessage(CNode *pfrom,
     {
         if (CNode::OutboundTargetReached(false) && pfrom->fWhitelisted)
         {
-            LOG(NET, "mempool request with bandwidth limit reached, disconnect peer %s\n", pfrom->GetLogName());
-            pfrom->fDisconnect = true;
+            pfrom->CloseSocketDisconnect("txpool request with bandwidth limit reached");
             return true;
         }
         std::vector<uint256> vtxid;
@@ -3008,7 +3001,7 @@ bool ProcessMessages(CNode *pfrom)
                             frontCommand == NetMsgType::EXTVERSION)
                         {
                             pfrom->vRecvMsg_handshake.clear();
-                            pfrom->fDisconnect = true;
+                            pfrom->CloseSocketDisconnect("received handshake message after successful initialization");
                             dosMan.Misbehaving(pfrom, 1, BanReasonBadConnectionHandshake);
                             return error("received handshake message '%s' after successful initialization,"
                                          "disconnecting peer=%s",
@@ -3225,8 +3218,7 @@ bool SendMessages(CNode *pto)
             LOG(IBD, "peer %s, checking disconnect request with %d in flight blocks\n", pto->GetLogName(), nInFlight);
             if (nInFlight == 0)
             {
-                pto->fDisconnect = true;
-                LOG(IBD, "peer %s, disconnect request was set, so disconnected\n", pto->GetLogName());
+                pto->CloseSocketDisconnect("disconnect request was set");
             }
         }
 
@@ -3431,16 +3423,28 @@ bool SendMessages(CNode *pto)
                 vSubblocksToAnnounce.swap(pto->vSubblockHashesToAnnounce);
             }
 
+            uint256 zero;
             std::vector<CBlockHeader> vHeaders;
             {
-                CNodeStateAccessor modablestate(nodestate, pto->GetId());
-                for (const uint256 &hash : vSubblocksToAnnounce)
+                std::vector<ConstCBlockRef> pblocks(vSubblocksToAnnounce.size());
+                std::vector<uint256> pblocksHash(vSubblocksToAnnounce.size());
+                // Skip subblocks that we don't have
+                // Done outside the CNodeStateAccessor to prevent lock dependencies.
+                int pblockIdx = 0;
+                for (uint256 &hash : vSubblocksToAnnounce)
                 {
-                    // Skip subblocks that we don't have
-                    ConstCBlockRef pblock;
-                    if (!tailstormForest.Find(hash, pblock))
-                        continue;
+                    if (tailstormForest.Find(hash, pblocks[pblockIdx]))
+                    {
+                        pblocksHash[pblockIdx] = hash;
+                        pblockIdx++;
+                    }
+                }
 
+                CNodeStateAccessor modablestate(nodestate, pto->GetId());
+                for (int i = 0; i < pblockIdx; i++)
+                {
+                    ConstCBlockRef pblock = pblocks[i];
+                    uint256 hash = pblocksHash[i];
                     const CBlockHeader &header = pblock->GetBlockHeader();
                     if (PeerHasSubblockHeader(modablestate, hash))
                     {
@@ -3453,7 +3457,8 @@ bool SendMessages(CNode *pto)
                     }
 
                     vHeaders.push_back(header);
-                    LOG(NET, "%s: sending subblock header %s to peer=%d\n", __func__, hash.ToString(), pto->id);
+                    LOG(NET, "%s: sending subblock header %s:%d to peer=%d\n", __func__, hash.ToString(),
+                        pblock->GetHeight(), pto->id);
 
                     if (vHeaders.size() >= MAX_HEADERS_RESULTS)
                         break;

@@ -83,7 +83,7 @@ static void ActuallySendExpeditedBlock(CXThinBlock &thinBlock, unsigned char hop
     {
         CNode *pnode = nodeRef.get();
 
-        if (pnode->fDisconnect)
+        if (pnode->IsDisconnecting())
         {
             connmgr->RemovedNode(pnode);
         }

@@ -105,7 +105,8 @@ bool CThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom)
     {
         if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::XTHINBLOCK, inv.hash) && !connmgr->IsExpeditedUpstream(pfrom))
         {
-            dosMan.Misbehaving(pfrom, 100, BanReasonUnrequestedObject);
+            // This might be a subblock we have moved away from so do not misbehaving this node
+            // dosMan.Misbehaving(pfrom, 10, BanReasonUnrequestedObject);
             return error("unrequested thinblock from peer %s", pfrom->GetLogName());
         }
     }
@@ -432,7 +433,7 @@ bool CXRequestThinBlockTx::HandleMessage(CDataStream &vRecv, CNode *pfrom)
             CBlockIndex *hdr = LookupBlockIndex(inv.hash);
             if (!hdr)
             {
-                dosMan.Misbehaving(pfrom, 20, BanReasonNotInBlockIndex);
+                // The block might be a subblock we've released, so this is not unexpected (do not punish the node)
                 return error("Requested block is not available");
             }
             pblock = ReadBlockFromDisk(hdr, consensusParams);
@@ -848,10 +849,11 @@ static bool ReconstructBlock(CNode *pfrom,
         {
             uint64_t nBlockBytes = pblock->nCurrentBlockSize;
             thinrelay.ClearAllBlockData(pfrom, pblock->GetHash());
-            pfrom->fDisconnect = true;
-            return error(
+            std::string err = tfm::format(
                 "Reconstructed block %s (size:%llu) has caused max memory limit %llu bytes to be exceeded, peer=%s",
                 pblock->GetHash().ToString(), nBlockBytes, thinrelay.GetMaxAllowedBlockSize(), pfrom->GetLogName());
+            pfrom->CloseSocketDisconnect(err);
+            return error("%s", err);
         }
 
         // Add this transaction. If the tx is null we still add it as a placeholder to keep the correct ordering.
