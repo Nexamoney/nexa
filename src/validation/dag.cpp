@@ -2249,52 +2249,14 @@ std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTreeNodeRef treenod
 bool CTailstormForest::Remove(uint256 &hash)
 {
     LOCK(cs_forest);
-    // If the node is unlinked, it will not be anywhere else so just remove it from the unlinked map
-    // and the all-known map and we are done
-    if (mapNodesUnlinked.count(hash))
+
+    std::map<uint256, CTreeNodeRef>::iterator iter = mapAllNodes.find(hash);
+    if (iter != mapAllNodes.end())
     {
-        LOG(DAG, "CTailstormForest::Remove %s from unlinked\n", hash.ToString());
-        mapNodesUnlinked.erase(hash);
-        mapAllNodes.erase(hash);
-        return true;
-    }
-
-    std::map<uint256, CTreeNodeRef> oldDag;
-    CTailstormGroveRef grove = nullptr;
-    if (GetGrove(hash, grove)) // If the subblock is in a grove, clean it out of there
-    {
-        LOG(DAG, "%s(): Removing %s from grove %s.\n", __func__, hash.ToString(), grove->roothash.ToString());
-        mapAllNodes.erase(hash);
-        mapAllGrovesByNode.erase(hash);
-        grove->mapGroveNodes.erase(hash);
-
-        // Erase from uncles first. If nothing was there
-        // then try to erase from the dag.
-        if (grove->tree->mapUncles.count(hash))
+        CTailstormGroveRef grove = nullptr;
+        if (GetGrove(hash, grove))
         {
-            grove->tree->mapUncles.erase(hash);
-            return true;
-        }
-        else if (grove->tree->dag.count(hash))
-        {
-            LOG(DAG, "%s(): Removing %s from grove %s requires complete grove reassessment.\n", __func__,
-                hash.ToString(), grove->roothash.ToString());
-            grove->tree->dag.erase(hash);
-
-            // Clear all the data from the tree.
-            grove->tree->view->Clear();
-            grove->tree->vDoubleSpendTxns.clear();
-            grove->tree->mapInputs.clear();
-            grove->tree->mapDagTxns.clear();
-
-            // Now that we've deleted from the dag we have
-            // to resubmit everything and re-process.
-            grove->tree->dag.swap(oldDag);
-            for (auto mi : oldDag)
-            {
-                AddSubblockOrphan(mi.second);
-            }
-            ProcessOrphans();
+            RemoveFromGrove(grove, iter->second);
             return true;
         }
     }
