@@ -641,6 +641,9 @@ void CTailstormGrove::Clear()
 
 void CTailstormGrove::RecalcDagHeights()
 {
+    AssertLockHeld(tailstormForest.cs_forest);
+    DbgAssert(txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("must have corral paused during DAG regenerate"));
+
     int needsHeight = 0;
     // Go through all the subblocks, setting their heights to either a sentinel value or to 1 if they have no ancestors.
     for (const auto &[hash, subblock] : mapGroveNodes)
@@ -2001,7 +2004,7 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
         auto badSubblock = ReGenerateDagDataForSubblocks(&(*tree), kSortedDag, setTxnExclusions);
         if (!badSubblock)
             break; // It worked
-        // If the regeneration did not work, deleted the bad block from the dag, and loop trying the next best set
+        // If the regeneration did not work, delete the bad block from the dag, and loop trying the next best set
         RemoveFromGrove(grove, badSubblock);
         grove->RecalcDagHeights();
     }
@@ -2013,6 +2016,9 @@ CTreeNodeRef CTailstormForest::ReGenerateDagDataForSubblocks(CTailstormTree *tre
     std::vector<CTreeNodeRef> &sortedDag,
     const std::set<uint256> &setTxnExclusions)
 {
+    AssertLockHeld(cs_forest);
+    DbgAssert(txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("must have corral paused during DAG regenerate"));
+
     auto chainparams = Params();
 
     bool fJustCheck = false;
