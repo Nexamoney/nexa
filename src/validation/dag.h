@@ -74,6 +74,7 @@ public:
 
     void AddAncestors(std::set<CTreeNodeRef> &ancestors) { setAncestors.insert(ancestors.begin(), ancestors.end()); }
     void AddDescendant(CTreeNodeRef _descendent) { setDescendants.emplace(_descendent); }
+    void RemoveDescendant(CTreeNodeRef _descendent) { setDescendants.erase(_descendent); }
 
     // This subblock is just after the last summary block
     bool IsBase() { return (setAncestors.empty() && dagHeight == 1); }
@@ -161,6 +162,8 @@ protected:
     bool InitializeTree(CTreeNodeRef newNode, CCoinsViewCache *coinsCache);
     // Returns nullptr if failed, newNode if inserted, or the existing node if already inserted
     CTreeNodeRef InsertIntoTree(CTreeNodeRef newNode);
+    // Recalculate the dag height of all subblocks in the dag (call if some subblocks were removed).
+    void RecalcDagHeights();
 
 public:
     CTailstormGrove(CCoinsViewCache *coinsCache);
@@ -267,8 +270,10 @@ public:
 
     //! Add a subblock orphan to the orphans map.
     void AddSubblockOrphan(CTreeNodeRef newNode);
-    //! Remove subblock orphan from the orphans map (if it is in there, otherwise no-op)
+    /** Remove subblock orphan from the orphans map (if it is in there, otherwise no-op) */
     void RemoveSubblockOrphan(const ConstCBlockRef &pblock);
+    /** Remove subblock orphan from the orphans map (if it is in there, otherwise no-op) */
+    void RemoveSubblockOrphan(const uint256 &hash);
 
     //! Process all orphaned subblocks and summary blocks
     std::set<uint256> ProcessOrphans();
@@ -324,8 +329,16 @@ public:
     //! Detemine if we need to re-org the chainActive tip to one that has a better dag.
     void CheckForReorg();
 
-    //! Regenerate coincache and mapDagTxn data for a tree.
+    /** Regenerate coincache and mapDagTxn data for a tree. */
     void ReGenerateDagData(CTailstormGroveRef grove);
+    /** Returns nullptr if it worked, and the bad subblock that should be removed if it did not */
+    CTreeNodeRef ReGenerateDagDataForSubblocks(CTailstormTree *tree,
+        std::vector<CTreeNodeRef> &sortedDag,
+        const std::set<uint256> &setTxnExclusions);
+
+    /** Removes a subblock and its descendants from the forest and the passed tree.
+        Subblocks may need to be removed if they are invalid, for example. */
+    void RemoveFromGrove(CTailstormGroveRef grove, CTreeNodeRef subblock);
 
     //! Set the main coins cache that we build our tailstorm tree views on top of.
     void SetBackend(CCoinsViewCache *coinsCache)

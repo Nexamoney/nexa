@@ -639,6 +639,48 @@ void CTailstormGrove::Clear()
     mapGroveNodes.clear();
 }
 
+void CTailstormGrove::RecalcDagHeights()
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+    DbgAssert(txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("must have corral paused during DAG regenerate"));
+
+    int needsHeight = 0;
+    // Go through all the subblocks, setting their heights to either a sentinel value or to 1 if they have no ancestors.
+    for (const auto &[hash, subblock] : mapGroveNodes)
+    {
+        if (subblock->setAncestors.size() > 0)
+        {
+            subblock->dagHeight = UINT32_MAX; // to be filled later.
+            needsHeight++;
+        }
+        else
+            subblock->dagHeight = 1; // No ancestors so this is a starting subblock
+    }
+
+    // Loop until all subblocks are labelled
+    while (needsHeight)
+    {
+        needsHeight = 0;
+        // Loop thru every subblock, assigning heights to every one if we know the height of all its ancestors
+        for (const auto &[hash, subblock] : mapGroveNodes)
+        {
+            if (subblock->dagHeight != UINT32_MAX)
+                continue; // Skip already labelled
+            uint32_t maxAncestorHeight = 0;
+            // Find the ancestor with the biggest height
+            for (const auto &anc : subblock->setAncestors)
+            {
+                if (anc->dagHeight > maxAncestorHeight)
+                    maxAncestorHeight = anc->dagHeight;
+            }
+            if (maxAncestorHeight == UINT32_MAX)
+                needsHeight++; // Nope an ancestor is not yet labelled with a height
+            else
+                subblock->dagHeight = maxAncestorHeight + 1;
+        }
+    }
+}
+
 CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
 {
     AssertLockHeld(tailstormForest.cs_forest);
@@ -766,6 +808,13 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
                     newNode = tmp;
                     LOG(DAG, "%s(): completed insert into tree dagsize %ld for %s", __func__, tree->dag.size(),
                         newNode->hash.ToString());
+                }
+                else // Insertion failed, so remove the bad node from the descendants
+                {
+                    for (auto node : setPrevNodes)
+                    {
+                        node->RemoveDescendant(newNode);
+                    }
                 }
             }
         }
@@ -1239,6 +1288,10 @@ void CTailstormForest::AddSubblockOrphan(CTreeNodeRef newNode)
     else
     {
         LOG(DAG, "Adding subblock orphan (removing from groves and adding to unlinked): %s", newNode->hash.ToString());
+        for (auto &node : newNode->setAncestors)
+        {
+            node->RemoveDescendant(newNode);
+        }
         newNode->setAncestors.clear();
         newNode->setDescendants.clear();
         newNode->fProcessed = false;
@@ -1249,11 +1302,13 @@ void CTailstormForest::AddSubblockOrphan(CTreeNodeRef newNode)
     }
 }
 
-void CTailstormForest::RemoveSubblockOrphan(const ConstCBlockRef &pblock)
+
+void CTailstormForest::RemoveSubblockOrphan(const ConstCBlockRef &pblock) { RemoveSubblockOrphan(pblock->GetHash()); }
+void CTailstormForest::RemoveSubblockOrphan(const uint256 &hash)
 {
     LOCK(cs_forest);
-    LOG(DAG, "Remove subblock orphan: %s", pblock->GetHash().ToString());
-    mapNodesUnlinked.erase(pblock->GetHash());
+    LOG(DAG, "Remove subblock orphan: %s", hash.ToString());
+    mapNodesUnlinked.erase(hash);
 }
 
 
@@ -1902,20 +1957,20 @@ void CTailstormForest::CheckForReorg()
 
 void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
 {
-    LOG(DAG, "%s(): Begin ReGenerateDagData for grove %s", __func__, grove->roothash.ToString());
+    LOG(DAG, "%s: Begin ReGenerateDagData for grove %s", __func__, grove->roothash.ToString());
     AssertLockHeld(cs_forest);
-    DbgAssert(
-        txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("Do not have corral pause during activate best tree"));
+    DbgAssert(txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("must have corral paused during DAG regenerate"));
 
-    // Rebuild the each tree's coinscache and data structures on the grove we've now set as our best chain tip.
-    // We only need to build data for unprocessed subblocks.
     auto chainparams = Params();
     auto &tree = grove->tree;
+
+    while (true)
     {
         // Sort the dag from lowest to highest sequence id
         std::vector<std::pair<uint256, CTreeNodeRef> > vSortedDag(tree->dag.begin(), tree->dag.end());
         std::sort(vSortedDag.begin(), vSortedDag.end(),
             [](const auto &a, const auto &b) { return a.second->nSequenceId < b.second->nSequenceId; });
+
 
         // Get the exclusion set for this dag which is used to pass to connect block and allow
         // processing to continue without a missing inputs error begin returned. This exlusion set is needed
@@ -1923,10 +1978,14 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
         // does not get created until the block has succesfully finished connecting.
         std::map<COutPoint, CTransactionRef> mapInputs;
         auto tailstorm_k = chainparams.GetConsensus().tailstorm_k;
+        // Put the first received tailstorm_k blocks in setDag
         std::set<CTreeNodeRef> setDag;
-        for (auto it = vSortedDag.begin(); it != vSortedDag.end() && it->second->nSequenceId < tailstorm_k; it++)
+        std::vector<CTreeNodeRef> kSortedDag; // the exact subblocks we will use
+        kSortedDag.reserve(tailstorm_k);
+        for (auto it = vSortedDag.begin(); (it != vSortedDag.end()) && (setDag.size() < tailstorm_k); it++)
         {
             setDag.insert(it->second);
+            kSortedDag.push_back(it->second);
         }
         std::set<uint256> setTxnExclusions = GetTxnExclusionSet(setDag, tree->vDoubleSpendTxns, tree->mapInputs);
         if (setTxnExclusions.size() > 0)
@@ -1937,114 +1996,141 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
                 logExcl.append(hash.ToString());
                 logExcl.append(" ");
             }
-            LOG(DAG, "%s\n", logExcl);
+            LOG(DAG, "%s: %s\n", __func__, logExcl);
         }
+        else
+            LOG(DAG, "%s: No conflicts to exclude\n", __func__);
 
-        // TODO: In the future we could check first if we have a higher score ds before
-        // and only clear everything if we need to rebuild entirely. But for now
-        // just rebuild everything.
-        tree->mapDagTxns.clear();
-        tree->mapInputs.clear();
-        tree->view->Clear();
-
-        uint32_t nSequenceId = 0;
-        for (auto it = vSortedDag.begin(); it != vSortedDag.end() && it->second->nSequenceId < tailstorm_k; it++)
-        {
-            nSequenceId++;
-            if (nSequenceId == tailstorm_k)
-            {
-                LOG(DAG, "%s(): Breaking from regenerate because we have processed enough subblocks: %s", __func__);
-                break;
-            }
-
-            // If it's in the dag it must have been processed already.
-            const CTreeNodeRef &treenode = it->second;
-            DbgAssert(treenode->fProcessed, );
-
-            bool fJustCheck = false;
-            bool fParallel = false;
-            bool fScriptChecks = true;
-            CAmount nFees = 0;
-            CBlockUndo blockundo;
-            std::vector<std::pair<uint256, CDiskTxPos> > vPos;
-            vPos.reserve(treenode->subblock->vtx.size());
-            std::map<CGroupTokenID, CAmount> accumulatedMintages;
-            std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
-
-            // Try connecting the subblock and updating the coins cache.
-            CValidationState state;
-            if (ConnectBlockCanonicalOrdering(treenode->subblock, state, tree->pindexSummaryRoot, *tree->view,
-                    chainparams, fJustCheck, fParallel, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages,
-                    accumulatedAuthorities, &tree->mapDagTxns, &setTxnExclusions))
-            {
-                // Rebuild the mapDagTxns as subblocks are connected.
-                for (CTransactionRef ptx : treenode->subblock->vtx)
-                {
-                    if (ptx->IsCoinBase())
-                        continue;
-
-                    tree->mapDagTxns.emplace(ptx->GetId(), ptx);
-
-                    for (auto &input : ptx->vin)
-                    {
-                        tree->mapInputs.emplace(input.prevout, ptx);
-                    }
-                }
-
-                treenode->fProcessed = true;
-                treenode->nSequenceId = nSequenceId;
-            }
-            else
-            {
-                nSequenceId--;
-
-                // If this is a failure to connect here then we remove all references to this subblock
-                tree->dag.erase(treenode->hash);
-                grove->mapGroveNodes.erase(treenode->hash);
-                mapAllGrovesByNode.erase(treenode->hash);
-                mapAllNodes.erase(treenode->hash);
-                mapNodesUnlinked.erase(treenode->hash);
-
-                // Find the double spend map which contains this failed subblock and remove it.
-                for (auto iter = tree->vDoubleSpendTxns.begin(); iter != tree->vDoubleSpendTxns.end();)
-                {
-                    bool fRemoveMap = false;
-                    for (auto mi : *iter)
-                    {
-                        if (mi.second->hash == treenode->hash)
-                        {
-                            fRemoveMap = true;
-                            break;
-                        }
-                    }
-                    if (fRemoveMap)
-                        iter = tree->vDoubleSpendTxns.erase(iter);
-                    else
-                        iter++;
-                }
-
-                // If the validation fails it's either because we never correctly detected a double spend
-                // in the first round of connecting the subblock OR because there was a double spend which WAS
-                // detected but there was also some other reason why the subblock would fail validation.
-                if (state.GetRejectCode() == REJECT_CONFLICT)
-                {
-                    LOG(DAG,
-                        "%s(): This should never happen! - Unable to process subblock with double spend while "
-                        "regenerating data: %s",
-                        __func__, treenode->hash.ToString());
-                    DbgAssert(false, );
-                }
-                else
-                {
-                    LOG(DAG, "%s(): Unable to process subblock while regenerating data due to some hidden issue: %s",
-                        __func__, treenode->hash.ToString());
-                }
-            }
-        }
+        auto badSubblock = ReGenerateDagDataForSubblocks(&(*tree), kSortedDag, setTxnExclusions);
+        if (!badSubblock)
+            break; // It worked
+        // If the regeneration did not work, delete the bad block from the dag, and loop trying the next best set
+        RemoveFromGrove(grove, badSubblock);
+        grove->RecalcDagHeights();
     }
 
-    tailstormForest.SetBestGroveForSummaryTip();
+    SetBestGroveForSummaryTip();
 }
+
+CTreeNodeRef CTailstormForest::ReGenerateDagDataForSubblocks(CTailstormTree *tree,
+    std::vector<CTreeNodeRef> &sortedDag,
+    const std::set<uint256> &setTxnExclusions)
+{
+    AssertLockHeld(cs_forest);
+    DbgAssert(txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("must have corral paused during DAG regenerate"));
+
+    auto chainparams = Params();
+
+    bool fJustCheck = false;
+    bool fParallel = false;
+    bool fScriptChecks = true;
+
+    tree->mapDagTxns.clear();
+    tree->mapInputs.clear();
+    tree->view->Clear();
+
+    uint32_t nSequenceId = 0;
+    for (auto it = sortedDag.begin(); it != sortedDag.end(); it++)
+    {
+        nSequenceId++;
+        const CTreeNodeRef &treenode = *it;
+
+        treenode->nSequenceId = nSequenceId;
+
+        CAmount nFees = 0;
+        CBlockUndo blockundo;
+        std::vector<std::pair<uint256, CDiskTxPos> > vPos;
+        vPos.reserve(treenode->subblock->vtx.size());
+        std::map<CGroupTokenID, CAmount> accumulatedMintages;
+        std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
+
+        LOG(DAG, "%s: Layering subblock %s into DAG view.  Block details: %s", __func__,
+            treenode->subblock->GetHash().ToString(), treenode->subblock->ToString());
+        // Try connecting the subblock and updating the coins cache.
+        CValidationState state;
+        if (ConnectBlockCanonicalOrdering(treenode->subblock, state, tree->pindexSummaryRoot, *tree->view, chainparams,
+                fJustCheck, fParallel, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages,
+                accumulatedAuthorities, &tree->mapDagTxns, &setTxnExclusions))
+        {
+            // Rebuild the mapDagTxns as subblocks are connected.
+            for (CTransactionRef ptx : treenode->subblock->vtx)
+            {
+                if (ptx->IsCoinBase())
+                    continue;
+
+                tree->mapDagTxns.emplace(ptx->GetId(), ptx);
+
+                for (auto &input : ptx->vin)
+                {
+                    tree->mapInputs.emplace(input.prevout, ptx);
+                }
+            }
+
+            treenode->fProcessed = true;
+            treenode->nSequenceId = nSequenceId;
+        }
+        else
+        {
+            // The subblock is BAD!
+            nSequenceId--;
+            treenode->fProcessed = false;
+            // We previously set up to ignore all dag-caused doublespend transactions, so a failure here is
+            // really a bad block.
+            LOG(DAG, "%s(): While regenerating dag, subblock is bad: %s", __func__, treenode->hash.ToString());
+            return treenode;
+        }
+    }
+    return CTreeNodeRef();
+}
+
+void CTailstormForest::RemoveFromGrove(CTailstormGroveRef grove, CTreeNodeRef subblock)
+{
+    LOCK(cs_forest);
+    LOG(DAG, "%s: Expunging subblock: %s", __func__, subblock->hash.ToString());
+    CTailstormTree &tree = *(grove->tree);
+    tree.dag.erase(subblock->hash);
+    tree.mapUncles.erase(subblock->hash);
+    grove->mapGroveNodes.erase(subblock->hash);
+    mapAllGrovesByNode.erase(subblock->hash);
+    mapAllNodes.erase(subblock->hash);
+    RemoveSubblockOrphan(subblock->hash);
+
+    // Find the double spend map which contains this failed subblock and remove it.
+    for (auto iter = tree.vDoubleSpendTxns.begin(); iter != tree.vDoubleSpendTxns.end();)
+    {
+        bool fRemoveMap = false;
+        for (auto mi : *iter)
+        {
+            if (mi.second->hash == subblock->hash)
+            {
+                fRemoveMap = true;
+                break;
+            }
+        }
+        if (fRemoveMap)
+            iter = tree.vDoubleSpendTxns.erase(iter);
+        else
+            iter++;
+    }
+
+    std::set<CTreeNodeRef> descendantCopy = subblock->setDescendants;
+    // Recursively remove any child subblocks, I have to make a copy because the child will remove itself from
+    // my descendant list (modifying the list while I have an iterator on it).
+    for (const auto &descendant : descendantCopy)
+    {
+        RemoveFromGrove(grove, descendant);
+    }
+    // Remove me from my ancestors
+    for (const auto &ancestor : subblock->setAncestors)
+    {
+        ancestor->RemoveDescendant(subblock);
+    }
+    // Be absolutely sure these smart pointers are cleared since this subblock will be disconnected from the
+    // reachable graph and do not want circular references to prevent reclaiming memory.
+    subblock->setAncestors.clear();
+    subblock->setDescendants.clear();
+}
+
 
 void CTailstormForest::SetBestGroveForSummaryTip()
 {
@@ -2169,52 +2255,14 @@ std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTreeNodeRef treenod
 bool CTailstormForest::Remove(uint256 &hash)
 {
     LOCK(cs_forest);
-    // If the node is unlinked, it will not be anywhere else so just remove it from the unlinked map
-    // and the all-known map and we are done
-    if (mapNodesUnlinked.count(hash))
+
+    std::map<uint256, CTreeNodeRef>::iterator iter = mapAllNodes.find(hash);
+    if (iter != mapAllNodes.end())
     {
-        LOG(DAG, "CTailstormForest::Remove %s from unlinked\n", hash.ToString());
-        mapNodesUnlinked.erase(hash);
-        mapAllNodes.erase(hash);
-        return true;
-    }
-
-    std::map<uint256, CTreeNodeRef> oldDag;
-    CTailstormGroveRef grove = nullptr;
-    if (GetGrove(hash, grove)) // If the subblock is in a grove, clean it out of there
-    {
-        LOG(DAG, "%s(): Removing %s from grove %s.\n", __func__, hash.ToString(), grove->roothash.ToString());
-        mapAllNodes.erase(hash);
-        mapAllGrovesByNode.erase(hash);
-        grove->mapGroveNodes.erase(hash);
-
-        // Erase from uncles first. If nothing was there
-        // then try to erase from the dag.
-        if (grove->tree->mapUncles.count(hash))
+        CTailstormGroveRef grove = nullptr;
+        if (GetGrove(hash, grove))
         {
-            grove->tree->mapUncles.erase(hash);
-            return true;
-        }
-        else if (grove->tree->dag.count(hash))
-        {
-            LOG(DAG, "%s(): Removing %s from grove %s requires complete grove reassessment.\n", __func__,
-                hash.ToString(), grove->roothash.ToString());
-            grove->tree->dag.erase(hash);
-
-            // Clear all the data from the tree.
-            grove->tree->view->Clear();
-            grove->tree->vDoubleSpendTxns.clear();
-            grove->tree->mapInputs.clear();
-            grove->tree->mapDagTxns.clear();
-
-            // Now that we've deleted from the dag we have
-            // to resubmit everything and re-process.
-            grove->tree->dag.swap(oldDag);
-            for (auto mi : oldDag)
-            {
-                AddSubblockOrphan(mi.second);
-            }
-            ProcessOrphans();
+            RemoveFromGrove(grove, iter->second);
             return true;
         }
     }
