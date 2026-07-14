@@ -472,8 +472,6 @@ public:
     bool fNetworkNode; // any outbound node
     int64_t tVersionSent;
 
-    std::atomic<bool> fDisconnect;
-    std::atomic<bool> fDisconnectRequest;
     // We use fRelayTxes for two purposes -
     // a) it allows us to not relay tx invs before receiving the peer's version message
     // b) the peer may tell us in its version message that we should not relay tx invs
@@ -531,6 +529,12 @@ public:
 protected:
     // Basic fuzz-testing
     void Fuzz(int nChance, CDataStream &ssSend); // modifies ssSend
+
+    /** This node is marked for a quick disconnect.  Queued messages (both send and receive) are dropped.
+        Call CloseSocketDisconnect to set */
+    std::atomic<bool> fDisconnect;
+    /** Finish sending or processing received messages, then disconnect.  Call InitiateGracefulDisconnect to set. */
+    std::atomic<bool> fDisconnectRequest;
 
 public:
 #ifdef DEBUG
@@ -1243,6 +1247,9 @@ public:
         }
     }
 
+    /** Return true if we are in the process of disconnecting from this node */
+    bool IsDisconnecting() { return fDisconnect || fDisconnectRequest; }
+
     void copyStats(CNodeStats &stats);
 
     bool IsCapdEnabled() { return isCapdEnabled; }
@@ -1273,6 +1280,13 @@ public:
     //! response the time in second left in the current max outbound cycle
     // in case of no limit, it will always response 0
     static uint64_t GetMaxOutboundTimeLeftInCycle();
+
+    friend int SocketSendData(CNode *pnode, bool fSendTwo);
+    friend bool SendMessages(CNode *pto);
+    friend void CleanupDisconnectedNodes();
+    friend bool ProcessMessages(CNode *pfrom);
+    friend void ThreadMessageHandler();
+    friend void ThreadSocketHandler();
 };
 
 // Exception-safe class for holding a reference to a CNode

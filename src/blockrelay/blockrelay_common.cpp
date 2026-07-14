@@ -352,10 +352,11 @@ void ThinTypeRelay::CheckForDownloadTimeout(CNode *pfrom)
             {
                 if (!pfrom->fWhitelisted && Params().NetworkIDString() != "regtest")
                 {
-                    LOG(THIN | GRAPHENE | CMPCT,
+                    std::string err = tfm::format(
                         "ERROR: Disconnecting peer %s due to %s thinblock %s download timeout exceeded (%d secs)\n",
                         pfrom->GetLogName(), entry.thinType, entry.hash.ToString(), (GetTime() - entry.nRequestTime));
-                    pfrom->fDisconnect = true;
+                    LOG(THIN | GRAPHENE | CMPCT, "%s", err);
+                    pfrom->CloseSocketDisconnect(err);
                     return;
                 }
             }

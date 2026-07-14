@@ -1131,7 +1131,7 @@ void RPCConsole::disconnectSelectedNode()
     CNodeRef node = FindNodeRef(strNode.toStdString());
     if (node)
     {
-        node->fDisconnect = true;
+        node->CloseSocketDisconnect("Disconnect requested by RPC");
         clearSelectedNode();
     }
 }
@@ -1154,7 +1154,7 @@ void RPCConsole::banSelectedNode(int bantime)
         SplitHostPort(nStr, port, addr);
 
         dosMan.Ban(CNetAddr(addr), bannedNode.get()->cleanSubVer, BanReasonManuallyAdded, bantime);
-        bannedNode->fDisconnect = true;
+        bannedNode->CloseSocketDisconnect("Ban node requested by RPC");
 
         clearSelectedNode();
     }

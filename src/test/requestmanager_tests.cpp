@@ -187,9 +187,10 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddBlockInFlight(&dummyNodeGraphene, GetRandHash(), NetMsgType::GRAPHENEBLOCK);
     BOOST_CHECK(!thinrelay.AreTooManyBlocksInFlight());
 
-    // Add one more which is the max blocks in flight. A call to TooManyBlocksInFlight() will now
+    // Add more which to the max blocks in flight. A call to TooManyBlocksInFlight() will now
     // return false.
-    BOOST_CHECK(thinrelay.AddBlockInFlight(&dummyNodeGraphene, GetRandHash(), NetMsgType::GRAPHENEBLOCK));
+    for (size_t i = 5; i < thinrelay.MAX_THINTYPE_BLOCKS_IN_FLIGHT; i++)
+        BOOST_CHECK(thinrelay.AddBlockInFlight(&dummyNodeGraphene, GetRandHash(), NetMsgType::GRAPHENEBLOCK));
     BOOST_CHECK(thinrelay.AreTooManyBlocksInFlight());
 
     // Try to add one beyond the maximum which should fail
@@ -766,26 +767,18 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     nTime = GetTime();
     SetMockTime(nTime);
 
-    // The first request should suceed as should successive requests up until the limit of thintype requests in flight
+    // The first request should succeed as should successive requests up until the limit of thintype requests in flight
     inv.hash = InsecureRand256();
     BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
     BOOST_CHECK(dummyNodeGraphene.GetSendMsgSize() == 1);
 
-    inv.hash = InsecureRand256();
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
-    BOOST_CHECK(dummyNodeGraphene.GetSendMsgSize() == 2);
-
-    inv.hash = InsecureRand256();
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
-    BOOST_CHECK(dummyNodeGraphene.GetSendMsgSize() == 3);
-
-    inv.hash = InsecureRand256();
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
-    BOOST_CHECK(dummyNodeGraphene.GetSendMsgSize() == 4);
-
-    inv.hash = InsecureRand256();
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
-    BOOST_CHECK(dummyNodeGraphene.GetSendMsgSize() == 5);
+    // Fill it up the rest of the way
+    for (size_t i = 2; i < thinrelay.MAX_THINTYPE_BLOCKS_IN_FLIGHT; i++)
+    {
+        inv.hash = InsecureRand256();
+        BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+        BOOST_CHECK(dummyNodeGraphene.GetSendMsgSize() == i);
+    }
 
     // Now move the clock ahead so that the timers are exceeded and we should now
     // download an xthin
@@ -798,10 +791,10 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv) == true);
     BOOST_CHECK(dummyNodeXthin.GetSendMsgSize() == 1);
 
-    // Try to send a 7th block. It should fail to send as it's above the limit of thintype blocks in flight.
+    // Try to send another block. It should fail to send as it's above the limit of thintype blocks in flight.
     inv.hash = InsecureRand256();
     BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == false);
-    BOOST_CHECK(dummyNodeGraphene.GetSendMsgSize() == 5);
+    BOOST_CHECK(dummyNodeGraphene.GetSendMsgSize() == thinrelay.MAX_THINTYPE_BLOCKS_IN_FLIGHT - 1);
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
     CleanupAll(vNodes);

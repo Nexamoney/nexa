@@ -106,13 +106,13 @@ CDBWrapper::CDBWrapper(const fs::path &path,
         {
             LOGA("Wiping LevelDB in %s\n", path.string());
             leveldb::Status result = leveldb::DestroyDB(path.string(), options);
-            dbwrapper_private::HandleError(result);
+            dbwrapper_private::HandleError(result, path.string());
         }
         TryCreateDirectories(path);
         LOGA("Opening LevelDB in %s\n", path.string());
     }
     leveldb::Status status = leveldb::DB::Open(options, path.string(), &pdb);
-    dbwrapper_private::HandleError(status);
+    dbwrapper_private::HandleError(status, path.string());
     LOGA("Opened LevelDB successfully\n");
 
     // The base-case obfuscation key, which is a noop.
@@ -187,15 +187,15 @@ void CDBIterator::SeekToFirst() { piter->SeekToFirst(); }
 void CDBIterator::Next() { piter->Next(); }
 namespace dbwrapper_private
 {
-void HandleError(const leveldb::Status &status)
+void HandleError(const leveldb::Status &status, const std::string &path)
 {
     if (status.ok())
         return;
-    LOGA("%s\n", status.ToString());
+    LOGA("%s at DB %s\n", status.ToString(), path);
     if (status.IsCorruption())
-        throw dbwrapper_error("Database corrupted");
+        throw dbwrapper_error(tfm::format("Database corrupted at %s", path));
     if (status.IsIOError())
-        throw dbwrapper_error("Database I/O error");
+        throw dbwrapper_error(tfm::format("Database I/O error at %s", path));
     if (status.IsNotFound())
         throw dbwrapper_error("Database entry missing");
     throw dbwrapper_error("Unknown database error");

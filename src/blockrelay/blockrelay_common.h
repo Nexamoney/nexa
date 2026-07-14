@@ -42,7 +42,7 @@ public:
 
     // put a cap on the total number of thin type blocks we can have in flight. This lowers any possible
     // attack surface.
-    size_t MAX_THINTYPE_BLOCKS_IN_FLIGHT = 6;
+    size_t MAX_THINTYPE_BLOCKS_IN_FLIGHT = 50;
 
 private:
     // block relay timer

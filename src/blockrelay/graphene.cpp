@@ -796,10 +796,11 @@ static bool ReconstructBlock(CNode *pfrom,
         {
             uint64_t nBlockBytes = pblock->nCurrentBlockSize;
             thinrelay.ClearAllBlockData(pfrom, grapheneBlock->header.GetHash());
-            pfrom->fDisconnect = true;
-            return error(
+            std::string err = tfm::format(
                 "Reconstructed block %s (size:%llu) has caused max memory limit %llu bytes to be exceeded, peer=%s",
                 pblock->GetHash().ToString(), nBlockBytes, thinrelay.GetMaxAllowedBlockSize(), pfrom->GetLogName());
+            pfrom->CloseSocketDisconnect(err);
+            return error("%s", err);
         }
     }
 
@@ -1701,7 +1702,7 @@ std::vector<CTransaction> TransactionsFromBlockByCheapHash(std::set<uint64_t> &v
         CBlockIndex *hdr = LookupBlockIndex(blockhash);
         if (!hdr)
         {
-            dosMan.Misbehaving(pfrom, 20, BanReasonNotInBlockIndex);
+            // The block might be a subblock we've released, so this is not unexpected (do not punish the node)
             throw std::runtime_error("Requested block is not available");
         }
         pblock = ReadBlockFromDisk(hdr, consensusParams);

@@ -655,10 +655,11 @@ static bool ReconstructBlock(CNode *pfrom,
         {
             uint64_t nBlockBytes = pblock->nCurrentBlockSize;
             thinrelay.ClearAllBlockData(pfrom, pblock->GetHash());
-            pfrom->fDisconnect = true;
-            return error("Reconstructed block %s (size:%llu) has caused max memory limit %llu bytes to be "
-                         "exceeded, peer=%s",
+            std::string err = tfm::format("CompactBlock: Reconstructed block %s (size:%llu) has caused max memory "
+                                          "limit %llu bytes to be exceeded, peer=%s",
                 pblock->GetHash().ToString(), nBlockBytes, thinrelay.GetMaxAllowedBlockSize(), pfrom->GetLogName());
+            pfrom->CloseSocketDisconnect(err);
+            return error("%s", err);
         }
 
         // Add this transaction. If the tx is null we still add it as a placeholder to keep the correct
