@@ -928,8 +928,11 @@ bool CTailstormGrove::GetBestDag(std::set<CTreeNodeRef> &dag,
         for (auto it = vSortedDag.begin(); it != vSortedDag.end(); it++)
         {
             const CTreeNodeRef &node = it->second;
-
-
+            if (node->fProcessed != true)
+            {
+                LOG(DAG, "%s: cannot complete; all subblocks are not processed", __func__);
+                return false; // we cannot use this Dag until we process it fully
+            }
             dag.insert(node);
             if (dag.size() == nNumSubblocksToReturn)
                 break;
@@ -1576,8 +1579,12 @@ bool CTailstormForest::GetBestDagFor(const uint256 &hash,
     {
         if (!grove->GetBestDag(dag, vDoubleSpendTxns, mapInputs))
         {
-            LOG(DAG, "%s(): get best dag returned false", __func__);
-            return false;
+            tailstormForest.ReGenerateDagData(grove);
+            if (!grove->GetBestDag(dag, vDoubleSpendTxns, mapInputs))
+            {
+                LOG(DAG, "%s(): get best dag returned false", __func__);
+                return false;
+            }
         }
         // LOG(DAG, "%s(): got grove and returning best dag", __func__);
         //  for (auto item : dag)
@@ -1807,6 +1814,8 @@ void CTailstormForest::CheckForReorg()
     CBlockIndex *pindexMostWork = chainTip;
     arith_uint256 nChainTipWork = chainTip->chainWork();
     arith_uint256 nMaxChainWork = chainTip->chainWork();
+    auto tailstorm_k = Params().GetConsensus().tailstorm_k;
+
 
     LOG(DAG, "%s(): current chain active height %ld for %s", __func__, chainTip->height(),
         chainTip->phashBlock->ToString());
@@ -1823,10 +1832,12 @@ void CTailstormForest::CheckForReorg()
         // The chainwork includes "all" subblocks for the full dag, so uncles as well as dag blocks.
         std::set<CTreeNodeRef> tipdag;
         GetFullDagFor(*chainTip->phashBlock, tipdag);
+        unsigned int subblockCount = 0;
         for (auto node : tipdag)
         {
             nChainTipWork += GetWorkForDifficultyBits(node->subblock->nBits);
         }
+        LOG(DAG, "%s: current active chain and dag work: %s", __func__, nChainTipWork.ToString());
 
         // Create a map of unlinked nodes stored by their "potential" grove node summary root hash.
         std::map<uint256, std::set<CTreeNodeRef> > mapUnlinkedGroves;
@@ -1848,27 +1859,45 @@ void CTailstormForest::CheckForReorg()
             arith_uint256 nTreeChainWork = pindexSummaryRoot->chainWork();
             std::set<CTreeNodeRef> dag;
             GetFullDagFor(grove->roothash, dag);
+            // Add work for every subblock we know about, but no more than will fit in a summary block.
+            // This way a fork with extra subblocks will not have more work than a fork with the correct number
+            // of subblocks + a summary block
             for (auto node : dag)
             {
                 nTreeChainWork += GetWorkForDifficultyBits(node->subblock->nBits);
+                subblockCount++;
+                if (subblockCount == tailstorm_k - 1)
+                    break;
             }
             for (auto &mi : mapUnlinkedGroves)
             {
+                if (subblockCount == tailstorm_k - 1)
+                    break;
                 if (mi.first == grove->roothash)
                 {
                     for (auto &si : mi.second)
                         nTreeChainWork += GetWorkForDifficultyBits(si->subblock->nBits);
+                    if (subblockCount == tailstorm_k - 1)
+                        break;
                 }
             }
 
             if (nTreeChainWork > nMaxChainWork && nTreeChainWork > nChainTipWork)
             {
                 nMaxChainWork = nTreeChainWork;
-                pindexMostWork = pindexSummaryRoot;
                 grovetip = grove;
 
-                LOG(DAG, "%s : pindexMostWork %s > chaintip %s\n", __func__, pindexMostWork->phashBlock->ToString(),
-                    chainTip->phashBlock->ToString());
+                if (pindexMostWork != pindexSummaryRoot)
+                {
+                    LOG(DAG, "%s : switching summary block: pindexMostWork %s > chaintip %s\n", __func__,
+                        pindexMostWork->phashBlock->ToString(), chainTip->phashBlock->ToString());
+                    pindexMostWork = pindexSummaryRoot;
+                }
+                else
+                {
+                    LOG(DAG, "%s : switching grove tip to: %s with work %x\n", __func__, grovetip->id().ToString(),
+                        nMaxChainWork.ToString());
+                }
             }
         }
 
@@ -1917,10 +1946,11 @@ void CTailstormForest::CheckForReorg()
         }
     }
 
-
-    // Initiate reorg if there is a tree with greater work on another fork
     const CBlockIndex *pindexFork = chainActive.FindFork(pindexMostWork);
-    if ((nMaxChainWork > nChainTipWork) && (chainTip != pindexFork))
+    // Initiate reorg if there is a tree with greater work on another fork
+    if (((nMaxChainWork > nChainTipWork) && (chainTip != pindexFork)) ||
+        // Or just move forward if the next summary block on this chain is ready
+        ((chainTip == pindexFork) && (pindexMostWork->GetHeight() == chainTip->GetHeight() + 1)))
     {
         LOG(DAG, "%s(): Attempting to initiate a reorg from %s at height %d to %s at height %d", __func__,
             chainTip->phashBlock->ToString(), chainTip->height(), pindexMostWork->phashBlock->ToString(),
