@@ -928,14 +928,14 @@ bool CTailstormGrove::GetBestDag(std::set<CTreeNodeRef> &dag,
         for (auto it = vSortedDag.begin(); it != vSortedDag.end(); it++)
         {
             const CTreeNodeRef &node = it->second;
-            if (node->fProcessed != true)
+            // Note that a descendant subblock can never be processed if its ancestors are not processed,
+            // so we do not neet to worry about having a gap in the best dag.
+            if (node->fProcessed)
             {
-                LOG(DAG, "%s: cannot complete; all subblocks are not processed", __func__);
-                return false; // we cannot use this Dag until we process it fully
+                dag.insert(node);
+                if (dag.size() == nNumSubblocksToReturn)
+                    break;
             }
-            dag.insert(node);
-            if (dag.size() == nNumSubblocksToReturn)
-                break;
         }
     }
 
@@ -1579,12 +1579,8 @@ bool CTailstormForest::GetBestDagFor(const uint256 &hash,
     {
         if (!grove->GetBestDag(dag, vDoubleSpendTxns, mapInputs))
         {
-            tailstormForest.ReGenerateDagData(grove);
-            if (!grove->GetBestDag(dag, vDoubleSpendTxns, mapInputs))
-            {
-                LOG(DAG, "%s(): get best dag returned false", __func__);
-                return false;
-            }
+            LOG(DAG, "%s(): get best dag returned false", __func__);
+            return false;
         }
         // LOG(DAG, "%s(): got grove and returning best dag", __func__);
         //  for (auto item : dag)
@@ -1993,6 +1989,13 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
 
     auto chainparams = Params();
     auto &tree = grove->tree;
+
+    if (tree->dag.size() == 0)
+        return; // Nothing to do
+    // Ensure that we only regenerate DAGs that extend the current chain tip
+    CBlockIndex *chainTip = chainActive.Tip();
+    auto treenode = tree->dag.begin()->second;
+    DbgAssert(treenode->subblock->hashPrevBlock == chainTip->GetHash(), return);
 
     while (true)
     {
