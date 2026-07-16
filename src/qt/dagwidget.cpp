@@ -1252,14 +1252,11 @@ void DagWidget::AddItem(uint256 hash,
     if (xCenterView >= xCenter || mapInfo.size() <= 2)
     {
         xCenter = xCenterView;
-        if (IsChainSyncd())
+        view->setSceneRect(xStartView, 0 - pEnd.y(), DEFAULT_WIDTH_OF_VIEW, pEnd.y() * 2);
+        if (!pSelected && !fPause)
         {
-            view->setSceneRect(xStartView, 0 - pEnd.y(), DEFAULT_WIDTH_OF_VIEW, pEnd.y() * 2);
-            if (!pSelected && !fPause)
-            {
-                view->centerOn(xCenter, 0);
-                view->horizontalScrollBar()->setSliderPosition(view->horizontalScrollBar()->maximum());
-            }
+            view->centerOn(xCenter, 0);
+            view->horizontalScrollBar()->setSliderPosition(view->horizontalScrollBar()->maximum());
         }
     }
 
