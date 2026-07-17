@@ -137,12 +137,12 @@ void CRequestManager::cleanup(const CInv &inv)
 
 
 // Get this object from somewhere, asynchronously.
-void CRequestManager::AskFor(const CInv &obj, CNode *from)
+void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
 {
     // LOG(REQ, "ReqMgr: Ask for %s.\n", obj.ToString().c_str());
 
     CNodeRef noderef(from);
-    if (obj.type == MSG_TX)
+    if (obj.type == MSG_TX && objType == objType::TXN)
     {
         // Limit the  number of times we update this value so we don't have to take the lock
         // in the mempool so often. Doing this just a few times a second is ample accuracy.
@@ -168,6 +168,7 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from)
         OdMap::iterator &item = result.first;
         CUnknownObj &data = item->second;
         data.obj = obj;
+        data.objType = objType;
 
         // Then add another source.  A new souce would be added even
         // if this object already existed in mapTxnToAdd.  This could happen
@@ -180,7 +181,7 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from)
             pendingTxns += 1;
         }
     }
-    else if (IsBlockType(obj))
+    else if (IsBlockType(obj) && (objType == objType::BLOCK || objType == objType::SUBBLOCK))
     {
         // Don't allow the in flight requests to grow unbounded.
         if (mapBlkInfo.size() > DEFAULT_BLOCK_DOWNLOAD_WINDOW * 2)
@@ -194,6 +195,7 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from)
         OdMap::iterator &item = result.first;
         CUnknownObj &data = item->second;
         data.obj = obj;
+        data.objType = objType;
 
         // Then add another source.  A new souce would be added even
         // if this object already existed in mapBlkToAdd.  This could happen
@@ -217,11 +219,11 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from)
 }
 
 // Get these objects from somewhere, asynchronously.
-void CRequestManager::AskFor(const std::vector<CInv> &objArray, CNode *from)
+void CRequestManager::AskFor(const std::vector<CInv> &objArray, CNode *from, int objType)
 {
     for (auto &inv : objArray)
     {
-        AskFor(inv, from);
+        AskFor(inv, from, objType);
     }
 }
 
@@ -230,7 +232,7 @@ void CRequestManager::AskForDuringIBD(const std::vector<CInv> &objArray, CNode *
     // This is block and peer that was selected in FindNextBlocksToDownload() so we want to add it as a block
     // source first so that it gets requested first.
     if (from)
-        AskFor(objArray, from);
+        AskFor(objArray, from, objType::BLOCK);
 
     // We can't hold cs_vNodes in the for loop below because it is out of order with cs_objDownloader which is
     // taken in ProcessBlockAvailability.  We can't take cs_objDownloader earlier because it deadlocks with the
@@ -268,7 +270,7 @@ void CRequestManager::AskForDuringIBD(const std::vector<CInv> &objArray, CNode *
             if (state->pindexBestKnownBlock != nullptr &&
                 state->pindexBestKnownBlock->chainWork() > chainActive.Tip()->chainWork())
             {
-                AskFor(objArray, pnode);
+                AskFor(objArray, pnode, objType::BLOCK);
             }
         }
         pnode->Release(); // Release the refs we took
@@ -599,7 +601,7 @@ static bool IsGrapheneVersionSupported(CNode *pfrom)
     }
 }
 
-bool CRequestManager::RequestBlock(CNode *pfrom, CInv &obj)
+bool CRequestManager::RequestBlock(CNode *pfrom, CInv &obj, int blockType)
 {
     const uint256 &hash = obj.hash;
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
@@ -612,7 +614,7 @@ bool CRequestManager::RequestBlock(CNode *pfrom, CInv &obj)
         {
             if (thinrelay.AddBlockInFlight(pfrom, hash, NetMsgType::GRAPHENEBLOCK))
             {
-                MarkBlockAsInFlight(pfrom->GetId(), hash);
+                MarkBlockAsInFlight(pfrom->GetId(), hash, blockType);
 
                 // Instead of building a bloom filter here as we would for an xthin, we actually
                 // just need to fill in CMempoolInfo
@@ -646,7 +648,7 @@ bool CRequestManager::RequestBlock(CNode *pfrom, CInv &obj)
         {
             if (thinrelay.AddBlockInFlight(pfrom, hash, NetMsgType::XTHINBLOCK))
             {
-                MarkBlockAsInFlight(pfrom->GetId(), hash);
+                MarkBlockAsInFlight(pfrom->GetId(), hash, blockType);
 
                 CBloomFilter filterMemPool;
                 std::vector<uint256> vOrphanHashes;
@@ -680,7 +682,7 @@ bool CRequestManager::RequestBlock(CNode *pfrom, CInv &obj)
         {
             if (thinrelay.AddBlockInFlight(pfrom, hash, NetMsgType::CMPCTBLOCK))
             {
-                MarkBlockAsInFlight(pfrom->GetId(), hash);
+                MarkBlockAsInFlight(pfrom->GetId(), hash, blockType);
 
                 if (pfrom->fPeerWantsINV2)
                 {
@@ -712,7 +714,7 @@ bool CRequestManager::RequestBlock(CNode *pfrom, CInv &obj)
             CInv2 invType2(MSG_BLOCK, hash);
             vToFetch.push_back(invType2);
 
-            MarkBlockAsInFlight(pfrom->GetId(), hash);
+            MarkBlockAsInFlight(pfrom->GetId(), hash, blockType);
             pfrom->PushMessageWithCookie(NetMsgType::GETDATA, getCookie(), vToFetch);
             LOG(THIN | GRAPHENE | CMPCT, "Requesting Regular Block %s from peer %s\n", hash.ToString(),
                 pfrom->GetLogName());
@@ -723,7 +725,7 @@ bool CRequestManager::RequestBlock(CNode *pfrom, CInv &obj)
             CInv inv(MSG_BLOCK, hash);
             vToFetch.push_back(inv);
 
-            MarkBlockAsInFlight(pfrom->GetId(), hash);
+            MarkBlockAsInFlight(pfrom->GetId(), hash, blockType);
             pfrom->PushMessageWithCookie(NetMsgType::GETDATA, getCookie(), vToFetch);
             LOG(THIN | GRAPHENE | CMPCT, "Requesting Regular Block %s from peer %s\n", hash.ToString(),
                 pfrom->GetLogName());
@@ -829,8 +831,9 @@ void CRequestManager::SendRequests()
     // asking for one at time. We can do this because there will be no XTHIN requests possible during
     // this time.
     bool fBatchBlockRequests = IsInitialBlockDownload();
-    std::map<CNodeRef, std::map<int64_t, CInv, std::less<int64_t> >, CompareIteratorByNodeRef> mapBatchBlockRequests;
-    std::map<CNodeRef, std::map<int64_t, CInv2, std::less<int64_t> >, CompareIteratorByNodeRef>
+    std::map<CNodeRef, std::map<int64_t, RequestBlock1, std::less<int64_t> >, CompareIteratorByNodeRef>
+        mapBatchBlockRequests;
+    std::map<CNodeRef, std::map<int64_t, RequestBlock2, std::less<int64_t> >, CompareIteratorByNodeRef>
         mapBatchBlockRequestsInv2;
 
     // Get new block requests
@@ -940,13 +943,19 @@ void CRequestManager::SendRequests()
                     if (fBatchBlockRequests)
                     {
                         if (next.noderef.get()->fPeerWantsINV2)
-                            mapBatchBlockRequestsInv2[next.noderef].emplace(item.nEntryTime, CInv2(obj.type, obj.hash));
+                        {
+                            RequestBlock2 request = {CInv2(obj.type, obj.hash), item.objType};
+                            mapBatchBlockRequestsInv2[next.noderef].emplace(item.nEntryTime, request);
+                        }
                         else
-                            mapBatchBlockRequests[next.noderef].emplace(item.nEntryTime, obj);
+                        {
+                            RequestBlock1 request = {CInv(obj.type, obj.hash), item.objType};
+                            mapBatchBlockRequests[next.noderef].emplace(item.nEntryTime, request);
+                        }
                     }
                     else
                     {
-                        fReqBlkResult = RequestBlock(next.noderef.get(), obj);
+                        fReqBlkResult = RequestBlock(next.noderef.get(), obj, item.objType);
 
                         if (!fReqBlkResult)
                         {
@@ -1002,9 +1011,10 @@ void CRequestManager::SendRequests()
                 std::vector<CInv> vInv;
                 for (auto mi : iter.second)
                 {
-                    const uint256 &hash = mi.second.hash;
-                    MarkBlockAsInFlight(iter.first.get()->GetId(), hash);
-                    vInv.push_back(mi.second);
+                    const uint256 &hash = mi.second.inv.hash;
+                    // TODO need to store block type in the mapbatchblockrequests and then use it here.
+                    MarkBlockAsInFlight(iter.first.get()->GetId(), hash, mi.second.blockType);
+                    vInv.push_back(mi.second.inv);
                 }
                 iter.first.get()->PushMessageWithCookie(NetMsgType::GETDATA, getCookie(), vInv);
                 LOG(REQ, "Sent batched request with %d blocks to node %s\n", vInv.size(),
@@ -1021,9 +1031,9 @@ void CRequestManager::SendRequests()
                 std::vector<CInv2> vInv;
                 for (auto mi : iter.second)
                 {
-                    const uint256 &hash = mi.second.hash;
-                    MarkBlockAsInFlight(iter.first.get()->GetId(), hash);
-                    vInv.push_back(mi.second);
+                    const uint256 &hash = mi.second.inv.hash;
+                    MarkBlockAsInFlight(iter.first.get()->GetId(), hash, mi.second.blockType);
+                    vInv.push_back(mi.second.inv);
                 }
                 iter.first.get()->PushMessageWithCookie(NetMsgType::GETDATA, getCookie(), vInv);
                 LOG(REQ, "Sent batched request with %d blocks to node %s\n", vInv.size(),
@@ -1378,7 +1388,7 @@ void CRequestManager::RequestNextBlocksToDownload(CNode *pto)
             vGetBlocks.swap(vToFetchNew);
             if (!IsInitialBlockDownload())
             {
-                AskFor(vGetBlocks, pto);
+                AskFor(vGetBlocks, pto, objType::BLOCK);
             }
             else
             {
@@ -1479,7 +1489,7 @@ void CRequestManager::FindNextBlocksToDownload(CNode *node, size_t count, std::v
                     mapBlocksInFlight.find(blockHash);
                 if (itInFlight != mapBlocksInFlight.end() && !itInFlight->second.count(nodeid))
                 {
-                    AskFor(CInv(MSG_BLOCK, blockHash), node); // Add another source
+                    AskFor(CInv(MSG_BLOCK, blockHash), node, objType::BLOCK); // Add another source
                     continue;
                 }
             }
@@ -1541,7 +1551,7 @@ void CRequestManager::RequestMempoolSync(CNode *pto)
 }
 
 // indicate whether we requested this block.
-void CRequestManager::MarkBlockAsInFlight(NodeId nodeid, const uint256 &hash)
+void CRequestManager::MarkBlockAsInFlight(NodeId nodeid, const uint256 &hash, int blockType)
 {
     // If started then clear the timers used for preferential downloading
     thinrelay.ClearBlockRelayTimer(hash);
@@ -1559,7 +1569,7 @@ void CRequestManager::MarkBlockAsInFlight(NodeId nodeid, const uint256 &hash)
 
         // Add queued block to nodestate and add iterator for queued block to mapBlocksInFlight
         int64_t nNow = GetStopwatchMicros();
-        QueuedBlock newentry = {hash, nNow};
+        QueuedBlock newentry = {hash, nNow, blockType};
         std::list<QueuedBlock>::iterator it2 = state->vBlocksInFlight.emplace(state->vBlocksInFlight.end(), newentry);
         mapBlocksInFlight[hash][nodeid] = it2;
 
@@ -1881,19 +1891,40 @@ void CRequestManager::DisconnectOnDownloadTimeout(CNode *pnode, const Consensus:
     // to unreasonably increase our timeout.
     LOCK(cs_objDownloader);
     NodeId nodeid = pnode->GetId();
-    if (!pnode->IsDisconnecting() && mapRequestManagerNodeState[nodeid].vBlocksInFlight.size() > 0)
+    auto &vBlocksInFlight = mapRequestManagerNodeState[nodeid].vBlocksInFlight;
+    if (!pnode->IsDisconnecting() && !vBlocksInFlight.empty())
     {
         if (nNow >
             mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince +
                 consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER))
         {
-            std::string err = tfm::format(
-                "Timeout downloading block %s from peer %s, disconnecting. Requested at %ld currently %ld diff %ld\n",
-                mapRequestManagerNodeState[nodeid].vBlocksInFlight.front().hash.ToString(), pnode->GetLogName(),
-                mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince, nNow,
-                nNow - mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince);
-            LOG(NET, "%s\n", err);
-            pnode->CloseSocketDisconnect(err);
+            // Look at the first item in the list.  Is it a block, if so, then initiate disconnect.
+            //
+            // If it's a subblock then remove it from the front and reset nDownloadingFromPeerSince
+            // to the next items value.
+            if (vBlocksInFlight.front().blockType == objType::BLOCK)
+            {
+                std::string err = tfm::format(
+                    "Timeout downloading block %s from peer %s, disconnecting. Requested at %ld currently %ld "
+                    "difference "
+                    "%ld\n",
+                    vBlocksInFlight.front().hash.ToString(), pnode->GetLogName(),
+                    mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince, nNow,
+                    nNow - mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince);
+                LOG(NET, "%s\n", err);
+                pnode->CloseSocketDisconnect(err);
+            }
+            else
+            {
+                // Delete the front item and reset the downloading time to the next items askFor() time.
+                // While the askFor() time is not exactly the time the request was initiated it should only be
+                // a matter of a few millseconds longer and is accurate enough for our needs.
+                vBlocksInFlight.pop_front();
+                if (!vBlocksInFlight.empty())
+                {
+                    mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince = vBlocksInFlight.front().nTime;
+                }
+            }
         }
     }
 }

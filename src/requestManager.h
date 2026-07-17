@@ -94,6 +94,13 @@ struct MatchCNodeRequestData
     inline bool operator()(const CNodeRequestData &nd) const { return nd.noderef->id == pnode->id; }
 };
 
+enum objType
+{
+    BLOCK = 1,
+    TXN = 2,
+    SUBBLOCK = 3
+};
+
 class CUnknownObj
 {
 public:
@@ -106,6 +113,7 @@ public:
     unsigned int outstandingReqs;
     ObjectSourceList availableFrom;
     int64_t nEntryTime;
+    int objType;
     CNodeRef prevRequestNode; // The last node we made a request from
 
     CUnknownObj()
@@ -116,6 +124,7 @@ public:
         outstandingReqs = 0;
         lastRequestTime = 0;
         nEntryTime = 0;
+        objType = 0;
     }
 
     bool AddSource(CNodeRef &noderef, const CInv &_obj); // returns true if the source did not already exist
@@ -126,7 +135,20 @@ struct QueuedBlock
 {
     uint256 hash;
     int64_t nTime; // Stopwatch time of "getdata" request in microseconds.
+    int blockType; // BLOCK or SUBBLOCK
 };
+
+struct RequestBlock1
+{
+    CInv inv;
+    int blockType; // BLOCK or SUBBLOCK
+};
+struct RequestBlock2
+{
+    CInv2 inv;
+    int blockType; // BLOCK or SUBBLOCK
+};
+
 struct CRequestManagerNodeState
 {
     // An ordered list of blocks currently in flight.  We could use mapBlocksInFlight to get the same
@@ -218,14 +240,16 @@ public:
      *  harder). We'll probably want to make this a per-peer adaptive value at some point. */
     std::atomic<unsigned int> BLOCK_DOWNLOAD_WINDOW{DEFAULT_BLOCK_DOWNLOAD_WINDOW};
 
-    // Request a single block.
-    bool RequestBlock(CNode *pfrom, CInv &obj);
+    // Request a single block passing in the inventory as well as the block type.  Block type
+    // will be either a objType::SUBBLOCK or objType::BLOCK and is needed to track the obj requests
+    // so that if there's a download timeout, only BLOCK requests will trigger it.
+    bool RequestBlock(CNode *pfrom, CInv &obj, int objType);
 
     // Get this object from somewhere, asynchronously.
-    void AskFor(const CInv &obj, CNode *from);
+    void AskFor(const CInv &obj, CNode *from, int objType);
 
     // Get these objects from somewhere, asynchronously.
-    void AskFor(const std::vector<CInv> &objArray, CNode *from);
+    void AskFor(const std::vector<CInv> &objArray, CNode *from, int objType);
 
     // Get these objects from somewhere, asynchronously during IBD. During IBD we must assume every peer connected
     // can give us the blocks we need and so we tell the request manager about these sources. Otherwise the request
@@ -311,7 +335,7 @@ public:
     void RequestMempoolSync(CNode *pto);
 
     // Returns a bool indicating whether we requested this block.
-    void MarkBlockAsInFlight(NodeId nodeid, const uint256 &hash);
+    void MarkBlockAsInFlight(NodeId nodeid, const uint256 &hash, int blockType);
 
     // Returns a bool if successful in indicating we received this block.
     bool MarkBlockAsReceived(const uint256 &hash, CNode *pnode);

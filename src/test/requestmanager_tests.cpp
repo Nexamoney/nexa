@@ -47,6 +47,16 @@ public:
     std::map<uint256, CUnknownObj> GetMapBlkInfo() { return _rman->mapBlkInfo; }
     std::set<uint256> GetSetDeleter() { return _rman->setDeleter; }
     std::set<uint256> GetSetBlockDeleter() { return _rman->setBlockDeleter; }
+    std::map<NodeId, CRequestManagerNodeState> GetNodeState() { return _rman->mapRequestManagerNodeState; }
+
+    void ClearNodeState(int id) { _rman->mapRequestManagerNodeState[id].vBlocksInFlight.clear(); }
+};
+
+// Used for accessing private data for a node
+class CResetDisconnectForTest
+{
+public:
+    void ResetDisconnect(CNode &node) { node.fDisconnect = false; }
 };
 
 // Cleanup all maps
@@ -209,23 +219,23 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddCompactBlockPeer(&dummyNodeCmpct);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeXthin.vSendMsg) == "get_xthin");
     thinrelay.ClearBlockRelayTimer(inv.hash);
     CleanupAll(vNodes);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeGraphene.vSendMsg) == "get_grblk");
     thinrelay.ClearBlockRelayTimer(inv.hash);
     CleanupAll(vNodes);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv_cmpct) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv_cmpct, objType::BLOCK) == true);
     // TODO: compact block requests are done through getdata and so can not be requested with priority.
     BOOST_CHECK(NetMessage(dummyNodeCmpct.vLowPrioritySendMsg) == "cmpctblock");
     thinrelay.ClearBlockRelayTimer(inv_cmpct.hash);
     CleanupAll(vNodes);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     // TODO: full block requests are done through getdata and so can not be requested with priority.
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -242,22 +252,22 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddCompactBlockPeer(&dummyNodeCmpct);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeXthin.vSendMsg) == "get_xthin");
     thinrelay.ClearBlockRelayTimer(inv.hash);
     CleanupAll(vNodes);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeGraphene.vSendMsg) == "get_grblk");
     thinrelay.ClearBlockRelayTimer(inv.hash);
     CleanupAll(vNodes);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv_cmpct) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv_cmpct, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeCmpct.vLowPrioritySendMsg) == "cmpctblock");
     thinrelay.ClearBlockRelayTimer(inv_cmpct.hash);
     CleanupAll(vNodes);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
     thinrelay.ClearBlockRelayTimer(inv.hash);
     CleanupAll(vNodes);
@@ -277,23 +287,23 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
 
     // This test would generally cause a request for a "get_xthin", however xthins is not on and
     // the timer is off which results in a full block request.
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeXthin.vLowPrioritySendMsg) == "getdata");
     thinrelay.ClearBlockRelayTimer(inv.hash);
     CleanupAll(vNodes);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeGraphene.vSendMsg) == "get_grblk");
     thinrelay.ClearBlockRelayTimer(inv.hash);
     CleanupAll(vNodes);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv_cmpct) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv_cmpct, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeCmpct.vLowPrioritySendMsg) == "cmpctblock");
     thinrelay.ClearBlockRelayTimer(inv_cmpct.hash);
     CleanupAll(vNodes);
 
     inv.type = MSG_BLOCK;
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
     thinrelay.ClearBlockRelayTimer(inv.hash);
     CleanupAll(vNodes);
@@ -309,13 +319,13 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddCompactBlockPeer(&dummyNodeCmpct);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeXthin.vLowPrioritySendMsg) == "getdata");
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeGraphene.vLowPrioritySendMsg) == "getdata");
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -328,7 +338,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetBoolArg("-use-compactblocks", false);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -346,7 +356,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeGraphene);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -360,7 +370,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetBoolArg("-use-compactblocks", false);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -374,7 +384,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetBoolArg("-use-compactblocks", true);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -389,7 +399,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeGraphene);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -404,7 +414,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeGraphene);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -419,7 +429,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeGraphene);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -434,7 +444,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeXthin);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -449,7 +459,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeXthin);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -464,7 +474,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeXthin);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -479,7 +489,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeXthin);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -494,7 +504,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetBoolArg("-use-compactblocks", false);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -508,7 +518,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetBoolArg("-use-compactblocks", true);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -522,7 +532,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetBoolArg("-use-compactblocks", true);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -536,7 +546,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetBoolArg("-use-compactblocks", false);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -551,7 +561,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeGraphene);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeGraphene.vSendMsg) == "get_grblk");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -566,7 +576,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeGraphene);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeGraphene.vSendMsg) == "get_grblk");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -581,7 +591,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeGraphene);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeGraphene.vSendMsg) == "get_grblk");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -595,7 +605,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeXthin);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeGraphene.vSendMsg) == "get_grblk");
 
     CleanupAll(vNodes);
@@ -609,7 +619,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeXthin);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeXthin.vSendMsg) == "get_xthin");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -623,7 +633,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddPeers(&dummyNodeXthin);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeXthin.vSendMsg) == "get_xthin");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -638,7 +648,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddCompactBlockPeer(&dummyNodeCmpct);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv_cmpct) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv_cmpct, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeCmpct.vLowPrioritySendMsg) == "cmpctblock");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -652,7 +662,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddCompactBlockPeer(&dummyNodeCmpct);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv_cmpct) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv_cmpct, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeCmpct.vLowPrioritySendMsg) == "cmpctblock");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -675,7 +685,7 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     thinrelay.AddCompactBlockPeer(&dummyNodeCmpct);
     thinrelay.AddPeers(&dummyNodeNone);
 
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -702,12 +712,12 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetMockTime(nTime);
 
     // The first request should fail but the xthin timer should be triggered
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == false);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == false);
 
     // Now move the clock ahead so that the timer is exceeded and we should now
     // download a full block
     SetMockTime(nTime + 20);
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -733,14 +743,14 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetMockTime(nTime);
 
     // The first request should fail but the timers should be triggered for graphene
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == false);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == false);
 
     // Now move the clock ahead so that the timer is exceeded and we should now
     // download a full block
     SetMockTime(nTime + 20);
     randhash = InsecureRand256();
     thinrelay.AddBlockInFlight(&dummyNodeGraphene, randhash, NetMsgType::GRAPHENEBLOCK);
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeGraphene.vLowPrioritySendMsg) == "getdata");
 
     CleanupAll(vNodes);
@@ -769,14 +779,14 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
 
     // The first request should succeed as should successive requests up until the limit of thintype requests in flight
     inv.hash = InsecureRand256();
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == true);
     BOOST_CHECK(dummyNodeGraphene.GetSendMsgSize() == 1);
 
     // Fill it up the rest of the way
     for (size_t i = 2; i < thinrelay.MAX_THINTYPE_BLOCKS_IN_FLIGHT; i++)
     {
         inv.hash = InsecureRand256();
-        BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == true);
+        BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == true);
         BOOST_CHECK(dummyNodeGraphene.GetSendMsgSize() == i);
     }
 
@@ -788,12 +798,12 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
         dummyNodeXthin.vSendMsg.clear();
     }
     inv.hash = InsecureRand256();
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv, objType::BLOCK) == true);
     BOOST_CHECK(dummyNodeXthin.GetSendMsgSize() == 1);
 
     // Try to send another block. It should fail to send as it's above the limit of thintype blocks in flight.
     inv.hash = InsecureRand256();
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv) == false);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeGraphene, inv, objType::BLOCK) == false);
     BOOST_CHECK(dummyNodeGraphene.GetSendMsgSize() == thinrelay.MAX_THINTYPE_BLOCKS_IN_FLIGHT - 1);
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -817,12 +827,12 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetMockTime(nTime);
 
     // The first request should fail but the timers should be triggered for xthin
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == false);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == false);
 
     // Now move the clock ahead so that the timer is exceeded and we should now
     // download a full block
     SetMockTime(nTime + 20);
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeXthin.vLowPrioritySendMsg) == "getdata");
 
     thinrelay.ClearBlockRelayTimer(inv.hash);
@@ -847,14 +857,14 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetMockTime(nTime);
 
     // The first request should fail but the timers should be triggered for xthin
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == false);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == false);
 
     // Now move the clock ahead so that the timer is exceeded and we should now
     // download a full block
     SetMockTime(nTime + 20);
     randhash = InsecureRand256();
     thinrelay.AddBlockInFlight(&dummyNodeXthin, randhash, NetMsgType::XTHINBLOCK);
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeXthin, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeXthin.vLowPrioritySendMsg) == "getdata");
 
 
@@ -883,24 +893,172 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     SetMockTime(nTime);
 
     // The first request should fail but the timers should be triggered for cmpctblock
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv) == false);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeNone, inv, objType::BLOCK) == false);
 
     // Now move the clock ahead so that the timer is exceeded and we should now
     // download a full block
     SetMockTime(nTime + 20);
     randhash = InsecureRand256();
     thinrelay.AddBlockInFlight(&dummyNodeCmpct, randhash, NetMsgType::CMPCTBLOCK);
-    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv) == true);
+    BOOST_CHECK(requester.RequestBlock(&dummyNodeCmpct, inv, objType::BLOCK) == true);
     BOOST_CHECK(NetMessage(dummyNodeCmpct.vLowPrioritySendMsg) == "getdata");
 
-
     thinrelay.ClearBlockRelayTimer(inv.hash);
+    ClearThinBlocksInFlight(dummyNodeNone, inv);
+    requester.MapBlocksInFlightClear();
+    thinrelay.RemovePeers(&dummyNodeNone);
     CleanupAll(vNodes);
+
+    /******************************
+     * Check for block download timeouts from both Full blocks and Subblocks as well as a mix of the two
+     */
+
+    // Chains IS sync'd: No graphene nodes, No Thinblock nodes, No Cmpct nodes, Thinblocks OFF, Graphene OFF, CMPCT OFF
+    IsChainNearlySyncdSet(true);
+    SetBoolArg("-use-grapheneblocks", false);
+    SetBoolArg("-use-thinblocks", false);
+    SetBoolArg("-use-compactblocks", false);
+    thinrelay.AddPeers(&dummyNodeNone);
+
+    CRequestManager rman;
+    CRequestManagerTest rman_access(&rman);
+    std::map<NodeId, CRequestManagerNodeState> RmanNodeState = rman_access.GetNodeState();
+
+    uint256 hash_block = GetRandHash();
+    CInv inv_block(MSG_BLOCK, hash_block);
+    rman.InitializeNodeState(dummyNodeNone.GetId());
+
+    // make a new block request and check for proper disconnect timeout
+    rman.AskFor(inv_block, &dummyNodeNone, objType::BLOCK);
+    BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block, objType::BLOCK) == true);
+    BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
+
+    auto consensusParams = Params().GetConsensus();
+    int64_t nNow = GetStopwatchMicros();
+    int64_t nNewMocktime = nNow / 1000000;
+    SetMockTime(nNewMocktime);
+    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+
+    // Set the mocktime to the download timeout limit and the node should not disconnect.
+    nNewMocktime +=
+        ((consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER)) /
+            1000000);
+    SetMockTime(nNewMocktime);
+    nNow = nNewMocktime * 1000000;
+    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+
+
+    // Set the mocktime to beyond the download timeout and the node should disconnect.
+    nNewMocktime +=
+        ((consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER) +
+             1000000) /
+            1000000);
+    SetMockTime(nNewMocktime);
+    nNow = nNewMocktime * 1000000;
+    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+    BOOST_CHECK(dummyNodeNone.IsDisconnecting()); // node should now be disconnected
+
+
+    // Check disconnect timeout for a subblock only
+    CResetDisconnectForTest resetnode;
+    resetnode.ResetDisconnect(dummyNodeNone);
+    rman_access.ClearNodeState(dummyNodeNone.GetId());
+    rman.MapBlocksInFlightClear();
+
+    // make a new SUBBLOCK request and check for proper disconnect timeout
+    rman.AskFor(inv_block, &dummyNodeNone, objType::SUBBLOCK);
+    BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block, objType::SUBBLOCK) == true);
+    BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
+    RmanNodeState = rman_access.GetNodeState();
+    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
+
+    nNow = GetStopwatchMicros();
+    nNewMocktime = nNow / 1000000;
+    SetMockTime(nNewMocktime);
+    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+
+    // Set the mocktime to the download timeout limit and the node should not disconnect.
+    nNewMocktime +=
+        ((consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER)) /
+            1000000);
+    SetMockTime(nNewMocktime);
+    nNow = nNewMocktime * 1000000;
+    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+    RmanNodeState = rman_access.GetNodeState();
+    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
+
+    // Set the mocktime to beyond the download timeout and the node should disconnect.
+    nNewMocktime +=
+        ((consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER) +
+             1000000) /
+            1000000);
+    SetMockTime(nNewMocktime);
+    nNow = nNewMocktime * 1000000;
+    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+    // After checking the node for a disconnect the subblock should have been removed from the
+    // list since it was over the limit, even though a disconnect was not issued.
+    RmanNodeState = rman_access.GetNodeState();
+    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 0);
+    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+
+
+    // Check disconnect timeout for a subblock followed by a full block
+    //
+    // make a new BLOCK request which follows the last subblock request. We should now have
+    // two items in the queued request list with the subblock coming first and the block second.
+    resetnode.ResetDisconnect(dummyNodeNone);
+    rman_access.ClearNodeState(dummyNodeNone.GetId());
+    rman.MapBlocksInFlightClear();
+
+    rman.AskFor(inv_block, &dummyNodeNone, objType::SUBBLOCK);
+    BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block, objType::SUBBLOCK) == true);
+    BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
+    RmanNodeState = rman_access.GetNodeState();
+    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
+
+    uint256 hash_block2 = GetRandHash();
+    CInv inv_block2(MSG_BLOCK, hash_block2);
+    nNewMocktime += 10;
+    SetMockTime(nNewMocktime);
+    rman.AskFor(inv_block2, &dummyNodeNone, objType::BLOCK);
+    BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block2, objType::BLOCK) == true);
+    BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
+
+    RmanNodeState = rman_access.GetNodeState();
+    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 2);
+
+
+    // Set the mocktime to beyond the download timeout and the node should NOT disconnect because
+    // the first block in the list is a subblock. This subblock however, should now have been removed
+    // from the list so that the next time we check we'll get the BLOCK at the top of the list.
+    nNewMocktime +=
+        ((consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER) +
+             1000000 * 11) /
+            1000000);
+    SetMockTime(nNewMocktime);
+    nNow = nNewMocktime * 1000000;
+    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+    // After checking the node for a disconnect the subblock should have been removed from the
+    // list since it was over the limit, even though a disconnect was not issued.
+    RmanNodeState = rman_access.GetNodeState();
+    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
+    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+
+    // Run the disconnect logic the second time and we should trigger the disconnect
+    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+    RmanNodeState = rman_access.GetNodeState();
+    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
+    BOOST_CHECK(dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
 
 
     // Final cleanup: Unset mocktime
     SetMockTime(0);
     requester.MapBlocksInFlightClear();
+    CleanupAll(vNodes);
 
     // remove from vNodes
     vNodes.erase(remove(vNodes.begin(), vNodes.end(), &dummyNodeGraphene), vNodes.end());
@@ -945,7 +1103,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     CInv inv_txn(MSG_TX, hash_txn);
 
     // make a new transaction request2. There should be one item in mapTxnToAdd and 3 sources
-    rman.AskFor(inv_txn, dummyNode1);
+    rman.AskFor(inv_txn, dummyNode1, objType::TXN);
     mapTxnToAdd = rman_access.GetMapTxnToAdd();
     setDeleter = rman_access.GetSetDeleter();
     mapTxnInfo = rman_access.GetMapTxnInfo();
@@ -954,7 +1112,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(setDeleter.count(inv_txn.hash), 0);
     BOOST_CHECK_EQUAL(mapTxnInfo.size(), 0);
 
-    rman.AskFor(inv_txn, dummyNode2);
+    rman.AskFor(inv_txn, dummyNode2, objType::TXN);
     mapTxnToAdd = rman_access.GetMapTxnToAdd();
     setDeleter = rman_access.GetSetDeleter();
     mapTxnInfo = rman_access.GetMapTxnInfo();
@@ -963,7 +1121,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(setDeleter.count(inv_txn.hash), 0);
     BOOST_CHECK_EQUAL(mapTxnInfo.size(), 0);
 
-    rman.AskFor(inv_txn, dummyNode3);
+    rman.AskFor(inv_txn, dummyNode3, objType::TXN);
     mapTxnToAdd = rman_access.GetMapTxnToAdd();
     setDeleter = rman_access.GetSetDeleter();
     mapTxnInfo = rman_access.GetMapTxnInfo();
@@ -972,7 +1130,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(setDeleter.count(inv_txn.hash), 0);
     BOOST_CHECK_EQUAL(mapTxnInfo.size(), 0);
 
-    rman.AskFor(inv_txn, dummyNode4);
+    rman.AskFor(inv_txn, dummyNode4, objType::TXN);
     mapTxnToAdd = rman_access.GetMapTxnToAdd();
     mapTxnInfo = rman_access.GetMapTxnInfo();
     setDeleter = rman_access.GetSetDeleter();
@@ -1004,7 +1162,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     // Add another new request so that both mapTxnInfo and mapTxnToAdd have entries
     uint256 hash_txn2 = GetRandHash();
     CInv inv_txn2(MSG_TX, hash_txn2);
-    rman.AskFor(inv_txn2, dummyNode3);
+    rman.AskFor(inv_txn2, dummyNode3, objType::TXN);
     mapTxnInfo = rman_access.GetMapTxnInfo();
     mapTxnToAdd = rman_access.GetMapTxnToAdd();
     BOOST_CHECK_EQUAL(mapTxnToAdd.size(), 1);
@@ -1032,7 +1190,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     // Make a new request and push it to mapTxnInfo
     uint256 hash_txn3 = GetRandHash();
     CInv inv_txn3(MSG_TX, hash_txn3);
-    rman.AskFor(inv_txn3, dummyNode1);
+    rman.AskFor(inv_txn3, dummyNode1, objType::TXN);
     mapTmp.clear();
     rman.GetTxnRequests(mapTmp);
     rman.CheckIfNewSource(mapTmp, mapTxnInfo);
@@ -1043,7 +1201,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(mapTxnInfo.size(), 1);
     BOOST_CHECK_EQUAL(mapTxnInfo[inv_txn3.hash].availableFrom.size(), 1);
 
-    rman.AskFor(inv_txn3, dummyNode2);
+    rman.AskFor(inv_txn3, dummyNode2, objType::TXN);
     mapTmp.clear();
     rman.GetTxnRequests(mapTmp);
     mapTxnInfo = rman_access.GetMapTxnInfo();
@@ -1054,7 +1212,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(mapTxnInfo.size(), 1);
     BOOST_CHECK_EQUAL(mapTxnInfo[inv_txn3.hash].availableFrom.size(), 2);
 
-    rman.AskFor(inv_txn3, dummyNode3);
+    rman.AskFor(inv_txn3, dummyNode3, objType::TXN);
     mapTmp.clear();
     rman.GetTxnRequests(mapTmp);
     rman.CheckIfNewSource(mapTmp, mapTxnInfo);
@@ -1064,7 +1222,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(mapTxnInfo.size(), 1);
     BOOST_CHECK_EQUAL(mapTxnInfo[inv_txn3.hash].availableFrom.size(), 3);
 
-    rman.AskFor(inv_txn3, dummyNode4);
+    rman.AskFor(inv_txn3, dummyNode4, objType::TXN);
     mapTmp.clear();
     rman.GetTxnRequests(mapTmp);
     rman.CheckIfNewSource(mapTmp, mapTxnInfo);
@@ -1079,7 +1237,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     CInv inv_block(MSG_BLOCK, hash_block);
 
     // make a new transaction request. There should be one item in mapTxnToAdd.
-    rman.AskFor(inv_block, dummyNode1);
+    rman.AskFor(inv_block, dummyNode1, objType::BLOCK);
     mapBlkToAdd = rman_access.GetMapBlkToAdd();
     setBlockDeleter = rman_access.GetSetBlockDeleter();
     BOOST_CHECK_EQUAL(mapBlkToAdd[inv_block.hash].availableFrom.size(), 1);
@@ -1115,7 +1273,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(mapBlkInfo.size(), 0);
 
     /** Test multiple requests for same block from different peers */
-    rman.AskFor(inv_block, dummyNode1);
+    rman.AskFor(inv_block, dummyNode1, objType::BLOCK);
     mapBlkToAdd = rman_access.GetMapBlkToAdd();
     setBlockDeleter = rman_access.GetSetBlockDeleter();
     BOOST_CHECK_EQUAL(mapBlkToAdd[inv_block.hash].availableFrom.size(), 1);
@@ -1125,7 +1283,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
 
     // blocks are handled differently than transactions. A new source should have been added.
     rman.ProcessingBlock(inv_block.hash, dummyNode1);
-    rman.AskFor(inv_block, dummyNode2);
+    rman.AskFor(inv_block, dummyNode2, objType::BLOCK);
     mapBlkToAdd = rman_access.GetMapBlkToAdd();
     setBlockDeleter = rman_access.GetSetBlockDeleter();
     BOOST_CHECK_EQUAL(mapBlkToAdd.size(), 1);
@@ -1134,7 +1292,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(mapBlkInfo.size(), 0);
 
     // Add multiple new sources.  For blocks it should be possible, for transactions there is a limit of 3
-    rman.AskFor(inv_block, dummyNode3);
+    rman.AskFor(inv_block, dummyNode3, objType::BLOCK);
     mapBlkToAdd = rman_access.GetMapBlkToAdd();
     setBlockDeleter = rman_access.GetSetBlockDeleter();
     BOOST_CHECK_EQUAL(mapBlkToAdd.size(), 1);
@@ -1142,7 +1300,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(mapBlkToAdd[inv_block.hash].availableFrom.size(), 3); // there should be another source
     BOOST_CHECK_EQUAL(mapBlkInfo.size(), 0);
 
-    rman.AskFor(inv_block, dummyNode4);
+    rman.AskFor(inv_block, dummyNode4, objType::BLOCK);
     mapBlkToAdd = rman_access.GetMapBlkToAdd();
     setBlockDeleter = rman_access.GetSetBlockDeleter();
     BOOST_CHECK_EQUAL(mapBlkToAdd.size(), 1);
@@ -1150,7 +1308,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(mapBlkToAdd[inv_block.hash].availableFrom.size(), 4); // there should be another source
     BOOST_CHECK_EQUAL(mapBlkInfo.size(), 0);
 
-    rman.AskFor(inv_block, dummyNode5);
+    rman.AskFor(inv_block, dummyNode5, objType::BLOCK);
     mapBlkToAdd = rman_access.GetMapBlkToAdd();
     setBlockDeleter = rman_access.GetSetBlockDeleter();
     BOOST_CHECK_EQUAL(mapBlkToAdd.size(), 1);
@@ -1159,7 +1317,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(mapBlkInfo.size(), 0);
 
     // Try to add the same source again.  Nothing should be added.
-    rman.AskFor(inv_block, dummyNode5);
+    rman.AskFor(inv_block, dummyNode5, objType::BLOCK);
     mapBlkToAdd = rman_access.GetMapBlkToAdd();
     setBlockDeleter = rman_access.GetSetBlockDeleter();
     BOOST_CHECK_EQUAL(mapBlkToAdd.size(), 1);
@@ -1180,7 +1338,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     // add more sources. This time however the sources should increase
     // but there will be no new requests in mapBlkToAdd and mapBlkInfo should remain
     // unchanged with 1 re-request item still remaining.
-    rman.AskFor(inv_block, dummyNode6);
+    rman.AskFor(inv_block, dummyNode6, objType::BLOCK);
     mapBlkToAdd = rman_access.GetMapBlkToAdd();
     mapBlkInfo = rman_access.GetMapBlkInfo();
     rman.CheckIfNewSource(mapBlkToAdd, mapBlkInfo);
@@ -1190,7 +1348,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(setBlockDeleter.count(inv_block.hash), 0);
     BOOST_CHECK_EQUAL(mapBlkInfo[inv_block.hash].availableFrom.size(), 6); // there should be another source
 
-    rman.AskFor(inv_block, dummyNode7);
+    rman.AskFor(inv_block, dummyNode7, objType::BLOCK);
     mapBlkToAdd = rman_access.GetMapBlkToAdd();
     mapBlkInfo = rman_access.GetMapBlkInfo();
     rman.CheckIfNewSource(mapBlkToAdd, mapBlkInfo);
@@ -1200,7 +1358,7 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(setBlockDeleter.count(inv_block.hash), 0);
     BOOST_CHECK_EQUAL(mapBlkInfo[inv_block.hash].availableFrom.size(), 7); // there should be another source
 
-    rman.AskFor(inv_block, dummyNode8);
+    rman.AskFor(inv_block, dummyNode8, objType::BLOCK);
     mapBlkToAdd = rman_access.GetMapBlkToAdd();
     mapBlkInfo = rman_access.GetMapBlkInfo();
     rman.CheckIfNewSource(mapBlkToAdd, mapBlkInfo);
