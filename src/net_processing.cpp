@@ -810,7 +810,7 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
             // full node connections is ALWAYS marked as in IBD).
             else if (!fMayAlreadyHaveTx && (!IsInitialBlockDownload() || Params().NetworkIDString() == "regtest"))
             {
-                requester.AskFor(CInv(inv.type, inv.hash), pfrom);
+                requester.AskFor(CInv(inv.type, inv.hash), pfrom, objType::TXN);
             }
         }
         else if (inv.type == MSG_DOUBLESPENDPROOF && doubleSpendProofs.Value() == true)
@@ -1790,7 +1790,7 @@ bool ProcessMessage(CNode *pfrom,
                 {
                     if (!tailstormForest.Contains(inv.hash))
                     {
-                        requester.AskFor(inv, pfrom);
+                        requester.AskFor(inv, pfrom, objType::SUBBLOCK);
                         LOG(REQ, "AskFor subblock via headers direct fetch %s (%d) peer=%d\n", inv.hash.ToString(),
                             header.height, pfrom->id);
                     }
@@ -2108,7 +2108,7 @@ bool ProcessMessage(CNode *pfrom,
                 CInv inv(MSG_BLOCK, pindex->GetBlockHash());
                 if (!AlreadyHaveBlock(inv))
                 {
-                    requester.AskFor(inv, pfrom);
+                    requester.AskFor(inv, pfrom, objType::BLOCK);
                     LOG(REQ, "AskFor block via headers direct fetch %s (%d) peer=%d\n",
                         pindex->GetBlockHash().ToString(), pindex->height(), pfrom->id);
                     nAskFor++;

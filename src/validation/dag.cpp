@@ -2414,12 +2414,21 @@ void CTailstormForest::Check()
         }
 
         // make sure all tree entries also have an entry in mapGroveNodes.
+        // And also make sure that processed tree nodes have ancestors that are also processed.
         auto &tree = grove->tree;
         {
             for (auto &mi : tree->dag)
             {
                 assert(grove->mapGroveNodes.count(mi.first));
                 assert(grove->mapGroveNodes[mi.first] == mi.second);
+
+                if (mi.second->fProcessed)
+                {
+                    for (auto &ancestor : mi.second->setAncestors)
+                    {
+                        assert(ancestor->fProcessed);
+                    }
+                }
             }
         }
     }
