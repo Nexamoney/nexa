@@ -599,6 +599,11 @@ bool CParallelValidation::HandleBlockMessageHelper(CNode *pfrom, const string &s
         return true;
     }
 
+    // Do no process subblocks in PV. We process and connect subblocks in the dag as they must
+    // be connected in a single threaded manner against their own independant coins cach
+    if (pblock->IsSubblock())
+        return false;
+
     // NOTE: You must not have a cs_main or the cs_forest lock before you aquire the semaphore grant
     // or you can end up deadlocking
     AssertLockNotHeld(cs_main);
@@ -661,13 +666,7 @@ bool CParallelValidation::HandleBlockMessageHelper(CNode *pfrom, const string &s
                             "and previous blockhash %s\n",
                             (*miLargestBlock).second.hash.ToString(),
                             (*miLargestBlock).second.hashPrevBlock.ToString());
-
-                        // Terminate the script queue thread if it's a competing full summary block
-                        // For subblocks just return false so we can store it as an orphan for later processing.
-                        if (IsSummaryBlock(pblock))
-                            Quit(miLargestBlock);
-                        else
-                            return false;
+                        Quit(miLargestBlock);
                     }
                 }
             } // We must not hold the lock here because we could be waiting for a grant, below.
@@ -727,13 +726,13 @@ void HandleBlockMessageThread(CNodeRef noderef, const string strCommand, ConstCB
         const CChainParams &chainparams = Params();
         if (PV->Enabled())
         {
-            ProcessNewBlock(state, chainparams, pfrom, pblock, forceProcessing, nullptr, true);
+            ProcessNewBlock(state, chainparams, pfrom, pblock, forceProcessing, nullptr, IN_PARALLEL);
         }
         else
         {
             // locking cs_main here prevents any other thread from beginning starting a block validation.
             LOCK(cs_main);
-            ProcessNewBlock(state, chainparams, pfrom, pblock, forceProcessing, nullptr, false);
+            ProcessNewBlock(state, chainparams, pfrom, pblock, forceProcessing, nullptr, SINGLE_THREADED);
         }
 
         // Once the chain is synced we can start tracking thindata and also start writing to the debug log.

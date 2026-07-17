@@ -181,6 +181,9 @@ public:
     /** Return true if this is a tailstorm summary block.  Blockchain blocks before the tailstorm for
      will return false */
     bool IsTailstormSummaryBlock() const;
+    /** Return true if this is a tailstorm subblock. */
+    bool IsSubblock() const;
+
     /** Get the amount of work in this block, including any tailstorm subblocks if this is a summary block */
     arith_uint256 GetBlockWork() const;
 };

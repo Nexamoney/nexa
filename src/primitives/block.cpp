@@ -226,6 +226,15 @@ bool CBlockHeader::IsTailstormSummaryBlock() const
     return false;
 }
 
+bool CBlockHeader::IsSubblock() const
+{
+    if (GetMinerDataVersion(minerData) == DEFAULT_MINER_DATA_SUBBLOCK_VERSION)
+    {
+        return true;
+    }
+    return false;
+}
+
 arith_uint256 CBlockHeader::GetBlockWork() const
 {
     arith_uint256 work = GetWorkForDifficultyBits(nBits);
