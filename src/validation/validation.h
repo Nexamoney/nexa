@@ -33,6 +33,13 @@ enum DisconnectResult
     DISCONNECT_FAILED // Something else went wrong.
 };
 
+// Used for passing the fParallel parameter various block validation functions
+enum pv
+{
+    SINGLE_THREADED = 0,
+    IN_PARALLEL = 1
+};
+
 /** Context-dependent validity header checks */
 bool ContextualCheckBlockHeader(const CChainParams &chainparams,
     const CBlockHeader &block,

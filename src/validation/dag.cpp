@@ -347,7 +347,6 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
         {
             const CChainParams &chainparams = Params();
             bool fJustCheck = false;
-            bool fParallel = false;
             bool fScriptChecks = true;
             CAmount nFees = 0;
             CBlockUndo blockundo;
@@ -359,7 +358,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             // Try connecting the block and updating the coins cache.  If successful then we can remove
             // any conflicts from the txpool.
             if (!ConnectBlockCanonicalOrdering(newNode->subblock, state, pindexSummaryRoot, upperview, chainparams,
-                    fJustCheck, fParallel, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages,
+                    fJustCheck, SINGLE_THREADED, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages,
                     accumulatedAuthorities, &mapDagTxns))
             {
                 fOK = false;
@@ -1883,7 +1882,7 @@ void CTailstormForest::CheckForReorg()
 
             CValidationState state;
             const CChainParams &chainparams = Params();
-            if (!ActivateBestChainStep(state, chainparams, pindexMostWork, nullptr, false))
+            if (!ActivateBestChainStep(state, chainparams, pindexMostWork, nullptr, SINGLE_THREADED))
             {
                 LOG(DAG, "%s():  failed to reorg to %s", __func__, pindexMostWork->phashBlock->ToString());
             }
