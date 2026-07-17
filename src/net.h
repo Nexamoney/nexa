@@ -334,6 +334,8 @@ class CNode
     friend class CPrintSomePointers;
 #endif
 
+    friend class CResetDisconnectForTest;
+
 public:
     // All of the following variables should be atomics. They are potentially dynamic values because
     // of the XUPDATE message which can modify these values at any time.
