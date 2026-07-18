@@ -2550,6 +2550,8 @@ void CTailstormForest::Check()
 //! Get DAG internal information for display and debugging
 UniValue CTailstormForest::GetInternals(UniValue &info)
 {
+    AssertLockHeld(cs_forest);
+
     auto unlinked = UniValue(UniValue::VOBJ);
     for (auto &mnu : mapNodesUnlinked)
     {
@@ -2581,6 +2583,25 @@ UniValue CTailstormForest::GetInternals(UniValue &info)
             mnu.first.ToString(), std::to_string(mnu.second->nRootHeight) + ":" + mnu.second->roothash.ToString());
     }
     info.pushKV("subblock_to_grove_summaryblock", subblockToGrove);
+
+    // Get all the uncles for each grove and printout by summary root.
+    {
+        std::set<CTailstormGroveRef> setGroves;
+        for (auto &mi : mapAllGrovesByNode)
+        {
+            setGroves.insert(mi.second);
+        }
+        auto unclesToGrove = UniValue(UniValue::VOBJ);
+        for (auto &grove : setGroves)
+        {
+            for (auto &mi : grove->tree->mapUncles)
+            {
+                unclesToGrove.pushKV(
+                    mi.first.ToString(), std::to_string(grove->nRootHeight) + ":" + grove->roothash.ToString());
+            }
+        }
+        info.pushKV("uncles_to_grove_summaryblock", unclesToGrove);
+    }
 
     CBlockIndex *tip = chainActive.Tip();
     std::set<CTreeNodeRef> setBestDag;

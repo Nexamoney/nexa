@@ -1181,17 +1181,22 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['uncles'] == 1)
 
         # check subblocks are correct
-        blockdata = self.nodes[0].getsubblock(subblock1[0]);
+        blockdata = self.nodes[0].getsubblock(subblock1[0])
         assert(subblock1[0] == blockdata['hash'])
-        blockdata = self.nodes[1].getsubblock(subblock1[0]);
+        blockdata = self.nodes[1].getsubblock(subblock1[0])
         assert(subblock1[0] == blockdata['hash'])
 
-        # Check Uncles are available.
-        blockdata = self.nodes[0].getsubblock(node0_ds_hash);
+        # Check Uncle subblock are still in the forest.
+        blockdata = self.nodes[0].getsubblock(node0_ds_hash)
         assert(node0_ds_hash == blockdata['hash'])
-        blockdata = self.nodes[1].getsubblock(node1_ds_hash);
+        blockdata = self.nodes[1].getsubblock(node1_ds_hash)
         assert(node1_ds_hash == blockdata['hash'])
 
+        # Check that both chains which are on the same summary block tip, have the same uncle.
+        uncle_node0 = self.nodes[0].gettailstorminfo()['uncles_to_grove_summaryblock']
+        uncle_node1 = self.nodes[1].gettailstorminfo()['uncles_to_grove_summaryblock']
+        assert(uncle_node0 == uncle_node1)
+        assert(any(self.nodes[0].gettailstorminfo()['chaintip'] in v for v in uncle_node0.values()))
 
         ##### The dag should now continue to grow in size beyond the height neeeded to check summary
         #     block validity. So check that after a while the dag size doesn't change as we mined more
