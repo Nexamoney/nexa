@@ -168,6 +168,10 @@ CFeeRate minRelayTxFee = CFeeRate(DEFAULT_MIN_RELAY_TX_FEE); // lock free - has 
 CCriticalSection csUnconnectedHeaders;
 std::map<uint256, std::pair<CBlockHeader, int64_t> > mapUnConnectedHeaders GUARDED_BY(csUnconnectedHeaders);
 
+/** A cache to store subblock headers received before their base block is in the block index.
+    Retained and re-evaluated when that summary is accepted. **/
+std::map<uint256, std::pair<CBlockHeader, int64_t> > mapUnconnectedSubblockHeaders GUARDED_BY(csUnconnectedHeaders);
+
 CCriticalSection cs_main;
 /**
  * Every received block is assigned a unique and increasing identifier, so we

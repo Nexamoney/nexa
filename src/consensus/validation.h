@@ -42,6 +42,11 @@ static const unsigned char REJECT_ORPHAN = 0x49;
 /** Used when transaction is non-final and is rejected from entering the txpool */
 static const unsigned char REJECT_NONFINAL = 0x50;
 
+/** Used when a subblock header arrives before its base (epoch summary) block, so there is no
+ context to validate it against yet. The header is retained and re-evaluated once its base connects.
+*/
+static const unsigned char REJECT_NO_CONTEXT = 0x51;
+
 /** Capture information about block/transaction validation */
 class CValidationState
 {

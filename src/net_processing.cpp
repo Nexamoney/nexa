@@ -908,6 +908,30 @@ static void GetInitialTailstormSubblocks(CNode *pfrom)
     }
 }
 
+// Register an accepted tailstorm subblock header for this peer and, if it is near the chain
+// tip and we don't already have the body, request it. Extracted so the initial header loop
+// and the deferred-header re-drive share one path.
+static void FetchAcceptedSubblock(CNode *pfrom, const CBlockHeader &header, int64_t nTipHeight)
+{
+    CInv inv(MSG_BLOCK, header.GetHash());
+    {
+        CNodeStateAccessor modablestate(nodestate, pfrom->GetId());
+        // update subblock header status for this peer
+        modablestate->mapSubblockHeaders.emplace(inv.hash, header.height);
+    }
+
+    // Only ask for subblocks near the chain tip and that we don't already have
+    if (header.height > (nTipHeight - Params().GetConsensus().tailstormEnforceDepth))
+    {
+        if (!tailstormForest.Contains(inv.hash))
+        {
+            requester.AskFor(inv, pfrom, objType::SUBBLOCK);
+            LOG(REQ, "AskFor subblock via headers direct fetch %s (%d) peer=%d\n", inv.hash.ToString(), header.height,
+                pfrom->id);
+        }
+    }
+}
+
 bool ProcessMessage(CNode *pfrom,
     std::string strCommand,
     uint32_t msgCookie,
@@ -1754,8 +1778,8 @@ bool ProcessMessage(CNode *pfrom,
         // Process subblock headers first.
         {
             std::vector<CBlockHeader> vTempHeaders;
-            int64_t nTipHeight = chainActive.Height();
-            CNodeStateAccessor modablestate(nodestate, pfrom->GetId());
+            auto tip = chainActive.Tip();
+            int64_t nTipHeight = tip->height();
             for (auto &header : headers)
             {
                 // Save any summary block headers to a temporary vector to be
@@ -1769,32 +1793,47 @@ bool ProcessMessage(CNode *pfrom,
                 CValidationState state;
                 if (!AcceptBlockHeader(header, state, chainparams, nullptr))
                 {
+                    // A subblock header can fail here for two reasons:
+                    //  (a) it arrived before its base (epoch summary) block, so it has no
+                    //      context to be validated against and AcceptBlockHeader rejects it as a
+                    //      non-DoS REJECT_NO_CONTEXT ("subblock-no-context") before any contextual check.
+                    //  (b) any other failure is genuinely bad and is penalized as before.
                     int nDos = 0;
-                    if (state.IsInvalid(nDos))
+                    state.IsInvalid(nDos);
+                    if (state.GetRejectCode() == REJECT_NO_CONTEXT)
                     {
-                        if (nDos > 0)
+                        // Rejected due to missing context
+                        LOCK(csUnconnectedHeaders);
+                        if (mapUnconnectedSubblockHeaders.size() < MAX_UNCONNECTED_HEADERS)
                         {
-                            dosMan.Misbehaving(pfrom, nDos, BanReasonInvalidHeader);
+                            // Only retain if subblock headers met a level of difficulty
+                            if (GetWorkForDifficultyBits(header.nBits) > (GetWorkForDifficultyBits(tip->nBits) >> 1))
+                            {
+                                // Retain to re-evaluate after the summary loop below.
+                                mapUnconnectedSubblockHeaders.emplace(
+                                    header.GetHash(), std::make_pair(header, GetTime()));
+                            }
+                            else
+                            {
+                                LOG(NET, "Ignoring subblock header %s -- too low difficulty.\n",
+                                    header.GetHash().ToString());
+                                nDos = 100;
+                            }
                         }
+                        else
+                        {
+                            LOG(NET, "Ignoring subblock header %s -- too many unconnected headers.\n",
+                                header.GetHash().ToString());
+                        }
+                    }
+                    if (nDos > 0)
+                    {
+                        dosMan.Misbehaving(pfrom, nDos, BanReasonInvalidHeader);
                     }
                     continue;
                 }
 
-                CInv inv(MSG_BLOCK, header.GetHash());
-
-                // update subblock header status for this peer
-                modablestate->mapSubblockHeaders.emplace(inv.hash, header.height);
-
-                // Only ask for subblocks near the chain tip and that we don't already have
-                if (header.height > (nTipHeight - Params().GetConsensus().tailstormEnforceDepth))
-                {
-                    if (!tailstormForest.Contains(inv.hash))
-                    {
-                        requester.AskFor(inv, pfrom, objType::SUBBLOCK);
-                        LOG(REQ, "AskFor subblock via headers direct fetch %s (%d) peer=%d\n", inv.hash.ToString(),
-                            header.height, pfrom->id);
-                    }
-                }
+                FetchAcceptedSubblock(pfrom, header, nTipHeight);
             }
 
             if (vTempHeaders.empty())
@@ -1805,6 +1844,9 @@ bool ProcessMessage(CNode *pfrom,
 
         // Process legacy blocks or tailstorm Summary blocks
         CBlockIndex *pindexLast = nullptr;
+        // Retained subblock headers whose base summary just became known; collected under
+        // csUnconnectedHeaders below, then accepted+fetched off the lock.
+        std::vector<CBlockHeader> vReadySubblocks;
         {
             // We need to handle appending the header and analyzing the unconnected ones sequentially, or
             // 2 simultaneously processed header messages may cause an out of order header to not be reconnected
@@ -1969,6 +2011,50 @@ bool ProcessMessage(CNode *pfrom,
                 }
 
                 i++;
+            }
+
+            // A summary we just accepted may be the base of subblock headers we retained earlier.
+            // Collect the now-connectable ones (and expire stale entries) here;
+            // accept + fetch them below, off the lock.
+            for (auto mi = mapUnconnectedSubblockHeaders.begin(); mi != mapUnconnectedSubblockHeaders.end();)
+            {
+                if (LookupBlockIndex(mi->second.first.hashPrevBlock))
+                {
+                    vReadySubblocks.push_back(mi->second.first); // Push block header to ready list
+                    mi = mapUnconnectedSubblockHeaders.erase(mi);
+                }
+                else if (GetTime() - mi->second.second >= UNCONNECTED_HEADERS_TIMEOUT) // Expire stale entries
+                {
+                    mi = mapUnconnectedSubblockHeaders.erase(mi);
+                }
+                else
+                {
+                    ++mi;
+                }
+            }
+        }
+
+        // Accept and fetch the retained subblock headers whose base summary is now known.
+        // Done off csUnconnectedHeaders so we don't risk deadlock with FetchAcceptedSubblock()
+        // that occurs under additional locking.
+        if (!vReadySubblocks.empty())
+        {
+            int64_t nTip = chainActive.Height();
+            for (const CBlockHeader &h : vReadySubblocks)
+            {
+                CValidationState st;
+                if (AcceptBlockHeader(h, st, chainparams, nullptr))
+                    FetchAcceptedSubblock(pfrom, h, nTip);
+                else
+                {
+                    // The base summary is now in the block index, so this can no longer
+                    // fail for the benign no-context ordering reason (its parent is now known).
+                    // Any failure here is a genuinely invalid header (e.g. low PoW), so DoS-score
+                    // the peer exactly as the initial header loop would have.
+                    int nDos = 0;
+                    if (st.IsInvalid(nDos) && nDos > 0)
+                        dosMan.Misbehaving(pfrom, nDos, BanReasonInvalidHeader);
+                }
             }
         }
 

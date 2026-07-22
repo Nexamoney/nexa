@@ -427,6 +427,15 @@ bool AcceptBlockHeader(const CBlockHeader &block,
                 0, "bad-prevblk");
         }
 
+        if (!IsSummaryBlock(block) && !pindexPrev)
+        {
+            // A subblock whose base/epoch summary header has not arrived yet.
+            // Report it as a non-DoS REJECT_NO_CONTEXT so ProcessMessage retains it and
+            // re-evaluates once the base summary connects, without penalizing the peer.
+            // In the genesis block case this is fine because the subblock must have a pindexPrev
+            return state.Invalid(false, REJECT_NO_CONTEXT, "subblock-no-context");
+        }
+
         if (!ContextualCheckBlockHeader(chainparams, block, state, pindexPrev))
         {
             return false;
