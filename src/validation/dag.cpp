@@ -1483,7 +1483,8 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
 
                         bool forceProcessing = true;
                         CValidationState state;
-                        ProcessNewBlock(state, Params(), nullptr, pblock, forceProcessing, nullptr, false);
+                        ProcessSummaryBlock(
+                            state, Params(), nullptr, pblock, forceProcessing, nullptr, SINGLE_THREADED);
                         LOG(DAG, "%s(): Done processing new block and connected an orphaned summary block", __func__);
                     }
                     ENTER_CRITICAL_SECTION(cs_forest);

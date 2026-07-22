@@ -726,13 +726,13 @@ void HandleBlockMessageThread(CNodeRef noderef, const string strCommand, ConstCB
         const CChainParams &chainparams = Params();
         if (PV->Enabled())
         {
-            ProcessNewBlock(state, chainparams, pfrom, pblock, forceProcessing, nullptr, IN_PARALLEL);
+            ProcessSummaryBlock(state, chainparams, pfrom, pblock, forceProcessing, nullptr, IN_PARALLEL);
         }
         else
         {
             // locking cs_main here prevents any other thread from beginning starting a block validation.
             LOCK(cs_main);
-            ProcessNewBlock(state, chainparams, pfrom, pblock, forceProcessing, nullptr, SINGLE_THREADED);
+            ProcessSummaryBlock(state, chainparams, pfrom, pblock, forceProcessing, nullptr, SINGLE_THREADED);
         }
 
         // Once the chain is synced we can start tracking thindata and also start writing to the debug log.

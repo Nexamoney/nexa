@@ -225,7 +225,7 @@ bool ActivateBestChainStep(CValidationState &state,
  * @param[out]  dbp     If pblock is stored to disk (or already there), this will be set to its location.
  * @return True if state.IsValid()
  */
-bool ProcessNewBlock(CValidationState &state,
+bool ProcessSummaryBlock(CValidationState &state,
     const CChainParams &chainparams,
     CNode *pfrom,
     ConstCBlockRef pblock,

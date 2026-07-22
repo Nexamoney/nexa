@@ -115,6 +115,7 @@ void AcceptSubblock(ConstCBlockRef pblock)
     if (!pblock)
         return;
 
+    bool fOK = false;
     std::set<uint256> setToAnnounce;
     {
         LOCK(tailstormForest.cs_forest);
@@ -133,11 +134,25 @@ void AcceptSubblock(ConstCBlockRef pblock)
 
             forceTemplateRecalc.store(true);
             LOG(DAG, "Completed AcceptSubblock : %s", pblock->GetHash().ToString());
+
+            fOK = true;
         }
         else
         {
             LOG(DAG, "Insert subblock failed : %s\n", pblock->GetHash().ToString());
-            return;
+            fOK = false;
+        }
+    }
+
+    // Announce accepted subblock to other peers whether "AFTER" they were either successfully inserted
+    // into the dag or just ended up as orphans.  This ensures that subblocks propagate through the network as
+    // quickly as possible.
+    {
+        LOCK(cs_vNodes);
+        for (CNode *pnode : vNodes)
+        {
+            // Summary blocks are posted when connected to the active chain
+            pnode->PushSubblockHash(pblock->GetHash());
         }
     }
 
@@ -148,6 +163,7 @@ void AcceptSubblock(ConstCBlockRef pblock)
     // NOTE: you can not put this call to CheckForReorg() in the above
     // code block where the cs_forest lock is taken. This will cause
     // a lockorder issue with cs_main.
+    if (fOK)
     {
         tailstormForest.CheckForReorg();
         tailstormForest.Check();

@@ -2352,7 +2352,7 @@ static bool AcceptBlock(ConstCBlockRef pblock,
         return false;
     }
 
-    if (!IsSummaryBlock(pblock))
+    if (pblock->IsSubblock())
     {
         AcceptSubblock(pblock);
     }
@@ -2449,7 +2449,7 @@ bool ProcessAcceptBlock(CNode *pfrom,
         // to prevent re-requests. Similar to just above here where we do the same
         // for full summary blocks with requester.Received() where the item gets removed
         // from the request manager.
-        if (pfrom && !IsSummaryBlock(pblock))
+        if (pfrom && pblock->IsSubblock())
         {
             CNodeStateAccessor modablestate(nodestate, pfrom->GetId());
             modablestate->mapSubblockHeaders.emplace(inv.hash, pblock->GetBlockHeader().height);
@@ -2669,21 +2669,19 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
         // If you do not include any uncles, you must set the uncle nbits to 0
         if ((ret.nUncles == 0) && (ret.nBitsUncle != 0))
         {
-            return state.DoS(
-                100, error("ProcessNewBlock(): incorrect miner data"), REJECT_INVALID, "bad-uncle-difficulty");
+            return state.DoS(100, error("%s : incorrect miner data", __func__), REJECT_INVALID, "bad-uncle-difficulty");
         }
         // If you do not include any subblock, you must set the subblock nbits to 0
         if ((ret.nSubblocks == 0) && (ret.nBitsSubblock != 0))
         {
             return state.DoS(
-                100, error("ProcessNewBlock(): incorrect miner data"), REJECT_INVALID, "bad-subblock-difficulty");
+                100, error("%s : incorrect miner data", __func__), REJECT_INVALID, "bad-subblock-difficulty");
         }
 
         if ((ret.vSubblockProofs.size() != chainparams.GetConsensus().tailstorm_k - 1) &&
             (ret.vSubblockProofs.size() != (ret.nUncles + ret.nSubblocks)))
         {
-            return state.DoS(
-                100, error("ProcessNewBlock(): incomplete miner data"), REJECT_INVALID, "bad-miner-data-size");
+            return state.DoS(100, error("%s : incorrect miner data", __func__), REJECT_INVALID, "bad-miner-data-size");
         }
 
         LOCK(tailstormForest.cs_forest);
@@ -2719,16 +2717,16 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
                     if (nSummaryBlockHeight != nSubblockHeight + 1)
                     {
                         return state.DoS(100,
-                            error("ProcessNewBlock(): height %ld in subblock uncle does not match summary block height "
+                            error("%s: height %ld in subblock uncle does not match summary block height "
                                   "%ld",
-                                nSubblockHeight, nSummaryBlockHeight),
+                                __func__, nSubblockHeight, nSummaryBlockHeight),
                             REJECT_INVALID, "bad-subblock-uncle-height");
                     }
                 }
                 else
                 {
                     return state.DoS(100,
-                        error("ProcessNewBlock(): height %ld in subblock does not match summary block height %ld",
+                        error("%s : height %ld in subblock does not match summary block height %ld", __func__,
                             nSubblockHeight, nSummaryBlockHeight),
                         REJECT_INVALID, "bad-subblock-height");
                 }
@@ -2771,7 +2769,7 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
 
             if (!setBlockHashes.count(mi.first))
             {
-                return state.DoS(100, error("ProcessNewBlock(): transaction in subblock not found in block"),
+                return state.DoS(100, error("%s : transaction in subblock not found in block", __func__),
                     REJECT_INVALID, "bad-blk-missing-txn");
             }
         }
@@ -4398,7 +4396,7 @@ bool _ActivateBestChain(CValidationState &state,
     return result;
 }
 
-bool ProcessNewBlock(CValidationState &state,
+bool ProcessSummaryBlock(CValidationState &state,
     const CChainParams &chainparams,
     CNode *pfrom,
     ConstCBlockRef pblock,
@@ -4406,6 +4404,8 @@ bool ProcessNewBlock(CValidationState &state,
     CDiskBlockPos *dbp,
     bool fParallel)
 {
+    assert(pblock->IsSummaryBlock());
+
     const auto &cparams = chainparams.GetConsensus();
     int64_t start = GetStopwatchMicros();
     std::string fromName = pfrom ? pfrom->GetLogName() : "myself";
@@ -4458,28 +4458,20 @@ bool ProcessNewBlock(CValidationState &state,
         }
     }
 
-    if (IsSummaryBlock(pblock))
+    if (!ActivateBestChain(state, chainparams, pblock, fParallel))
     {
-        if (!ActivateBestChain(state, chainparams, pblock, fParallel))
+        if (state.IsInvalid() || state.IsError())
         {
-            if (state.IsInvalid() || state.IsError())
-            {
-                LOG(BLK, "Invalid block %s: time:%d TX size:%d len:%d ActivateBestChain: %s\n", hexHash, pblock->nTime,
-                    pblock->vtx.size(), pblock->GetBlockSize(), state.GetLogString());
-                return error("%s: ActivateBestChain failed", __func__);
-            }
-            else
-            {
-                LOG(BLK,
-                    "Stopped activation of block %s: time:%d TX size:%d len:%d ActivateBestChain returned false: %s\n",
-                    hexHash, pblock->nTime, pblock->vtx.size(), pblock->GetBlockSize(), state.GetLogString());
-                return false;
-            }
+            LOG(BLK, "Invalid block %s: time:%d TX size:%d len:%d ActivateBestChain: %s\n", hexHash, pblock->nTime,
+                pblock->vtx.size(), pblock->GetBlockSize(), state.GetLogString());
+            return error("%s: ActivateBestChain failed", __func__);
         }
-    }
-    else
-    {
-        LOG(BLK | DAG, "Processing subblock: %s", pblock->GetHash().ToString());
+        else
+        {
+            LOG(BLK, "Stopped activation of block %s: time:%d TX size:%d len:%d ActivateBestChain returned false: %s\n",
+                hexHash, pblock->nTime, pblock->vtx.size(), pblock->GetBlockSize(), state.GetLogString());
+            return false;
+        }
     }
 
     int64_t end = GetStopwatchMicros();
@@ -4528,17 +4520,6 @@ bool ProcessNewBlock(CValidationState &state,
     {
         LOCK(cs_blockvalidationtime);
         nBlockValidationTime << (end - start);
-    }
-
-    // Announce accepted block to other peers
-    {
-        LOCK(cs_vNodes);
-        for (CNode *pnode : vNodes)
-        {
-            // Summary blocks are posted when connected to the active chain
-            if (!pblock->IsSummaryBlock())
-                pnode->PushSubblockHash(pblock->GetHash());
-        }
     }
 
     return true;

@@ -26,6 +26,7 @@
 #include "ui_interface.h"
 #include "util.h"
 #include "utilstrencodings.h"
+#include "validation/tailstorm.h"
 #include "validation/validation.h"
 #include "validationinterface.h"
 #ifdef ENABLE_WALLET
@@ -153,25 +154,34 @@ UniValue generateBlocks(boost::shared_ptr<CReserveScript> coinbaseScript,
         }
         // Ok we found a block, so process it
 
-        // In we are mining our own block or not running in parallel for any reason
-        // we must terminate any block validation threads that are currently running,
-        // Unless they have more work than our own block or are processing a chain
-        // that has more work than our block.
-        PV->StopAllSummaryBlockValidationThreads(pblock->GetBlockHeader().nBits);
+        // If it's a subblock then accept it into the dag
+        if (pblock->IsSubblock())
+        {
+            AcceptSubblock(pblock);
+        }
+        else
+        {
+            // In we are mining our own block or not running in parallel for any reason
+            // we must terminate any block validation threads that are currently running,
+            // Unless they have more work than our own block or are processing a chain
+            // that has more work than our block.
+            PV->StopAllSummaryBlockValidationThreads(pblock->GetBlockHeader().nBits);
 
-        CValidationState state;
-        if (!ProcessNewBlock(state, Params(), nullptr, pblock, true, nullptr, false))
-            throw JSONRPCError(RPC_INTERNAL_ERROR, "ProcessNewBlock, block not accepted");
+            CValidationState state;
+            if (!ProcessSummaryBlock(state, Params(), nullptr, pblock, true, nullptr, SINGLE_THREADED))
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "ProcessSummaryBlock, block not accepted");
+
+
+            // mark script as important because it was used at least for one coinbase output if the script came from the
+            // wallet
+            if (keepScript)
+            {
+                coinbaseScript->KeepScript();
+            }
+        }
 
         ++nCount;
         blockHashes.push_back(pblock->GetHash().GetHex());
-
-        // mark script as important because it was used at least for one coinbase output if the script came from the
-        // wallet
-        if (keepScript)
-        {
-            coinbaseScript->KeepScript();
-        }
     }
 
     CValidationState state;
@@ -940,9 +950,16 @@ UniValue SubmitBlock(ConstCBlockRef pblock, CValidationState &state)
         // we must terminate any block validation threads that are currently running,
         // Unless they have more work than our own block or are processing a chain
         // that has more work than our block.
-        PV->StopAllSummaryBlockValidationThreads(pblock->nBits);
-
-        fAccepted = ProcessNewBlock(state, Params(), nullptr, pblock, true, nullptr, false);
+        if (pblock->IsSubblock())
+        {
+            AcceptSubblock(pblock);
+            fAccepted = true;
+        }
+        else
+        {
+            PV->StopAllSummaryBlockValidationThreads(pblock->nBits);
+            fAccepted = ProcessSummaryBlock(state, Params(), nullptr, pblock, true, nullptr, SINGLE_THREADED);
+        }
     }
 
     if (fBlockPresent)
@@ -964,7 +981,7 @@ UniValue SubmitBlock(ConstCBlockRef pblock, CValidationState &state)
 
     // Move to a new address if a block is found on an address that is owned by this wallet
 #ifdef ENABLE_WALLET
-    if (pwalletMain)
+    if (pwalletMain && pblock->IsSummaryBlock())
     {
         auto coinbase = pblock->vtx[0];
         if (coinbase->IsCoinBase())
