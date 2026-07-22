@@ -1428,7 +1428,7 @@ static bool tryBlock(const std::vector<CMutableTransaction> &txns,
     assert(worked);
 
     bool ret;
-    ret = ProcessNewBlock(state, chainparams, NULL, pblock, true, NULL, false);
+    ret = ProcessSummaryBlock(state, chainparams, NULL, pblock, true, nullptr, SINGLE_THREADED);
     result = pblock;
     return ret;
 }

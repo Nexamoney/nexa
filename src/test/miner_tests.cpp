@@ -707,7 +707,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
         // If this is extremely slow, you need to re-generate (changed mining alg or block format)
         // by taking these nonce printouts and copying them above
         CValidationState state;
-        bool presult = ProcessNewBlock(state, chainparams, nullptr, pblock, true, nullptr, false);
+        bool presult = ProcessSummaryBlock(state, chainparams, nullptr, pblock, true, nullptr, SINGLE_THREADED);
         if (!presult)
         {
             printf("failed\n");

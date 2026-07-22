@@ -38,7 +38,7 @@ static CTxIn MineBlock(const CScript &coinbase_scriptPubKey, const CChainParams 
     assert(found);
 
     CValidationState state;
-    bool processed = ProcessNewBlock(state, chainparams, nullptr, pblock, true, nullptr, false);
+    bool processed = ProcessSummaryBlock(state, chainparams, nullptr, pblock, true, nullptr, SINGLE_THREADED);
     assert(processed);
     assert(state.IsValid());
 

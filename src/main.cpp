@@ -549,7 +549,7 @@ bool LoadExternalBlockFile(const CChainParams &chainparams, FILE *fileIn, CDiskB
                 if (pindex == nullptr || !fHaveData)
                 {
                     CValidationState state;
-                    if (ProcessNewBlock(state, chainparams, nullptr, pblock1, true, dbp, false))
+                    if (ProcessSummaryBlock(state, chainparams, nullptr, pblock1, true, dbp, false))
                         nLoaded++;
                     if (state.IsError())
                         break;
@@ -580,7 +580,7 @@ bool LoadExternalBlockFile(const CChainParams &chainparams, FILE *fileIn, CDiskB
                             LOGA("%s: Processing out of order child %s of %s\n", __func__,
                                 pblock2->GetHash().ToString(), head.ToString());
                             CValidationState dummy;
-                            if (ProcessNewBlock(dummy, chainparams, nullptr, pblock2, true, &it->second, false))
+                            if (ProcessSummaryBlock(dummy, chainparams, nullptr, pblock2, true, &it->second, false))
                             {
                                 nLoaded++;
                                 queue.push_back(pblock2->GetHash());

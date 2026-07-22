@@ -199,7 +199,7 @@ CBlock TestChain100Setup::CreateAndProcessBlock(const std::vector<CMutableTransa
     assert(worked);
 
     CValidationState state;
-    worked = ProcessNewBlock(state, chainparams, nullptr, pblock, true, nullptr, false);
+    worked = ProcessSummaryBlock(state, chainparams, nullptr, pblock, true, nullptr, SINGLE_THREADED);
     // ProcessNewBlock will fail here in some negative tests so no: assert(worked);
 
     CBlock result = *pblock;
