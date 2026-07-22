@@ -329,7 +329,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
         }
 
         // if we already have a full dag then don't process anymore but
-        // we can add it to the dag as uprocessed so it can be used as an orphan.
+        // we can add it to the dag as uprocessed so it can be used as an uncle.
         if (dag.size() >= Params().GetConsensus().tailstorm_k - 1)
         {
             newNode->nSequenceId = dag.size() + 1;
@@ -568,6 +568,13 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
         }
 
         DbgAssert(newNode->nSequenceId > 0 && newNode->fProcessed, );
+        if (newNode->fProcessed)
+        {
+            for (auto &ancestor : newNode->setAncestors)
+            {
+                DbgAssert(ancestor->fProcessed, );
+            }
+        }
         return newNode;
     }
 
@@ -1971,6 +1978,12 @@ void CTailstormForest::CheckForReorg()
             }
             else
                 LOG(DAG, "%s():  completed a reorg to %s", __func__, pindexMostWork->phashBlock->ToString());
+
+            // Regenerate the dag data since there may be unprocessed subblocks present which were
+            // added to the tree when the fork was inactive.
+            CTailstormGroveRef grove;
+            if (GetGrove(*pindexMostWork->phashBlock, grove))
+                ReGenerateDagData(grove);
 
             // Since all subblocks already in the dag have been processed we just need to process
             // any unlinked subblocks.
