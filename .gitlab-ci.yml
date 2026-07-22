@@ -97,7 +97,7 @@ cache: &global_cache_settings
 
 gitian-binaries:
     stage: build
-    extends: .docker_common
+    extends: [.docker_common, .detect-cpus]
     script:
         - apt-get update && apt-get -y --no-install-recommends --no-upgrade -qq install openssh-client apt-cacher-ng ruby docker.io
         - git clone https://gitlab.com/nexa/gitian-builder.git
@@ -106,7 +106,7 @@ gitian-binaries:
         - bin/make-base-vm --suite focal --arch amd64 > make-base-vm.log  2>&1
         - mkdir result
         - mkdir inputs
-        - bin/gbuild -j `nproc` -m 6000 --url nexa=$CI_REPOSITORY_URL --commit nexa=$CI_DEFAULT_BRANCH $CI_PROJECT_DIR/contrib/gitian-descriptors/gitian-linux-x86.yml 2&>1 | tee gbuild.log
+        - bin/gbuild -j$CPUS -m 6000 --url nexa=$CI_REPOSITORY_URL --commit nexa=$CI_DEFAULT_BRANCH $CI_PROJECT_DIR/contrib/gitian-descriptors/gitian-linux-x86.yml 2&>1 | tee gbuild.log
     artifacts:
         when: always
         paths:
@@ -137,6 +137,10 @@ gitian-binaries:
         # Limit ccache to 3 GB (from default 5 GB).
         - ccache -M 3G
         - ccache --zero-stats || true
+
+.detect-cpus:
+    before_script:
+        - . ci/detect-cpus.sh
 
 ######################################################
 ######## Linting
@@ -169,13 +173,13 @@ check-formatting:
 
 build-ubuntu-nodeps:
     stage: build
-    extends: .cache-ubuntu-nodeps
+    extends: [.cache-ubuntu-nodeps, .detect-cpus]
     needs: []
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=no --enable-glibc-back-compat --enable-reduce-exports
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: always
@@ -192,13 +196,13 @@ build-ubuntu-nodeps:
 
 build-ubuntu-nodeps-qt:
     stage: build
-    extends: .cache-ubuntu-nodeps
+    extends: [.cache-ubuntu-nodeps, .detect-cpus]
     needs: []
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=qt5 --enable-glibc-back-compat --enable-reduce-exports --disable-bench --disable-tests
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -230,13 +234,13 @@ build-ubuntu-tests-nodeps:
 
 build-ubuntu-nodeps-nowallet-qt:
     stage: build
-    extends: .cache-ubuntu-nodeps-nowallet
+    extends: [.cache-ubuntu-nodeps-nowallet, .detect-cpus]
     needs: []
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=qt5 --disable-wallet --enable-glibc-back-compat --enable-reduce-exports
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: always
@@ -254,13 +258,13 @@ build-ubuntu-nodeps-nowallet-qt:
 
 build-ubuntu-nodeps-nowallet:
     stage: build
-    extends: .cache-ubuntu-nodeps-nowallet
+    extends: [.cache-ubuntu-nodeps-nowallet, .detect-cpus]
     needs: []
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=no --disable-wallet --enable-glibc-back-compat --enable-reduce-exports --disable-bench --disable-tests
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -309,11 +313,11 @@ build-ubuntu-tests-nodeps-nowallet-qt:
 
 build-ubuntu-deps-only-libnexa:
     stage: build_depends
-    extends: .cache-ubuntu-only-libnexa
+    extends: [.cache-ubuntu-only-libnexa, .detect-cpus]
     needs: []
     script:
         - cd depends
-        - make HOST=x86_64-linux-gnu -j `nproc` ONLY_LIBNEXA=1
+        - make HOST=x86_64-linux-gnu -j"$CPUS" ONLY_LIBNEXA=1
     artifacts:
         paths:
             - depends/x86_64-linux-gnu
@@ -322,13 +326,13 @@ build-ubuntu-deps-only-libnexa:
 
 build-ubuntu-only-libnexa:
     stage: build
-    extends: .cache-ubuntu-only-libnexa
+    extends: [.cache-ubuntu-only-libnexa, .detect-cpus]
     needs: [build-ubuntu-deps-only-libnexa]
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-shared --enable-debug --enable-only-libnexa --enable-glibc-back-compat --enable-reduce-exports --cache-file=config.cache --prefix=$PWD/../depends/x86_64-linux-gnu CPPFLAGS=-DDEBUG_LOCKORDER
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     dependencies:
         - build-ubuntu-deps-only-libnexa
@@ -356,11 +360,11 @@ build-ubuntu-only-libnexa:
 
 build-ubuntu-deps:
     stage: build_depends
-    extends: .cache-ubuntu
+    extends: [.cache-ubuntu, .detect-cpus]
     needs: []
     script:
         - cd depends
-        - make HOST=x86_64-linux-gnu -j `nproc`
+        - make HOST=x86_64-linux-gnu -j$CPUS
     artifacts:
         paths:
             - depends/x86_64-linux-gnu
@@ -369,13 +373,13 @@ build-ubuntu-deps:
 
 build-ubuntu:
     stage: build
-    extends: .cache-ubuntu
+    extends: [.cache-ubuntu, .detect-cpus]
     needs: [build-ubuntu-deps]
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-shared --enable-debug --enable-zmq --enable-glibc-back-compat --enable-reduce-exports --cache-file=config.cache --prefix=$PWD/../depends/x86_64-linux-gnu CPPFLAGS=-DDEBUG_LOCKORDER
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     after_script:
         - |
@@ -567,13 +571,13 @@ test-ubuntu-qa-rostrum:
 
 build-ubuntu-clang:
     stage: build
-    extends: .ubuntu-clang-env
+    extends: [.ubuntu-clang-env, .detect-cpus]
     needs: []
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-zmq --with-gui=qt5 CPPFLAGS=-DDEBUG_LOCKORDER
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         paths:
@@ -621,11 +625,11 @@ build-ubuntu-tests-clang:
 
 build-arm-depends-64:
     stage: build_depends
-    extends: .cache-arm-64
+    extends: [.cache-arm-64, .detect-cpus]
     script:
         - make -C depends HOST=aarch64-linux-gnu clean
         - cd depends
-        - make HOST=aarch64-linux-gnu NO_QT=1 -j `nproc` NO_RUST=1
+        - make HOST=aarch64-linux-gnu NO_QT=1 -j$CPUS NO_RUST=1
     artifacts:
         paths:
             - depends/aarch64-linux-gnu
@@ -634,13 +638,13 @@ build-arm-depends-64:
 
 build-arm-64:
     stage: build
-    extends: .cache-arm-64
+    extends: [.cache-arm-64, .detect-cpus]
     needs: ["build-arm-depends-64"]
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/aarch64-linux-gnu --enable-glibc-back-compat --enable-reduce-exports CXXFLAGS=-Wno-psabi
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     dependencies:
         - build-arm-depends-64
@@ -667,11 +671,11 @@ build-arm-64:
 
 build-arm-depends-32:
     stage: build_depends
-    extends: .cache-arm-32
+    extends: [.cache-arm-32, .detect-cpus]
     script:
         - make -C depends HOST=arm-linux-gnueabihf clean
         - cd depends
-        - make HOST=arm-linux-gnueabihf NO_QT=1 -j `nproc` NO_RUST=1
+        - make HOST=arm-linux-gnueabihf NO_QT=1 -j$CPUS NO_RUST=1
     artifacts:
         paths:
             - depends/arm-linux-gnueabihf
@@ -680,13 +684,13 @@ build-arm-depends-32:
 
 build-arm-32:
     stage: build
-    extends: .cache-arm-32
+    extends: [.cache-arm-32, .detect-cpus]
     needs: ["build-arm-depends-32"]
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/arm-linux-gnueabihf --enable-glibc-back-compat --enable-reduce-exports
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     dependencies:
         - build-arm-depends-32
@@ -714,11 +718,11 @@ build-arm-32:
 
 build-riscv-depends-64:
     stage: build_depends
-    extends: .cache-riscv-64
+    extends: [.cache-riscv-64, .detect-cpus]
     script:
         - make -C depends HOST=riscv64-linux-gnu clean
         - cd depends
-        - make HOST=riscv64-linux-gnu QT=1 -j `nproc` NO_RUST=1
+        - make HOST=riscv64-linux-gnu QT=1 -j$CPUS NO_RUST=1
     artifacts:
         paths:
             - depends/riscv64-linux-gnu
@@ -727,13 +731,13 @@ build-riscv-depends-64:
 
 build-riscv-64:
     stage: build
-    extends: .cache-riscv-64
+    extends: [.cache-riscv-64, .detect-cpus]
     needs: ["build-riscv-depends-64"]
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/riscv64-linux-gnu
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     dependencies:
         - build-riscv-depends-64
@@ -761,10 +765,10 @@ build-riscv-64:
 
 build-win-64-depends:
     stage: build_depends
-    extends: .cache-win-64
+    extends: [.cache-win-64, .detect-cpus]
     script:
         - cd depends
-        - make HOST=x86_64-w64-mingw32 NO_QT=1 -j `nproc` NO_RUST=1
+        - make HOST=x86_64-w64-mingw32 NO_QT=1 -j$CPUS NO_RUST=1
     artifacts:
         paths:
             - depends/x86_64-w64-mingw32
@@ -773,13 +777,13 @@ build-win-64-depends:
 
 build-win-64:
     stage: build
-    extends: .cache-win-64
+    extends: [.cache-win-64, .detect-cpus]
     needs: ["build-win-64-depends"]
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/x86_64-w64-mingw32
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     dependencies:
         - build-win-64-depends
@@ -804,13 +808,13 @@ build-win-64:
 
 build-osx-depends:
     stage: build_depends
-    extends: .cache-osx
+    extends: [.cache-osx, .detect-cpus]
     script:
         - mkdir -p depends/sdk-sources; mkdir depends/SDKs
         - curl --location --fail https://www.bitcoinunlimited.info/sdks/MacOSX11.3.sdk.tar.xz -o ./depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - tar -C depends/SDKs -xf depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - cd depends
-        - make HOST=x86_64-apple-darwin -j `nproc` NO_RUST=1
+        - make HOST=x86_64-apple-darwin -j$CPUS NO_RUST=1
         - ccache --show-stats
     artifacts:
         paths:
@@ -821,13 +825,13 @@ build-osx-depends:
 
 build-osx:
     stage: build
-    extends: .cache-osx
+    extends: [.cache-osx, .detect-cpus]
     needs: ["build-osx-depends"]
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/x86_64-apple-darwin
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     dependencies:
         - build-osx-depends
@@ -858,13 +862,13 @@ build-osx:
 
 build-osx-arm64-depends:
     stage: build_depends
-    extends: .cache-osx-arm64
+    extends: [.cache-osx-arm64, .detect-cpus]
     script:
         - mkdir -p depends/sdk-sources; mkdir depends/SDKs
         - curl --location --fail https://www.bitcoinunlimited.info/sdks/MacOSX11.3.sdk.tar.xz -o ./depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - tar -C depends/SDKs -xf depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - cd depends
-        - make HOST=arm64-apple-darwin -j `nproc` NO_RUST=1
+        - make HOST=arm64-apple-darwin -j$CPUS NO_RUST=1
         - ccache --show-stats
     artifacts:
         paths:
@@ -875,13 +879,13 @@ build-osx-arm64-depends:
 
 build-osx-arm64:
     stage: build
-    extends: .cache-osx-arm64
+    extends: [.cache-osx-arm64, .detect-cpus]
     needs: ["build-osx-arm64-depends"]
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/arm64-apple-darwin
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     dependencies:
         - build-osx-arm64-depends
@@ -920,13 +924,13 @@ build-osx-arm64:
 
 build-debian-nodeps:
     stage: build
-    extends: .cache-debian-nodeps
+    extends: [.cache-debian-nodeps, .detect-cpus]
     needs: []
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=no --enable-glibc-back-compat --enable-reduce-exports
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -937,13 +941,13 @@ build-debian-nodeps:
 
 build-debian-nodeps-qt:
     stage: build
-    extends: .cache-debian-nodeps
+    extends: [.cache-debian-nodeps, .detect-cpus]
     needs: []
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=qt5 --enable-glibc-back-compat --enable-reduce-exports --disable-bench --disable-tests
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -981,13 +985,13 @@ build-debian-nodeps-qt:
 
 build-ubuntu24-nodeps:
     stage: build
-    extends: .cache-ubuntu24-nodeps
+    extends: [.cache-ubuntu24-nodeps, .detect-cpus]
     needs: []
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=no --enable-glibc-back-compat --enable-reduce-exports
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -998,13 +1002,13 @@ build-ubuntu24-nodeps:
 
 build-ubuntu24-nodeps-qt:
     stage: build
-    extends: .cache-ubuntu24-nodeps
+    extends: [.cache-ubuntu24-nodeps, .detect-cpus]
     needs: []
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=qt5 --enable-glibc-back-compat --enable-reduce-exports --disable-bench --disable-tests
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -1024,14 +1028,14 @@ build-ubuntu24-nodeps-qt:
 
 build-android-aarch64-depends:
     stage: build_depends
-    extends: .cache-android-aarch64
+    extends: [.cache-android-aarch64, .detect-cpus]
     script:
         - export AR=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
         - export RANLIB=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
         - export CC=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang
         - export CXX=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang++
         - cd depends
-        - make HOST=aarch64-linux-android -j `nproc` NO_QT=1 NO_WALLET=1 NO_RUST=1 ONLY_LIBNEXA=1
+        - make HOST=aarch64-linux-android -j"$CPUS" NO_QT=1 NO_WALLET=1 NO_RUST=1 ONLY_LIBNEXA=1
         - ccache --show-stats
     artifacts:
         paths:
@@ -1041,7 +1045,7 @@ build-android-aarch64-depends:
 
 build-android-aarch64:
     stage: build
-    extends: .cache-android-aarch64
+    extends: [.cache-android-aarch64, .detect-cpus]
     needs: ["build-android-aarch64-depends"]
     script:
         - export AR=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
@@ -1051,7 +1055,7 @@ build-android-aarch64:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/aarch64-linux-android --enable-only-libnexa --host=aarch64-linux-android
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -1071,14 +1075,14 @@ build-android-aarch64:
 
 build-android-armv7a-depends:
     stage: build_depends
-    extends: .cache-android-armv7a
+    extends: [.cache-android-armv7a, .detect-cpus]
     script:
         - export AR=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
         - export RANLIB=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
         - export CC=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi35-clang
         - export CXX=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi35-clang++
         - cd depends
-        - make HOST=armv7a-linux-androideabi -j `nproc` NO_QT=1 NO_WALLET=1 NO_RUST=1 ONLY_LIBNEXA=1
+        - make HOST=armv7a-linux-androideabi -j"$CPUS" NO_QT=1 NO_WALLET=1 NO_RUST=1 ONLY_LIBNEXA=1
         - ccache --show-stats
     artifacts:
         paths:
@@ -1088,7 +1092,7 @@ build-android-armv7a-depends:
 
 build-android-armv7a:
     stage: build
-    extends: .cache-android-armv7a
+    extends: [.cache-android-armv7a, .detect-cpus]
     needs: ["build-android-armv7a-depends"]
     script:
         - export AR=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
@@ -1098,7 +1102,7 @@ build-android-armv7a:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/armv7a-linux-androideabi --enable-only-libnexa --host=armv7a-linux-androideabi
-        - make -j `nproc`
+        - make -j"$JOBS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -1118,14 +1122,14 @@ build-android-armv7a:
 
 build-android-i686-depends:
     stage: build_depends
-    extends: .cache-android-i686
+    extends: [.cache-android-i686, .detect-cpus]
     script:
         - export AR=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
         - export RANLIB=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
         - export CC=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android35-clang
         - export CXX=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android35-clang++
         - cd depends
-        - make HOST=i686-linux-android -j `nproc` NO_QT=1 NO_WALLET=1 NO_RUST=1 ONLY_LIBNEXA=1
+        - make HOST=i686-linux-android -j"$CPUS" NO_QT=1 NO_WALLET=1 NO_RUST=1 ONLY_LIBNEXA=1
         - ccache --show-stats
     artifacts:
         paths:
@@ -1135,7 +1139,7 @@ build-android-i686-depends:
 
 build-android-i686:
     stage: build
-    extends: .cache-android-i686
+    extends: [.cache-android-i686, .detect-cpus]
     needs: ["build-android-i686-depends"]
     script:
         - export AR=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
@@ -1145,7 +1149,7 @@ build-android-i686:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/i686-linux-android --enable-only-libnexa --host=i686-linux-android
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -1165,14 +1169,14 @@ build-android-i686:
 
 build-android-x86_64-depends:
     stage: build_depends
-    extends: .cache-android-x86_64
+    extends: [.cache-android-x86_64, .detect-cpus]
     script:
         - export AR=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
         - export RANLIB=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
         - export CC=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android35-clang
         - export CXX=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android35-clang++
         - cd depends
-        - make HOST=x86_64-linux-android -j `nproc` NO_QT=1 NO_WALLET=1 NO_RUST=1 ONLY_LIBNEXA=1
+        - make HOST=x86_64-linux-android -j"$CPUS" NO_QT=1 NO_WALLET=1 NO_RUST=1 ONLY_LIBNEXA=1
         - ccache --show-stats
     artifacts:
         paths:
@@ -1182,7 +1186,7 @@ build-android-x86_64-depends:
 
 build-android-x86_64:
     stage: build
-    extends: .cache-android-x86_64
+    extends: [.cache-android-x86_64, .detect-cpus]
     needs: ["build-android-x86_64-depends"]
     script:
         - export AR=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
@@ -1192,7 +1196,7 @@ build-android-x86_64:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/x86_64-linux-android --enable-only-libnexa --host=x86_64-linux-android
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -1212,14 +1216,14 @@ build-android-x86_64:
 
 build-android-riscv64-depends:
     stage: build_depends
-    extends: .cache-android-riscv64
+    extends: [.cache-android-riscv64, .detect-cpus]
     script:
         - export AR=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
         - export RANLIB=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
         - export CC=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/riscv64-linux-android35-clang
         - export CXX=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/riscv64-linux-android35-clang++
         - cd depends
-        - make HOST=riscv64-linux-android -j `nproc` NO_QT=1 NO_WALLET=1 NO_RUST=1 ONLY_LIBNEXA=1
+        - make HOST=riscv64-linux-android -j"$CPUS" NO_QT=1 NO_WALLET=1 NO_RUST=1 ONLY_LIBNEXA=1
         - ccache --show-stats
     artifacts:
         paths:
@@ -1229,7 +1233,7 @@ build-android-riscv64-depends:
 
 build-android-riscv64:
     stage: build
-    extends: .cache-android-riscv64
+    extends: [.cache-android-riscv64, .detect-cpus]
     needs: ["build-android-riscv64-depends"]
     script:
         - export AR=/usr/lib/android-sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
@@ -1239,7 +1243,7 @@ build-android-riscv64:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/riscv64-linux-android --enable-only-libnexa --host=riscv64-linux-android
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -1275,14 +1279,14 @@ build-android-riscv64:
 
 build-alpine-nodeps:
     stage: build
-    extends: .cache-alpine-nodeps
+    extends: [.cache-alpine-nodeps, .detect-cpus]
     needs: []
     script:
         - apk add ccache curl git build-base libtool autoconf automake pkgconf openssl-dev libevent-dev gmp-dev util-linux boost-dev db-dev miniupnpc-dev zeromq-dev openjdk21
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=no --enable-reduce-exports
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -1293,14 +1297,14 @@ build-alpine-nodeps:
 
 build-alpine-nodeps-qt:
     stage: build
-    extends: .cache-alpine-nodeps
+    extends: [.cache-alpine-nodeps, .detect-cpus]
     needs: []
     script:
         - apk add ccache curl git build-base libtool autoconf automake pkgconf openssl-dev libevent-dev gmp-dev util-linux boost-dev db-dev miniupnpc-dev zeromq-dev openjdk21 qt5-qtbase-dev qt5-qttools-dev qt5-qdbusviewer protobuf-dev
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=qt5 --enable-reduce-exports --disable-bench --disable-tests
-        - make -j `nproc`
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
