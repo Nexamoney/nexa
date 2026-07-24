@@ -339,6 +339,28 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             return newNode;
         }
 
+        // If any ancestor of this subblock is still unprocessed (parked as an uncle for a
+        // non-tip grove) then we must not process this subblock either: doing so would
+        // evaluate it against a coins cache that does not reflect the unprocessed ancestor's
+        // spends (compromising double spend detection) and would create a processed node above
+        // an unprocessed ancestor, the exact state Check() asserts on. This can happen when a
+        // subblock arrives while a reorg is in flight and the chain tip transiently sits on
+        // this grove's root. Park it unprocessed instead; it stays in the dag and, like any
+        // other parked subblock, remains eligible to be adopted as an uncle.
+        for (auto &ancestor : newNode->setAncestors)
+        {
+            if (!ancestor->fProcessed)
+            {
+                LOG(DAG, "%s(): parking subblock %s because ancestor %s is unprocessed\n", __func__,
+                    newNode->hash.ToString(), ancestor->hash.ToString());
+                newNode->nSequenceId = dag.size() + 1;
+                DbgAssert(newNode->nSequenceId > 0, );
+                newNode->fProcessed = false;
+                dag.emplace(newNode->hash, newNode);
+                return newNode;
+            }
+        }
+
         bool fMissingOrSpent = false;
         std::set<CTreeNodeRef> setConflictingSubblocks;
         CValidationState state;
