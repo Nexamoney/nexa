@@ -1864,24 +1864,32 @@ void CTailstormForest::CheckForReorg()
             GetFullDagFor(grove->roothash, dag);
             // Add work for every subblock we know about, but no more than will fit in a summary block.
             // This way a fork with extra subblocks will not have more work than a fork with the correct number
-            // of subblocks + a summary block
+            // of subblocks + a summary block.
+            //
+            // The cap applies per grove so the counter must be reset for each grove. Compare with
+            // >= since the counter can step past the cap, and count the unlinked subblocks against
+            // the same cap so they can not push a grove's work beyond what fits in a summary block.
+            subblockCount = 0;
             for (auto node : dag)
             {
                 nTreeChainWork += GetWorkForDifficultyBits(node->subblock->nBits);
                 subblockCount++;
-                if (subblockCount == tailstorm_k - 1)
+                if (subblockCount >= tailstorm_k - 1)
                     break;
             }
             for (auto &mi : mapUnlinkedGroves)
             {
-                if (subblockCount == tailstorm_k - 1)
+                if (subblockCount >= tailstorm_k - 1)
                     break;
                 if (mi.first == grove->roothash)
                 {
                     for (auto &si : mi.second)
+                    {
+                        if (subblockCount >= tailstorm_k - 1)
+                            break;
                         nTreeChainWork += GetWorkForDifficultyBits(si->subblock->nBits);
-                    if (subblockCount == tailstorm_k - 1)
-                        break;
+                        subblockCount++;
+                    }
                 }
             }
 
@@ -1919,9 +1927,14 @@ void CTailstormForest::CheckForReorg()
             }
 
             arith_uint256 nTreeChainWork = pindexSummaryRoot->chainWork();
+            // Apply the same k-1 cap to groves that exist only as unlinked sets.
+            unsigned int nUnlinkedCounted = 0;
             for (auto node : mi.second)
             {
+                if (nUnlinkedCounted >= tailstorm_k - 1)
+                    break;
                 nTreeChainWork += GetWorkForDifficultyBits(node->subblock->nBits);
+                nUnlinkedCounted++;
             }
             if (nTreeChainWork > nMaxChainWork && nTreeChainWork > nChainTipWork)
             {
