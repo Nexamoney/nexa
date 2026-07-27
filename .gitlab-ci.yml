@@ -206,12 +206,12 @@ build-ubuntu-nodeps-qt:
 build-ubuntu-tests-nodeps:
     stage: build_tests
     extends: .cache-ubuntu-nodeps
-    needs: ["build-ubuntu-nodeps"]
+    needs:
+        - job: build-ubuntu-nodeps
+          artifacts: true
     cache: {}
     script:
         - (cd build/src; ./test/test_nexa)
-    dependencies:
-        - build-ubuntu-nodeps
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -268,24 +268,24 @@ build-ubuntu-nodeps-nowallet:
 build-ubuntu-tests-nodeps-nowallet:
     stage: build_tests
     extends: .cache-ubuntu-nodeps-nowallet
-    needs: ["build-ubuntu-nodeps-nowallet-qt"]
+    needs:
+        - job: build-ubuntu-nodeps-nowallet-qt
+          artifacts: true
     cache: {}
     script:
         - (cd build/src; ./test/test_nexa;)
-    dependencies:
-        - build-ubuntu-nodeps-nowallet-qt
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 build-ubuntu-tests-nodeps-nowallet-qt:
     stage: build_tests
     extends: .cache-ubuntu-nodeps-nowallet
-    needs: ["build-ubuntu-nodeps-nowallet-qt"]
+    needs:
+        - job: build-ubuntu-nodeps-nowallet-qt
+          artifacts: true
     cache: {}
     script:
         - (cd build/src; ./qt/test/test_nexa-qt)
-    dependencies:
-        - build-ubuntu-nodeps-nowallet-qt
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -319,15 +319,15 @@ build-ubuntu-deps-only-libnexa:
 build-ubuntu-only-libnexa:
     stage: build
     extends: [.cache-ubuntu-only-libnexa, .detect-cpus]
-    needs: [build-ubuntu-deps-only-libnexa]
+    needs:
+        - job: build-ubuntu-deps-only-libnexa
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-shared --enable-debug --enable-only-libnexa --enable-glibc-back-compat --enable-reduce-exports --cache-file=config.cache --prefix=$PWD/../depends/x86_64-linux-gnu CPPFLAGS=-DDEBUG_LOCKORDER
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-ubuntu-deps-only-libnexa
     artifacts:
         when: always
         paths:
@@ -366,7 +366,9 @@ build-ubuntu-deps:
 build-ubuntu:
     stage: build
     extends: [.cache-ubuntu, .detect-cpus]
-    needs: [build-ubuntu-deps]
+    needs:
+        - job: build-ubuntu-deps
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
@@ -380,8 +382,6 @@ build-ubuntu:
                 find build/src/test src/test -maxdepth 1 -name '*.log' -type f -exec cp -f {} build/ci-failure-logs/ \; 2>/dev/null || true
                 [ ! -f src/test-suite.log ] || cp -f src/test-suite.log build/ci-failure-logs/
             fi
-    dependencies:
-        - build-ubuntu-deps
     artifacts:
         when: always
         paths:
@@ -405,7 +405,9 @@ build-ubuntu-rostrum:
         - cargohome/registry/cache
         - cargohome/git/db
 
-    needs: [build-ubuntu-deps]
+    needs:
+        - job: build-ubuntu-deps
+          artifacts: true
 
     variables:
         CARGO_HOME: ${CI_PROJECT_DIR}/cargohome
@@ -424,9 +426,6 @@ build-ubuntu-rostrum:
         - ../configure --prefix=$PWD/../depends/x86_64-linux-gnu > /dev/null
         - make rostrum
 
-    dependencies:
-        - build-ubuntu-deps
-
     artifacts:
         paths:
             - ./build/src/rostrum
@@ -436,7 +435,9 @@ build-ubuntu-rostrum:
 build-ubuntu-tests:
     stage: build_tests
     extends: .cache-ubuntu
-    needs: ["build-ubuntu"]
+    needs:
+        - job: build-ubuntu
+          artifacts: true
     cache: {}
     script:
         - (cd build/src; ./test/test_nexa)
@@ -444,23 +445,21 @@ build-ubuntu-tests:
         when: on_failure
         paths:
             - ./build/src/test/
-    dependencies:
-        - build-ubuntu
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 test-ubuntu-qa:
     stage: qa_tests
     extends: .cache-ubuntu
-    needs: ["build-ubuntu"]
+    needs:
+        - job: build-ubuntu
+          artifacts: true
     script:
         - mkdir -p $CI_PROJECT_DIR/cores
         - mkdir -p $CI_PROJECT_DIR/saved-cores
         - echo $CI_PROJECT_DIR/cores/core.%e.%p.%h.%t | tee /proc/sys/kernel/core_pattern
         - cd build;
         - ./qa/pull-tester/rpc-tests.py --coverage --no-ipv6-rpc-listen --gitlab
-    dependencies:
-        - build-ubuntu
     artifacts:
         when: on_failure
         paths:
@@ -474,15 +473,15 @@ test-ubuntu-qa:
 test-ubuntu-qa-extended:
     stage: qa_tests
     extends: .cache-ubuntu
-    needs: ["build-ubuntu"]
+    needs:
+        - job: build-ubuntu
+          artifacts: true
     script:
         - mkdir -p $CI_PROJECT_DIR/cores
         - mkdir -p $CI_PROJECT_DIR/saved-cores
         - echo $CI_PROJECT_DIR/cores/core.%e.%p.%h.%t | tee /proc/sys/kernel/core_pattern
         - cd build;
         - ./qa/pull-tester/rpc-tests.py --coverage --no-ipv6-rpc-listen --gitlab --extended-only
-    dependencies:
-        - build-ubuntu
     artifacts:
         when: on_failure
         paths:
@@ -499,18 +498,22 @@ test-ubuntu-qa-extended:
 test-ubuntu-benchmarks:
     extends: .ubuntu_base
     stage: benchmark_tests
-    needs: ["build-ubuntu-nodeps"]
+    needs:
+        - job: build-ubuntu-nodeps
+          artifacts: true
     script:
         - (./build/src/bench/bench_nexa -evals=1)
-    dependencies:
-        - build-ubuntu-nodeps
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 test-ubuntu-qa-rostrum:
     stage: qa_tests
     image: python:latest
-    needs: ["build-ubuntu", "build-ubuntu-rostrum"]
+    needs:
+        - job: build-ubuntu
+          artifacts: true
+        - job: build-ubuntu-rostrum
+          artifacts: true
     variables:
         PIP_CACHE_DIR: $CI_PROJECT_DIR/cache-pip
     cache:
@@ -532,9 +535,6 @@ test-ubuntu-qa-rostrum:
         # Some rostrum tests are unreliable if launched simultaneously because (for example) they require that the txpool contents be exactly what one test places in them
         - ./rostrum-v14.0.1/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab -parallel=1
         #- ./rostrum-master/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab
-    dependencies:
-        - build-ubuntu
-        - build-ubuntu-rostrum
     artifacts:
         when: on_failure
         paths:
@@ -588,7 +588,9 @@ build-ubuntu-clang:
 build-ubuntu-tests-clang:
     stage: build_tests
     extends: .ubuntu-clang-env
-    needs: ["build-ubuntu-clang"]
+    needs:
+        - job: build-ubuntu-clang
+          artifacts: true
     cache: {}
     script:
         - (cd build/src; ./test/test_nexa)
@@ -596,8 +598,6 @@ build-ubuntu-tests-clang:
         when: on_failure
         paths:
             - ./build/src/test/
-    dependencies:
-        - build-ubuntu-clang
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -631,15 +631,15 @@ build-arm-depends-64:
 build-arm-64:
     stage: build
     extends: [.cache-arm-64, .detect-cpus]
-    needs: ["build-arm-depends-64"]
+    needs:
+        - job: build-arm-depends-64
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/aarch64-linux-gnu --enable-glibc-back-compat --enable-reduce-exports CXXFLAGS=-Wno-psabi
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-arm-depends-64
     artifacts:
         when: on_failure
         paths:
@@ -677,15 +677,15 @@ build-arm-depends-32:
 build-arm-32:
     stage: build
     extends: [.cache-arm-32, .detect-cpus]
-    needs: ["build-arm-depends-32"]
+    needs:
+        - job: build-arm-depends-32
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/arm-linux-gnueabihf --enable-glibc-back-compat --enable-reduce-exports
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-arm-depends-32
     artifacts:
         when: on_failure
         paths:
@@ -724,15 +724,15 @@ build-riscv-depends-64:
 build-riscv-64:
     stage: build
     extends: [.cache-riscv-64, .detect-cpus]
-    needs: ["build-riscv-depends-64"]
+    needs:
+        - job: build-riscv-depends-64
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/riscv64-linux-gnu
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-riscv-depends-64
     artifacts:
         when: on_failure
         paths:
@@ -770,15 +770,15 @@ build-win-64-depends:
 build-win-64:
     stage: build
     extends: [.cache-win-64, .detect-cpus]
-    needs: ["build-win-64-depends"]
+    needs:
+        - job: build-win-64-depends
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/x86_64-w64-mingw32
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-win-64-depends
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -818,15 +818,15 @@ build-osx-depends:
 build-osx:
     stage: build
     extends: [.cache-osx, .detect-cpus]
-    needs: ["build-osx-depends"]
+    needs:
+        - job: build-osx-depends
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/x86_64-apple-darwin
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-osx-depends
     artifacts:
         when: always
         paths:
@@ -872,15 +872,15 @@ build-osx-arm64-depends:
 build-osx-arm64:
     stage: build
     extends: [.cache-osx-arm64, .detect-cpus]
-    needs: ["build-osx-arm64-depends"]
+    needs:
+        - job: build-osx-arm64-depends
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/arm64-apple-darwin
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-osx-arm64-depends
     artifacts:
         when: always
         paths:
