@@ -50,6 +50,8 @@ doc_tests:
           - test
     rules:
         - if: $CI_COMMIT_REF_NAME != $CI_DEFAULT_BRANCH
+          changes:
+              - doc/rpc/**/*
 
 pages:
     stage: documentation
@@ -67,6 +69,8 @@ pages:
           - public
     rules:
         - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
+          changes:
+              - doc/rpc/**/*
 
 
 cache: &global_cache_settings
