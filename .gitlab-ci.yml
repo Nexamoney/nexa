@@ -1102,7 +1102,7 @@ build-android-armv7a:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/armv7a-linux-androideabi --enable-only-libnexa --host=armv7a-linux-androideabi
-        - make -j"$JOBS"
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
