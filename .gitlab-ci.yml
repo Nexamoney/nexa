@@ -521,7 +521,7 @@ test-ubuntu-qa-rostrum:
     variables:
         PIP_CACHE_DIR: $CI_PROJECT_DIR/cache-pip
     cache:
-        key: $CI_JOB_NAME
+        key: rostrum-pip-$CI_NODE_INDEX
         paths:
             - cache-pip
     before_script:
@@ -536,7 +536,8 @@ test-ubuntu-qa-rostrum:
         - wget https://gitlab.com/nexa/rostrum/-/archive/v14.0.1/rostrum-v14.0.1.tar.gz -O rostrum-master.tar.gz
         #- wget https://gitlab.com/nexa/rostrum/-/archive/master/rostrum-master.tar.gz -O rostrum-master.tar.gz
         - tar -zxf rostrum-master.tar.gz
-        # Some rostrum tests are unreliable if launched simultaneously because (for example) they require that the txpool contents be exactly what one test places in them
+        - python3 ci/shard-rostrum-tests.py rostrum-v14.0.1/test/functional --index "$((CI_NODE_INDEX - 1))" --count "$CI_NODE_TOTAL"
+        # Keep tests within each isolated shard serial because some require exact txpool contents.
         - ./rostrum-v14.0.1/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab -parallel=1
         #- ./rostrum-master/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab
     artifacts:
@@ -549,6 +550,7 @@ test-ubuntu-qa-rostrum:
             - ./build/ctorout.txt
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
+    parallel: 2
 
 ######################################################
 ######## nexad clang (no depend, only system lib installed via apt)
