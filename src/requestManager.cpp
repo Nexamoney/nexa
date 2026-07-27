@@ -1919,6 +1919,8 @@ void CRequestManager::DisconnectOnDownloadTimeout(CNode *pnode, const Consensus:
                 // Delete the front item and reset the downloading time to the next items askFor() time.
                 // While the askFor() time is not exactly the time the request was initiated it should only be
                 // a matter of a few millseconds longer and is accurate enough for our needs.
+                // Always remove from the map first!
+                MapBlocksInFlightErase(vBlocksInFlight.front().hash, nodeid);
                 vBlocksInFlight.pop_front();
                 if (!vBlocksInFlight.empty())
                 {
