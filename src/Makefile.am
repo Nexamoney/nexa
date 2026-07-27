@@ -886,7 +886,7 @@ check-formatting:
 	    echo "clang-format not installed"; \
 	    exit 1; \
 	fi
-	@echo "Checking source formatting stylei with $(CLANG_FORMAT_BIN) ..."
+	@echo "Checking source formatting style with $(CLANG_FORMAT_BIN) ..."
 	(cd $(top_srcdir)/src; ../contrib/devtools/clang-format.py check  $(CLANG_FORMAT_BIN)  `cat ./.formatted-files`)
 
 run-formatting:
