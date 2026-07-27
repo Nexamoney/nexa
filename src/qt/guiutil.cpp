@@ -96,7 +96,7 @@ QString dateTimeStr(const QDateTime &date)
 QString dateTimeStr(qint64 nTime) { return dateTimeStr(QDateTime::fromTime_t((qint32)nTime)); }
 QFont fixedPitchFont() { return QFontDatabase::systemFont(QFontDatabase::FixedFont); }
 
-static std::string MakeAddrInvalid(std::string addr)
+static std::string MakeAddrInvalid(const CChainParams &params, std::string addr)
 {
     if (addr.size() < 2)
     {
@@ -105,7 +105,7 @@ static std::string MakeAddrInvalid(std::string addr)
 
     // Checksum is at the end of the address. Swapping chars to make it invalid.
     std::swap(addr[addr.size() - 1], addr[addr.size() - 2]);
-    if (!IsValidDestinationString(addr))
+    if (!IsValidDestinationString(addr, params))
     {
         return addr;
     }
@@ -121,7 +121,7 @@ std::string DummyAddress(const CChainParams &params, const Config &cfg)
 
     const CTxDestination dstKey =
         ScriptTemplateDestination(ScriptTemplateOutput(P2PKT_ID, VchHash160(dummydata), VchType(), NoGroup, 0));
-    return MakeAddrInvalid(EncodeDestination(dstKey, params, cfg));
+    return MakeAddrInvalid(params, EncodeDestination(dstKey, params, cfg));
 }
 
 void setupAddressWidget(QValidatedLineEdit *widget, QWidget *parent, bool fTokens)

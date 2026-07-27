@@ -245,6 +245,12 @@ public:
     // so that if there's a download timeout, only BLOCK requests will trigger it.
     bool RequestBlock(CNode *pfrom, CInv &obj, int objType);
 
+    /** A summary block references its subblocks by mining header commitment in its minerData.  If we are missing
+     any of those subblocks, request them from the peer using a normal getdata: the subblock hash and the mining
+    header commitment are both cryptographic hashes in the same identifier space, so MSG_BLOCK carrying the
+    commitment in inv.hash is unambiguous, and the peer's getdata handler resolves it via tailstormForest.Find(). */
+    void RequestMissingSubblocks(const ConstCBlockRef &pblock, CNode *pfrom = nullptr);
+
     // Get this object from somewhere, asynchronously.
     void AskFor(const CInv &obj, CNode *from, int objType);
 

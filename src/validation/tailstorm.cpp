@@ -129,9 +129,6 @@ void AcceptSubblock(ConstCBlockRef pblock)
             setToAnnounce = tailstormForest.ProcessOrphans();
             setToAnnounce.insert(pblock->GetHash());
 
-            // Check for subblocks to prune
-            PruneSubblocks(pblock);
-
             forceTemplateRecalc.store(true);
             LOG(DAG, "Completed AcceptSubblock : %s", pblock->GetHash().ToString());
 

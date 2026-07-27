@@ -1274,13 +1274,22 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
 
     if (fOK)
     {
+        // We successfully added it so remove from orphans (if its there)
+        RemoveSubblockOrphan(newNode->subblock);
         // Find the best treenode tip out of all the dags and update
         // the atomic pointer.
         std::set<CTreeNodeRef> dag;
         GetBestDagFor(subblock->hashPrevBlock, dag);
         CTreeNodeRef bestnode = FindDagTipNode(dag);
         if (bestnode)
+        {
             SetDagActiveTip(bestnode);
+            // We have enough subblocks to make a summary block so signal to check the summary block orphans
+            if (dag.size() >= Params().GetConsensus().tailstorm_k - 1)
+            {
+                checkSummaryBlockOrphans++;
+            }
+        }
     }
     else
     {
@@ -1574,8 +1583,29 @@ bool CTailstormForest::Find(const uint256 &hash, ConstCBlockRef &subblock)
         subblock = iter->second->subblock;
         return true;
     }
+    // Not found by subblock hash, so also look for a subblock whose mining header commitment matches.  This
+    // lets peers request a subblock by mining header commitment.  This access is rare so until it becomes an issue
+    // use a linear search.
+    return FindByMHC(hash, subblock);
+}
+
+bool CTailstormForest::FindByMHC(const uint256 &hash, ConstCBlockRef &subblock)
+{
+    LOCK(cs_forest);
+    for (auto &mi : mapAllNodes)
+    {
+        const CTreeNodeRef &node = mi.second;
+        if (node->subblock && node->subblock->GetMiningHeaderCommitment() == hash)
+        {
+            subblock = node->subblock;
+            LOG(DAG, "%s: Found subblock by mining header commitment %s, it is %s ", __func__, hash.ToString(),
+                subblock->GetHash().ToString());
+            return true;
+        }
+    }
     return false;
 }
+
 
 bool CTailstormForest::Contains(const uint256 &hash)
 {
@@ -2010,18 +2040,26 @@ void CTailstormForest::CheckForReorg()
             {
                 LOG(DAG, "%s():  failed to reorg to %s", __func__, pindexMostWork->phashBlock->ToString());
             }
-
-            // If the chaintip changed then a reorg was successful.
-            auto newChainTip = chainActive.Tip();
-            if (chainTip != newChainTip)
+            else
             {
-                LOG(DAG, "%s():  completed a reorg to %s", __func__, newChainTip->phashBlock->ToString());
+                LOG(DAG, "%s():  completed a reorg to %s", __func__, pindexMostWork->phashBlock->ToString());
 
                 // Regenerate the dag data since there may be unprocessed subblocks present which were
                 // added to the tree when the fork was inactive.
                 CTailstormGroveRef grove;
-                if (GetGrove(*newChainTip->phashBlock, grove))
-                    ReGenerateDagData(grove);
+                if (GetGrove(*pindexMostWork->phashBlock, grove))
+                {
+                    chainTip = chainActive.Tip();
+                    auto &tree = grove->tree;
+                    if (tree->dag.size())
+                    {
+                        auto treenode = tree->dag.begin()->second;
+                        // Only regenerate if we actually reorged to the grove that we were trying to reorg to.
+                        // ActivateBestChainStep may activate a different fork.
+                        if (treenode->subblock->hashPrevBlock == chainTip->GetHash())
+                            ReGenerateDagData(grove);
+                    }
+                }
 
                 // Since all subblocks already in the dag have been processed we just need to process
                 // any unlinked subblocks.

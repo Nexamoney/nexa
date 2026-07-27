@@ -221,8 +221,11 @@ protected:
     // accessed by its class methods.
     CTreeNodeRef pDagActiveTip = nullptr;
 
-    // Are orphans currently begin processed
-    bool processingOrphans = false;
+    // Orphans are currently begin processed if > 0
+    int processingOrphans = 0;
+    // Set when other events (like subblock inserted) means that we should reevaluate the orphan summary blocks
+    // to see if any can be connected.
+    int checkSummaryBlockOrphans = 0;
 
 public:
     // The coins cache for the active tree. This is used
@@ -281,8 +284,11 @@ public:
     //! Return a hash of the dag tip given a hash of some subblock in the dag.
     uint256 GetDagTipHash(const uint256 &hash);
 
-    //! Find and return a subblock in the forest, if it exists.
+    /** Find and return a subblock in the forest, if it exists, either by block hash or mining header commitment */
     bool Find(const uint256 &hash, ConstCBlockRef &subblock);
+    /** Find and return a subblock in the forest, by mining header commitment */
+    bool FindByMHC(const uint256 &hash, ConstCBlockRef &subblock);
+
 
     //! Find out whether the forst contains a treenode
     bool Contains(const uint256 &hash);

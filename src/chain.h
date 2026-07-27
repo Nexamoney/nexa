@@ -421,8 +421,8 @@ public:
     int64_t GetHeaderReceivedTime() const { return nTimeReceived; }
     std::string ToString() const
     {
-        return strprintf("CBlockIndex(pprev=%p, nHeight=%d, merkle=%s, hashBlock=%s)", pprev, height(),
-            hashMerkleRoot().ToString(), GetBlockHash().ToString());
+        return strprintf("CBlockIndex(pprev=%p, nHeight=%d, merkle=%s, hashBlock=%s, chainWork=%s)", pprev, height(),
+            hashMerkleRoot().ToString(), GetBlockHash().ToString(), chainWork().ToString());
     }
 
     //! Check whether this block index entry is valid up to the passed validity level.

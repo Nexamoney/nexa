@@ -69,6 +69,19 @@ extern std::string DebuggerToString(CValidationDebugger &debugger);
 // one thread at a time can execute this function.
 CCriticalSection cs_requestNextBlocks;
 
+void BlockReceivedPostProcessing(CNode *pfrom, ConstCBlockRef pblock)
+{
+    SendExpeditedBlock(*pblock, pfrom);
+    // If this summary block is ready to be connected to our tip (its previous block is the active tip)
+    // but we are missing some of the subblocks it references, request those subblocks from this peer so
+    // the block can connect.
+    if (IsChainNearlySyncd() && IsTailstormSummaryBlock(pblock) &&
+        (pblock->hashPrevBlock == chainActive.Tip()->GetBlockHash()))
+    {
+        requester.RequestMissingSubblocks(pblock, pfrom);
+    }
+}
+
 bool CanDirectFetch(const Consensus::Params &consensusParams)
 {
     return chainActive.Tip()->GetBlockTime() > GetAdjustedTime() - consensusParams.nPowTargetSpacing * 20;
@@ -2485,19 +2498,14 @@ bool ProcessMessage(CNode *pfrom,
 
         const uint256 hash = pblock->GetHash();
         if (IsSummaryBlock(pblock))
+        {
             LOG(BLK | NET, "received block %s peer=%s height=%d\n", hash.ToString(), pfrom->GetLogName(),
                 pblock->height);
+        }
         else
             LOG(BLK | NET, "received subblock %s peer=%s height=%d\n", hash.ToString(), pfrom->GetLogName(),
                 pblock->height);
         UnlimitedLogBlock(*pblock, hash.ToString(), receiptTime);
-
-        if (IsChainNearlySyncd()) // Send the received block out to expedited channels quickly
-        {
-            CValidationState state;
-            if (CheckBlockHeader(chainparams.GetConsensus(), *pblock, state, true)) // block header is fine
-                SendExpeditedBlock(*pblock, pfrom);
-        }
 
         {
             // Reset the getheaders time because block can consume all bandwidth
@@ -2508,6 +2516,7 @@ bool ProcessMessage(CNode *pfrom,
                 state->nSyncStartTime = now; // reset the time because more headers needed
         }
         pfrom->nPingUsecStart = GetStopwatchMicros(); // Reset ping time because block can consume all bandwidth
+        BlockReceivedPostProcessing(pfrom, pblock);
         PV->HandleBlockMessage(pfrom, strCommand, pblock);
     }
 
