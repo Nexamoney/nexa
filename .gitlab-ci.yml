@@ -83,9 +83,10 @@ pages:
               - doc/rpc/**/*
 
 
-cache: &global_cache_settings
-    paths:
-        - ccache/
+.ccache:
+    cache: &ccache_settings
+        paths:
+            - ccache/
 
 ###################
 # Gitian binaries #
@@ -143,11 +144,13 @@ gitian-binaries:
 
 .ubuntu_ccache_scripts:
     extends: .ubuntu_base
+    variables:
+        CCACHE_BASEDIR: ${CI_PROJECT_DIR}
+        CCACHE_DIR: ${CI_PROJECT_DIR}/ccache
+        CCACHE_COMPILERCHECK: content
+        CCACHE_MAXSIZE: 3G
     before_script:
         - mkdir -p ccache
-        - export CCACHE_BASEDIR=${PWD}
-        - export CCACHE_DIR=${PWD}/ccache
-        - export CCACHE_COMPILERCHECK=content
         # Limit ccache to 3 GB (from default 5 GB).
         - ccache -M 3G
         - ccache --zero-stats || true
@@ -174,7 +177,7 @@ check-formatting:
 .cache-ubuntu-nodeps:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: ubuntu_cache-nodeps
 
 build-ubuntu-nodeps:
@@ -235,7 +238,7 @@ build-ubuntu-tests-nodeps:
 .cache-ubuntu-nodeps-nowallet:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: ubuntu_cache-nodeps-nowallet
 
 build-ubuntu-nodeps-nowallet-qt:
@@ -306,21 +309,22 @@ build-ubuntu-tests-nodeps-nowallet-qt:
 ######################################################
 ######## Linux 64 bit, only libnexa from source deps
 ######################################################
-.cache-ubuntu-only-libnexa:
+.ccache-ubuntu-only-libnexa:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: ubuntu_cache-only-libnexa
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/x86_64-linux-gnu
+        <<: *ccache_settings
+        key: ccache-ubuntu-only-libnexa
 
 build-ubuntu-deps-only-libnexa:
     stage: build_depends
-    extends: [.cache-ubuntu-only-libnexa, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
     needs: []
+    cache:
+        key: depends-ubuntu-only-libnexa
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/x86_64-linux-gnu
     script:
         - cd depends
         - make HOST=x86_64-linux-gnu -j"$CPUS" ONLY_LIBNEXA=1
@@ -332,7 +336,7 @@ build-ubuntu-deps-only-libnexa:
 
 build-ubuntu-only-libnexa:
     stage: build
-    extends: [.cache-ubuntu-only-libnexa, .detect-cpus]
+    extends: [.ccache-ubuntu-only-libnexa, .detect-cpus]
     needs:
         - job: build-ubuntu-deps-only-libnexa
           artifacts: true
@@ -353,21 +357,22 @@ build-ubuntu-only-libnexa:
 ######################################################
 ######## Linux 64 bit, source deps
 ######################################################
-.cache-ubuntu:
+.ccache-ubuntu:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: ubuntu_cache
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/x86_64-linux-gnu
+        <<: *ccache_settings
+        key: ccache-ubuntu
 
 build-ubuntu-deps:
     stage: build_depends
-    extends: [.cache-ubuntu, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
     needs: []
+    cache:
+        key: depends-ubuntu
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/x86_64-linux-gnu
     script:
         - cd depends
         - make HOST=x86_64-linux-gnu -j$CPUS
@@ -379,7 +384,7 @@ build-ubuntu-deps:
 
 build-ubuntu:
     stage: build
-    extends: [.cache-ubuntu, .detect-cpus]
+    extends: [.ccache-ubuntu, .detect-cpus]
     needs:
         - job: build-ubuntu-deps
           artifacts: true
@@ -448,11 +453,11 @@ build-ubuntu-rostrum:
 
 build-ubuntu-tests:
     stage: build_tests
-    extends: .cache-ubuntu
+    extends: .ubuntu_base
     needs:
         - job: build-ubuntu
           artifacts: true
-    cache: {}
+    cache: []
     script:
         - (cd build/src; ./test/test_nexa)
     artifacts:
@@ -488,7 +493,8 @@ test-ubuntu-qa:
 
 test-ubuntu-qa-extended:
     stage: qa_tests
-    extends: .cache-ubuntu
+    extends: .ubuntu_base
+    cache: []
     needs:
         - job: build-ubuntu
           artifacts: true
@@ -570,7 +576,7 @@ test-ubuntu-qa-rostrum:
 .cache-ubuntu-clang:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: ubuntu_cache_clang
 
 .ubuntu-clang-env:
@@ -622,20 +628,21 @@ build-ubuntu-tests-clang:
 ######################################################
 ######## ARM64
 ######################################################
-.cache-arm-64:
+.ccache-arm-64:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: arm_cache-64
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/aarch64-linux-gnu
+        <<: *ccache_settings
+        key: ccache-arm-64
 
 build-arm-depends-64:
     stage: build_depends
-    extends: [.cache-arm-64, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key: depends-arm-64
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/aarch64-linux-gnu
     script:
         - make -C depends HOST=aarch64-linux-gnu clean
         - cd depends
@@ -648,7 +655,7 @@ build-arm-depends-64:
 
 build-arm-64:
     stage: build
-    extends: [.cache-arm-64, .detect-cpus]
+    extends: [.ccache-arm-64, .detect-cpus]
     needs:
         - job: build-arm-depends-64
           artifacts: true
@@ -668,20 +675,21 @@ build-arm-64:
 ######################################################
 ######## ARM32
 ######################################################
-.cache-arm-32:
+.ccache-arm-32:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: arm_cache-32
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/arm-linux-gnueabihf
+        <<: *ccache_settings
+        key: ccache-arm-32
 
 build-arm-depends-32:
     stage: build_depends
-    extends: [.cache-arm-32, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key: depends-arm-32
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/arm-linux-gnueabihf
     script:
         - make -C depends HOST=arm-linux-gnueabihf clean
         - cd depends
@@ -694,7 +702,7 @@ build-arm-depends-32:
 
 build-arm-32:
     stage: build
-    extends: [.cache-arm-32, .detect-cpus]
+    extends: [.ccache-arm-32, .detect-cpus]
     needs:
         - job: build-arm-depends-32
           artifacts: true
@@ -715,20 +723,21 @@ build-arm-32:
 ######################################################
 ######## RISC-V 64
 ######################################################
-.cache-riscv-64:
+.ccache-riscv-64:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: riscv_cache-64
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/riscv64-linux-gnu
+        <<: *ccache_settings
+        key: ccache-riscv-64
 
 build-riscv-depends-64:
     stage: build_depends
-    extends: [.cache-riscv-64, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key: depends-riscv-64
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/riscv64-linux-gnu
     script:
         - make -C depends HOST=riscv64-linux-gnu clean
         - cd depends
@@ -741,7 +750,7 @@ build-riscv-depends-64:
 
 build-riscv-64:
     stage: build
-    extends: [.cache-riscv-64, .detect-cpus]
+    extends: [.ccache-riscv-64, .detect-cpus]
     needs:
         - job: build-riscv-depends-64
           artifacts: true
@@ -762,20 +771,21 @@ build-riscv-64:
 ######################################################
 ######## Win64
 ######################################################
-.cache-win-64:
+.ccache-win-64:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: win_cache-64
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/x86_64-w64-mingw32
+        <<: *ccache_settings
+        key: ccache-win-64
 
 build-win-64-depends:
     stage: build_depends
-    extends: [.cache-win-64, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key: depends-win-64
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/x86_64-w64-mingw32
     script:
         - cd depends
         - make HOST=x86_64-w64-mingw32 NO_QT=1 -j$CPUS NO_RUST=1
@@ -787,7 +797,7 @@ build-win-64-depends:
 
 build-win-64:
     stage: build
-    extends: [.cache-win-64, .detect-cpus]
+    extends: [.ccache-win-64, .detect-cpus]
     needs:
         - job: build-win-64-depends
           artifacts: true
@@ -803,29 +813,29 @@ build-win-64:
 ######################################################
 ######## macOS Intel X86_64
 ######################################################
-.cache-osx:
+.ccache-osx:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: osx_cache
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/x86_64-apple-darwin
+        <<: *ccache_settings
+        key: ccache-osx
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 build-osx-depends:
     stage: build_depends
-    extends: [.cache-osx, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key: depends-osx
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/x86_64-apple-darwin
     script:
         - mkdir -p depends/sdk-sources; mkdir depends/SDKs
         - curl --location --fail https://www.bitcoinunlimited.info/sdks/MacOSX11.3.sdk.tar.xz -o ./depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - tar -C depends/SDKs -xf depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - cd depends
         - make HOST=x86_64-apple-darwin -j$CPUS NO_RUST=1
-        - ccache --show-stats
     artifacts:
         paths:
             - depends/x86_64-apple-darwin
@@ -835,7 +845,7 @@ build-osx-depends:
 
 build-osx:
     stage: build
-    extends: [.cache-osx, .detect-cpus]
+    extends: [.ccache-osx, .detect-cpus]
     needs:
         - job: build-osx-depends
           artifacts: true
@@ -857,29 +867,29 @@ build-osx:
 ######################################################
 ######## macOS ARM 64
 ######################################################
-.cache-osx-arm64:
+.ccache-osx-arm64:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: osx_cache_arm64
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/arm64-apple-darwin
+        <<: *ccache_settings
+        key: ccache-osx-arm64
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 build-osx-arm64-depends:
     stage: build_depends
-    extends: [.cache-osx-arm64, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key: depends-osx-arm64
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/arm64-apple-darwin
     script:
         - mkdir -p depends/sdk-sources; mkdir depends/SDKs
         - curl --location --fail https://www.bitcoinunlimited.info/sdks/MacOSX11.3.sdk.tar.xz -o ./depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - tar -C depends/SDKs -xf depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - cd depends
         - make HOST=arm64-apple-darwin -j$CPUS NO_RUST=1
-        - ccache --show-stats
     artifacts:
         paths:
             - depends/arm64-apple-darwin
@@ -889,7 +899,7 @@ build-osx-arm64-depends:
 
 build-osx-arm64:
     stage: build
-    extends: [.cache-osx-arm64, .detect-cpus]
+    extends: [.ccache-osx-arm64, .detect-cpus]
     needs:
         - job: build-osx-arm64-depends
           artifacts: true
@@ -916,11 +926,12 @@ build-osx-arm64:
 
 .debian_ccache_scripts:
     extends: .debian_base
+    variables:
+        CCACHE_BASEDIR: ${CI_PROJECT_DIR}
+        CCACHE_DIR: ${CI_PROJECT_DIR}/ccache
+        CCACHE_COMPILERCHECK: content
     before_script:
         - mkdir -p ccache
-        - export CCACHE_BASEDIR=${PWD}
-        - export CCACHE_DIR=${PWD}/ccache
-        - export CCACHE_COMPILERCHECK=content
         - ccache --zero-stats || true
 
 ######################################################
@@ -929,7 +940,7 @@ build-osx-arm64:
 .cache-debian-nodeps:
     extends: .debian_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: debian_cache-nodeps
 
 build-debian-nodeps:
@@ -977,11 +988,12 @@ build-debian-nodeps-qt:
 
 .ubuntu24_ccache_scripts:
     extends: .ubuntu24_base
+    variables:
+        CCACHE_BASEDIR: ${CI_PROJECT_DIR}
+        CCACHE_DIR: ${CI_PROJECT_DIR}/ccache
+        CCACHE_COMPILERCHECK: content
     before_script:
         - mkdir -p ccache
-        - export CCACHE_BASEDIR=${PWD}
-        - export CCACHE_DIR=${PWD}/ccache
-        - export CCACHE_COMPILERCHECK=content
         - ccache --zero-stats || true
 
 ######################################################
@@ -990,7 +1002,7 @@ build-debian-nodeps-qt:
 .cache-ubuntu24-nodeps:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: ubuntu24_cache-nodeps
 
 build-ubuntu24-nodeps:
@@ -1033,7 +1045,7 @@ build-ubuntu24-nodeps-qt:
 .cache-android-aarch64:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: android_aarch64
 
 build-android-aarch64-depends:
@@ -1080,7 +1092,7 @@ build-android-aarch64:
 .cache-android-armv7a:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: android_armv7a
 
 build-android-armv7a-depends:
@@ -1127,7 +1139,7 @@ build-android-armv7a:
 .cache-android-i686:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: android_i686
 
 build-android-i686-depends:
@@ -1174,7 +1186,7 @@ build-android-i686:
 .cache-android-x86_64:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: android_x86_64
 
 build-android-x86_64-depends:
@@ -1221,7 +1233,7 @@ build-android-x86_64:
 .cache-android-riscv64:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: android_riscv64
 
 build-android-riscv64-depends:
@@ -1271,11 +1283,12 @@ build-android-riscv64:
 
 .alpine_ccache_scripts:
     extends: .alpine_base
+    variables:
+        CCACHE_BASEDIR: ${CI_PROJECT_DIR}
+        CCACHE_DIR: ${CI_PROJECT_DIR}/ccache
+        CCACHE_COMPILERCHECK: content
     before_script:
         - mkdir -p ccache
-        - export CCACHE_BASEDIR=${PWD}
-        - export CCACHE_DIR=${PWD}/ccache
-        - export CCACHE_COMPILERCHECK=content
         - ccache --zero-stats || true
 
 ######################################################
@@ -1284,7 +1297,7 @@ build-android-riscv64:
 .cache-alpine-nodeps:
     extends: .alpine_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: alpine_cache-nodeps
 
 build-alpine-nodeps:
