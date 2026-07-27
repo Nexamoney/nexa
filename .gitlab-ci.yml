@@ -145,20 +145,12 @@ gitian-binaries:
 ######################################################
 ######## Linting
 ######################################################
-.ubuntu_cache-linting:
-    extends: .ubuntu_ccache_scripts
-    cache:
-        <<: *global_cache_settings
-        key: linting_cache
-
 check-formatting:
     stage: static_checks
-    extends: .ubuntu_cache-linting
+    extends: .ubuntu_base
     needs: []
     script:
-        - ./autogen.sh
-        - ./configure --enable-glibc-back-compat --enable-reduce-exports
-        - make check-formatting
+        - (cd src; ../contrib/devtools/clang-format.py check "$(command -v clang-format-15 || command -v clang-format)" $(cat .formatted-files))
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
