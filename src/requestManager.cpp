@@ -29,6 +29,7 @@
 #include "util.h"
 #include "utilstrencodings.h"
 #include "utiltime.h"
+#include "validation/tailstorm.h"
 #include "validation/validation.h"
 #include "validationinterface.h"
 #include "version.h"
@@ -600,6 +601,54 @@ static bool IsGrapheneVersionSupported(CNode *pfrom)
         return false;
     }
 }
+
+void CRequestManager::RequestMissingSubblocks(const ConstCBlockRef &pblock, CNode *pfrom)
+{
+    if (pfrom == nullptr) // Try the nodes that have the summary block first
+    {
+        LOCK(cs_objDownloader);
+        auto item = mapBlkInfo.find(pblock->GetHash());
+        if (item != mapBlkInfo.end())
+        {
+            if (!item->second.availableFrom.empty())
+            {
+                auto &reqData = item->second.availableFrom.front();
+                pfrom = &(*reqData.noderef);
+            }
+        }
+    }
+    if (pfrom == nullptr) // get it from any node
+    {
+        LOCK(cs_vNodes);
+        auto sz = vNodes.size();
+        if (sz > 0)
+            pfrom = vNodes[rand() % sz];
+    }
+    if (pfrom == nullptr)
+    {
+        LOGA("Warning no nodes to get subblocks from!");
+        return;
+    }
+
+    auto ret = ParseSummaryBlockMinerData(pblock->minerData);
+
+    std::vector<CInv> vGetData;
+    for (const auto &pair : ret.vSubblockProofs)
+    {
+        const uint256 &miningHeaderCommitment = pair.first;
+        ConstCBlockRef subblock;
+        if (!tailstormForest.Find(miningHeaderCommitment, subblock))
+            vGetData.emplace_back(MSG_BLOCK, miningHeaderCommitment);
+    }
+
+    if (!vGetData.empty())
+    {
+        LOG(DAG | NET, "Summary block %s is missing %u subblock(s); requesting them from peer=%s\n",
+            pblock->GetHash().ToString(), (unsigned int)vGetData.size(), pfrom->GetLogName());
+        requester.AskFor(vGetData, pfrom, objType::SUBBLOCK);
+    }
+}
+
 
 bool CRequestManager::RequestBlock(CNode *pfrom, CInv &obj, int blockType)
 {

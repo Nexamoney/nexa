@@ -383,6 +383,7 @@ bool CompactBlock::process(CNode *pfrom, std::shared_ptr<CBlockThinRelay> pblock
     compactdata.UpdateInBound(cmpctBlock->GetSize(), blockSize);
     LOG(CMPCT, "compact block stats: %s\n", compactdata.ToString());
 
+    BlockReceivedPostProcessing(pfrom, pblock);
     // Process the full block
     PV->HandleBlockMessage(pfrom, NetMsgType::CMPCTBLOCK, pblock);
 
@@ -559,7 +560,7 @@ bool CompactReReqResponse::HandleMessage(CDataStream &vRecv, uint32_t msgCookie,
         // This is NOT double counting since we never accounted for the original compactblock due to the re-request.
         compactdata.UpdateInBound(nSizeCompactBlockTx + nCmpctBlkSize, nBlockSize);
         LOG(CMPCT, "compactblock stats: %s\n", compactdata.ToString());
-
+        BlockReceivedPostProcessing(pfrom, pblock);
         PV->HandleBlockMessage(pfrom, strCommand, pblock);
     }
 

@@ -99,6 +99,13 @@ static void ActuallySendExpeditedBlock(CXThinBlock &thinBlock, unsigned char hop
 
 void SendExpeditedBlock(CXThinBlock &thinBlock, unsigned char hops, CNode *pskip)
 {
+    uint32_t nBlocks;
+    uint32_t nTxs;
+    uint32_t nUpstream;
+    connmgr->ExpeditedNodeCounts(nBlocks, nTxs, nUpstream);
+    if (nBlocks == 0)
+        return; // No expedited, so quick exit.
+
     {
         LOCK(cs_main);
 

@@ -4097,6 +4097,8 @@ bool ActivateBestChainStep(CValidationState &state,
             if (pindexNewMostWork->chainWork() > pindexMostWork->chainWork())
             {
                 LOG(PARALLEL, "Returning because chain work has changed while connecting blocks\n");
+                LOG(PARALLEL, "New most work: %s\nWas working on:", pindexNewMostWork->ToString(),
+                    pindexMostWork->ToString());
                 return true;
             }
             if (!ConnectTip(state, chainparams, pindexConnect,

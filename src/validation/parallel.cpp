@@ -562,7 +562,6 @@ void CParallelValidation::HandleBlockMessage(CNode *pfrom, const string &strComm
         {
             LOCK(tailstormForest.cs_forest);
             setToAnnounce = tailstormForest.ProcessOrphans();
-
             // Check for subblocks to prune
             PruneSubblocks(pblock);
         }
@@ -781,11 +780,9 @@ void HandleBlockMessageThread(CNodeRef noderef, const string strCommand, ConstCB
         // potential re-orgs.
         //
         // Check for any orphaned blocks or summary blocks and connected them if possible.
-        std::set<uint256> setToAnnounce;
         {
             LOCK(tailstormForest.cs_forest);
-            setToAnnounce = tailstormForest.ProcessOrphans();
-
+            tailstormForest.ProcessOrphans();
             // Check for subblocks to prune
             PruneSubblocks(pblock);
         }

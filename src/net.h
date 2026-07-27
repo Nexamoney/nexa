@@ -1422,4 +1422,8 @@ public:
 /** Return a timestamp in the future (in microseconds) for exponentially distributed events. */
 int64_t PoissonNextSend(int64_t nNow, int average_interval_seconds);
 
+/** Whenever a block is fully received (by any transmission protocol), call this function.  It handles expedited
+    forwarding, and requests missing subblocks */
+void BlockReceivedPostProcessing(CNode *pfrom, ConstCBlockRef pblock);
+
 #endif // NEXA_NET_H
