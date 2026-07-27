@@ -1145,15 +1145,15 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
         // Summary Block or if it really is an orphan.
         auto pindex = LookupBlockIndex(subblock->hashPrevBlock);
 
-        bool fHavePrevGrove = false;
+        bool shouldCreateOrHasPrevGrove = false;
         bool fIsLinked = false;
         if (pindex && pindex->pprev)
         {
             CTailstormGroveRef dummyGrove = nullptr;
             if (pindex->height() == 0)
-                fHavePrevGrove = false;
+                shouldCreateOrHasPrevGrove = false;
             else
-                fHavePrevGrove = GetGrove(*(pindex->pprev->phashBlock), dummyGrove);
+                shouldCreateOrHasPrevGrove = GetGrove(*(pindex->pprev->phashBlock), dummyGrove);
 
             // Check that the prev headers/blocks are are linked together. At this point we
             // don't need to check that we're on the right for, that check is done
@@ -1167,9 +1167,13 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
             }
         }
         if (pindex && (pindex->height() == chainActive.Height()))
-            fHavePrevGrove = true;
+            shouldCreateOrHasPrevGrove = true;
 
-        if (pindex && fIsLinked && fHavePrevGrove)
+        CTailstormGroveRef grove = nullptr;
+        if (pindex && GetGrove(*(pindex->phashBlock), grove))
+            shouldCreateOrHasPrevGrove = true;
+
+        if (pindex && fIsLinked && shouldCreateOrHasPrevGrove)
         {
             // Make sure the height of this subblock is 1 more than the previous summary block
             if (subblock->height != pindex->height() + 1)
@@ -1192,8 +1196,7 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
                 return false;
             }
             // Add new grove and/or insert subblock
-            CTailstormGroveRef grove = nullptr;
-            if (GetGrove(subblock->hashPrevBlock, grove))
+            if (grove)
             {
                 LOG(DAG, "%s(): adding subblock to new grove %s with a prev summary  %s", __func__,
                     newNode->hash.ToString().c_str(), subblock->hashPrevBlock.GetHex());
@@ -1414,10 +1417,6 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
                 bool placed = false;
                 // Do we have the previous summary block and is it the chain active tip
                 // and do we have all the parent subblocks?
-                //
-                // WARNING: you must not try to connect subblocks to dag that is not currently
-                // being built on the  chain active tip otherwise your subblock may return as
-                // having a potential conflict.
                 if (fIsLinked && fHaveAllPrevSubblocks)
                 {
                     auto hash = iter->second->hash;
