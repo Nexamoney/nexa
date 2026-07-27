@@ -320,7 +320,10 @@ build-ubuntu-deps-only-libnexa:
     extends: [.ubuntu_base, .detect-cpus]
     needs: []
     cache:
-        key: depends-ubuntu-only-libnexa
+        key:
+            prefix: depends-ubuntu-only-libnexa
+            files:
+                - depends/**/*
         paths:
             - depends/sources
             - depends/built
@@ -368,7 +371,10 @@ build-ubuntu-deps:
     extends: [.ubuntu_base, .detect-cpus]
     needs: []
     cache:
-        key: depends-ubuntu
+        key:
+            prefix: depends-ubuntu
+            files:
+                - depends/**/*
         paths:
             - depends/sources
             - depends/built
@@ -638,7 +644,10 @@ build-arm-depends-64:
     stage: build_depends
     extends: [.ubuntu_base, .detect-cpus]
     cache:
-        key: depends-arm-64
+        key:
+            prefix: depends-arm-64
+            files:
+                - depends/**/*
         paths:
             - depends/sources
             - depends/built
@@ -685,7 +694,10 @@ build-arm-depends-32:
     stage: build_depends
     extends: [.ubuntu_base, .detect-cpus]
     cache:
-        key: depends-arm-32
+        key:
+            prefix: depends-arm-32
+            files:
+                - depends/**/*
         paths:
             - depends/sources
             - depends/built
@@ -733,7 +745,10 @@ build-riscv-depends-64:
     stage: build_depends
     extends: [.ubuntu_base, .detect-cpus]
     cache:
-        key: depends-riscv-64
+        key:
+            prefix: depends-riscv-64
+            files:
+                - depends/**/*
         paths:
             - depends/sources
             - depends/built
@@ -781,7 +796,10 @@ build-win-64-depends:
     stage: build_depends
     extends: [.ubuntu_base, .detect-cpus]
     cache:
-        key: depends-win-64
+        key:
+            prefix: depends-win-64
+            files:
+                - depends/**/*
         paths:
             - depends/sources
             - depends/built
@@ -825,7 +843,10 @@ build-osx-depends:
     stage: build_depends
     extends: [.ubuntu_base, .detect-cpus]
     cache:
-        key: depends-osx
+        key:
+            prefix: depends-osx
+            files:
+                - depends/**/*
         paths:
             - depends/sources
             - depends/built
@@ -879,7 +900,10 @@ build-osx-arm64-depends:
     stage: build_depends
     extends: [.ubuntu_base, .detect-cpus]
     cache:
-        key: depends-osx-arm64
+        key:
+            prefix: depends-osx-arm64
+            files:
+                - depends/**/*
         paths:
             - depends/sources
             - depends/built
