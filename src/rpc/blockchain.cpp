@@ -2797,6 +2797,7 @@ UniValue tailstormInfoToJSON()
         tailstormForest.GetInternals(ret);
 
         ret.pushKV("chaintip", tip->GetBlockHash().GetHex());
+        ret.pushKV("chaintipheight", (int64_t)tip->height());
         ret.pushKV("dagtip", dagTipHash.GetHex());
         ret.pushKV("total", (int64_t)tailstormForest.Size());
         ret.pushKV("unlinked_subblocks", nUnlinkedSubblocks);
@@ -2817,6 +2818,7 @@ UniValue gettailstorminfo(const UniValue &params, bool fHelp)
             "\nResult:\n"
             "{\n"
             "  \"chaintip\": x,                (numeric) Current summary block tip hash\n"
+            "  \"chaintipheight\": x,          (numeric) Height of the current summary block tip\n"
             "  \"dagtip\": x                   (numeric) Current dag tip hash\n"
             "  \"total\": x,                   (numeric) Current total subblock count in the forest\n"
             "  \"unlinked_subblocks\": x       (numeric) Number of subblocks not linked in the forest \n"
