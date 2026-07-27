@@ -464,7 +464,9 @@ build-ubuntu-tests:
 
 test-ubuntu-qa:
     stage: qa_tests
-    extends: .cache-ubuntu
+    extends: .ubuntu_base
+    parallel: 2
+    cache: []
     needs:
         - job: build-ubuntu
           artifacts: true
@@ -473,7 +475,7 @@ test-ubuntu-qa:
         - mkdir -p $CI_PROJECT_DIR/saved-cores
         - echo $CI_PROJECT_DIR/cores/core.%e.%p.%h.%t | tee /proc/sys/kernel/core_pattern
         - cd build;
-        - ./qa/pull-tester/rpc-tests.py --coverage --no-ipv6-rpc-listen --gitlab
+        - ./qa/pull-tester/rpc-tests.py -shard="$CI_NODE_INDEX/$CI_NODE_TOTAL" --coverage --no-ipv6-rpc-listen --gitlab
     artifacts:
         when: on_failure
         paths:
