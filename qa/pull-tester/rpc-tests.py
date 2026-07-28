@@ -87,7 +87,10 @@ passOn = ""
 showHelp = False  # if we need to print help
 p = re.compile("^--")
 p_parallel = re.compile('^-parallel=')
+p_shard = re.compile('^-shard=')
 run_parallel = 2
+run_shard_index = 1
+run_shard_count = 1
 
 # some of the single-dash options applicable only to this runner script
 # are also allowed in double-dash format (but are not passed on to the
@@ -146,6 +149,19 @@ for arg in sys.argv[1:]:
         double_opts.add(arg)
     elif p_parallel.match(arg):
         run_parallel = int(arg.split(sep='=', maxsplit=1)[1])
+    elif p_shard.match(arg):
+        shard = arg.split(sep='=', maxsplit=1)[1].split('/')
+        if len(shard) != 2:
+            print("Invalid shard, expected -shard=index/count")
+            sys.exit(1)
+        try:
+            run_shard_index, run_shard_count = map(int, shard)
+        except ValueError:
+            print("Invalid shard, index and count must be integers")
+            sys.exit(1)
+        if run_shard_count < 1 or not 1 <= run_shard_index <= run_shard_count:
+            print("Invalid shard, index must be between one and count")
+            sys.exit(1)
 
     else:
         # this is for single-dash options only
@@ -321,6 +337,7 @@ def show_wrapper_options():
     print("Wrapper options:")
     print()
     print("  -parallel=num         run this number of tests at the same time (default 2)")
+    print("  -shard=index/count    run one deterministic, one-based test shard")
     print("  -extended/--extended  run the extended set of tests")
     print("  -only-extended / -extended-only\n" + \
           "  --only-extended / --extended-only\n" + \
@@ -361,15 +378,12 @@ def runtests():
     run_only_extended = option_passed('only-extended') or option_passed('extended-only')
 
     if option_passed('list'):
-        if run_only_extended:
-            for t in testScriptsExt:
-                print(t)
-        else:
-            for t in testScripts:
-                print(t)
-            if option_passed('extended'):
-                for t in testScriptsExt:
-                    print(t)
+        tests_to_list = list(testScriptsExt if run_only_extended else testScripts)
+        if not run_only_extended and option_passed('extended'):
+            tests_to_list += testScriptsExt
+        tests_to_list = tests_to_list[run_shard_index - 1::run_shard_count]
+        for t in tests_to_list:
+            print(t)
         sys.exit(0)
 
     if ENABLE_COVERAGE:
@@ -446,6 +460,11 @@ def runtests():
                 else:
                     trimmed_tests_to_run.append(t)
             tests_to_run = trimmed_tests_to_run
+
+        tests_to_run = tests_to_run[run_shard_index - 1::run_shard_count]
+        if run_shard_count > 1:
+            print("Running test shard %d/%d (%d tests)" %
+                  (run_shard_index, run_shard_count, len(tests_to_run)))
 
         # if all specified tests are disabled just quit
         if len(tests_to_run) == 0:

@@ -17,11 +17,20 @@
 # https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/gitlab/ci/templates/Workflows/MergeRequest-Pipelines.gitlab-ci.yml
 
 workflow:
+    auto_cancel:
+        on_new_commit: interruptible
     rules:
-        - if: $CI_MERGE_REQUEST_IID
-        - if: $CI_COMMIT_TAG
-        - if: $CI_COMMIT_BRANCH == "dev"
         - if: $CI_PIPELINE_SOURCE == "schedule"
+          auto_cancel:
+              on_new_commit: none
+        - if: $CI_COMMIT_TAG
+          auto_cancel:
+              on_new_commit: none
+        - if: $CI_MERGE_REQUEST_IID
+        - if: $CI_COMMIT_BRANCH == "dev"
+
+default:
+    interruptible: true
 
 # nice overview of tasks dependency in gitalb CI
 # https://www.reddit.com/r/gitlab/comments/1bqzxba/comment/kx61xuc/
@@ -50,10 +59,13 @@ doc_tests:
           - test
     rules:
         - if: $CI_COMMIT_REF_NAME != $CI_DEFAULT_BRANCH
+          changes:
+              - doc/rpc/**/*
 
 pages:
     stage: documentation
     image: python:3.10.13
+    interruptible: false
     script:
         - cd doc/rpc/
         - ./run-docs-build.sh mkdocs build --verbose
@@ -67,11 +79,14 @@ pages:
           - public
     rules:
         - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
+          changes:
+              - doc/rpc/**/*
 
 
-cache: &global_cache_settings
-    paths:
-        - ccache/
+.ccache:
+    cache: &ccache_settings
+        paths:
+            - ccache/
 
 ###################
 # Gitian binaries #
@@ -129,11 +144,13 @@ gitian-binaries:
 
 .ubuntu_ccache_scripts:
     extends: .ubuntu_base
+    variables:
+        CCACHE_BASEDIR: ${CI_PROJECT_DIR}
+        CCACHE_DIR: ${CI_PROJECT_DIR}/ccache
+        CCACHE_COMPILERCHECK: content
+        CCACHE_MAXSIZE: 3G
     before_script:
         - mkdir -p ccache
-        - export CCACHE_BASEDIR=${PWD}
-        - export CCACHE_DIR=${PWD}/ccache
-        - export CCACHE_COMPILERCHECK=content
         # Limit ccache to 3 GB (from default 5 GB).
         - ccache -M 3G
         - ccache --zero-stats || true
@@ -145,20 +162,12 @@ gitian-binaries:
 ######################################################
 ######## Linting
 ######################################################
-.ubuntu_cache-linting:
-    extends: .ubuntu_ccache_scripts
-    cache:
-        <<: *global_cache_settings
-        key: linting_cache
-
 check-formatting:
     stage: static_checks
-    extends: .ubuntu_cache-linting
+    extends: .ubuntu_base
     needs: []
     script:
-        - ./autogen.sh
-        - ./configure --enable-glibc-back-compat --enable-reduce-exports
-        - make check-formatting
+        - (cd src; ../contrib/devtools/clang-format.py check "$(command -v clang-format-15 || command -v clang-format)" $(cat .formatted-files))
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -168,7 +177,7 @@ check-formatting:
 .cache-ubuntu-nodeps:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: ubuntu_cache-nodeps
 
 build-ubuntu-nodeps:
@@ -214,12 +223,12 @@ build-ubuntu-nodeps-qt:
 build-ubuntu-tests-nodeps:
     stage: build_tests
     extends: .cache-ubuntu-nodeps
-    needs: ["build-ubuntu-nodeps"]
+    needs:
+        - job: build-ubuntu-nodeps
+          artifacts: true
     cache: {}
     script:
         - (cd build/src; ./test/test_nexa)
-    dependencies:
-        - build-ubuntu-nodeps
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -229,7 +238,7 @@ build-ubuntu-tests-nodeps:
 .cache-ubuntu-nodeps-nowallet:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: ubuntu_cache-nodeps-nowallet
 
 build-ubuntu-nodeps-nowallet-qt:
@@ -276,45 +285,49 @@ build-ubuntu-nodeps-nowallet:
 build-ubuntu-tests-nodeps-nowallet:
     stage: build_tests
     extends: .cache-ubuntu-nodeps-nowallet
-    needs: ["build-ubuntu-nodeps-nowallet-qt"]
+    needs:
+        - job: build-ubuntu-nodeps-nowallet-qt
+          artifacts: true
     cache: {}
     script:
         - (cd build/src; ./test/test_nexa;)
-    dependencies:
-        - build-ubuntu-nodeps-nowallet-qt
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 build-ubuntu-tests-nodeps-nowallet-qt:
     stage: build_tests
     extends: .cache-ubuntu-nodeps-nowallet
-    needs: ["build-ubuntu-nodeps-nowallet-qt"]
+    needs:
+        - job: build-ubuntu-nodeps-nowallet-qt
+          artifacts: true
     cache: {}
     script:
         - (cd build/src; ./qt/test/test_nexa-qt)
-    dependencies:
-        - build-ubuntu-nodeps-nowallet-qt
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 ######################################################
 ######## Linux 64 bit, only libnexa from source deps
 ######################################################
-.cache-ubuntu-only-libnexa:
+.ccache-ubuntu-only-libnexa:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: ubuntu_cache-only-libnexa
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/x86_64-linux-gnu
+        <<: *ccache_settings
+        key: ccache-ubuntu-only-libnexa
 
 build-ubuntu-deps-only-libnexa:
     stage: build_depends
-    extends: [.cache-ubuntu-only-libnexa, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
     needs: []
+    cache:
+        key:
+            prefix: depends-ubuntu-only-libnexa
+            files:
+                - depends/**/*
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/x86_64-linux-gnu
     script:
         - cd depends
         - make HOST=x86_64-linux-gnu -j"$CPUS" ONLY_LIBNEXA=1
@@ -326,16 +339,16 @@ build-ubuntu-deps-only-libnexa:
 
 build-ubuntu-only-libnexa:
     stage: build
-    extends: [.cache-ubuntu-only-libnexa, .detect-cpus]
-    needs: [build-ubuntu-deps-only-libnexa]
+    extends: [.ccache-ubuntu-only-libnexa, .detect-cpus]
+    needs:
+        - job: build-ubuntu-deps-only-libnexa
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-shared --enable-debug --enable-only-libnexa --enable-glibc-back-compat --enable-reduce-exports --cache-file=config.cache --prefix=$PWD/../depends/x86_64-linux-gnu CPPFLAGS=-DDEBUG_LOCKORDER
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-ubuntu-deps-only-libnexa
     artifacts:
         when: always
         paths:
@@ -347,21 +360,25 @@ build-ubuntu-only-libnexa:
 ######################################################
 ######## Linux 64 bit, source deps
 ######################################################
-.cache-ubuntu:
+.ccache-ubuntu:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: ubuntu_cache
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/x86_64-linux-gnu
+        <<: *ccache_settings
+        key: ccache-ubuntu
 
 build-ubuntu-deps:
     stage: build_depends
-    extends: [.cache-ubuntu, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
     needs: []
+    cache:
+        key:
+            prefix: depends-ubuntu
+            files:
+                - depends/**/*
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/x86_64-linux-gnu
     script:
         - cd depends
         - make HOST=x86_64-linux-gnu -j$CPUS
@@ -373,8 +390,10 @@ build-ubuntu-deps:
 
 build-ubuntu:
     stage: build
-    extends: [.cache-ubuntu, .detect-cpus]
-    needs: [build-ubuntu-deps]
+    extends: [.ccache-ubuntu, .detect-cpus]
+    needs:
+        - job: build-ubuntu-deps
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
@@ -388,8 +407,6 @@ build-ubuntu:
                 find build/src/test src/test -maxdepth 1 -name '*.log' -type f -exec cp -f {} build/ci-failure-logs/ \; 2>/dev/null || true
                 [ ! -f src/test-suite.log ] || cp -f src/test-suite.log build/ci-failure-logs/
             fi
-    dependencies:
-        - build-ubuntu-deps
     artifacts:
         when: always
         paths:
@@ -413,7 +430,9 @@ build-ubuntu-rostrum:
         - cargohome/registry/cache
         - cargohome/git/db
 
-    needs: [build-ubuntu-deps]
+    needs:
+        - job: build-ubuntu-deps
+          artifacts: true
 
     variables:
         CARGO_HOME: ${CI_PROJECT_DIR}/cargohome
@@ -432,9 +451,6 @@ build-ubuntu-rostrum:
         - ../configure --prefix=$PWD/../depends/x86_64-linux-gnu > /dev/null
         - make rostrum
 
-    dependencies:
-        - build-ubuntu-deps
-
     artifacts:
         paths:
             - ./build/src/rostrum
@@ -443,32 +459,34 @@ build-ubuntu-rostrum:
 
 build-ubuntu-tests:
     stage: build_tests
-    extends: .cache-ubuntu
-    needs: ["build-ubuntu"]
-    cache: {}
+    extends: .ubuntu_base
+    needs:
+        - job: build-ubuntu
+          artifacts: true
+    cache: []
     script:
         - (cd build/src; ./test/test_nexa)
     artifacts:
         when: on_failure
         paths:
             - ./build/src/test/
-    dependencies:
-        - build-ubuntu
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 test-ubuntu-qa:
     stage: qa_tests
-    extends: .cache-ubuntu
-    needs: ["build-ubuntu"]
+    extends: .ubuntu_base
+    parallel: 2
+    cache: []
+    needs:
+        - job: build-ubuntu
+          artifacts: true
     script:
         - mkdir -p $CI_PROJECT_DIR/cores
         - mkdir -p $CI_PROJECT_DIR/saved-cores
         - echo $CI_PROJECT_DIR/cores/core.%e.%p.%h.%t | tee /proc/sys/kernel/core_pattern
         - cd build;
-        - ./qa/pull-tester/rpc-tests.py --coverage --no-ipv6-rpc-listen --gitlab
-    dependencies:
-        - build-ubuntu
+        - ./qa/pull-tester/rpc-tests.py -shard="$CI_NODE_INDEX/$CI_NODE_TOTAL" --coverage --no-ipv6-rpc-listen --gitlab
     artifacts:
         when: on_failure
         paths:
@@ -481,16 +499,17 @@ test-ubuntu-qa:
 
 test-ubuntu-qa-extended:
     stage: qa_tests
-    extends: .cache-ubuntu
-    needs: ["build-ubuntu"]
+    extends: .ubuntu_base
+    cache: []
+    needs:
+        - job: build-ubuntu
+          artifacts: true
     script:
         - mkdir -p $CI_PROJECT_DIR/cores
         - mkdir -p $CI_PROJECT_DIR/saved-cores
         - echo $CI_PROJECT_DIR/cores/core.%e.%p.%h.%t | tee /proc/sys/kernel/core_pattern
         - cd build;
         - ./qa/pull-tester/rpc-tests.py --coverage --no-ipv6-rpc-listen --gitlab --extended-only
-    dependencies:
-        - build-ubuntu
     artifacts:
         when: on_failure
         paths:
@@ -507,22 +526,26 @@ test-ubuntu-qa-extended:
 test-ubuntu-benchmarks:
     extends: .ubuntu_base
     stage: benchmark_tests
-    needs: ["build-ubuntu-nodeps"]
+    needs:
+        - job: build-ubuntu-nodeps
+          artifacts: true
     script:
         - (./build/src/bench/bench_nexa -evals=1)
-    dependencies:
-        - build-ubuntu-nodeps
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 test-ubuntu-qa-rostrum:
     stage: qa_tests
     image: python:latest
-    needs: ["build-ubuntu", "build-ubuntu-rostrum"]
+    needs:
+        - job: build-ubuntu
+          artifacts: true
+        - job: build-ubuntu-rostrum
+          artifacts: true
     variables:
         PIP_CACHE_DIR: $CI_PROJECT_DIR/cache-pip
     cache:
-        key: $CI_JOB_NAME
+        key: rostrum-pip-$CI_NODE_INDEX
         paths:
             - cache-pip
     before_script:
@@ -537,12 +560,10 @@ test-ubuntu-qa-rostrum:
         - wget https://gitlab.com/nexa/rostrum/-/archive/v14.0.1/rostrum-v14.0.1.tar.gz -O rostrum-master.tar.gz
         #- wget https://gitlab.com/nexa/rostrum/-/archive/master/rostrum-master.tar.gz -O rostrum-master.tar.gz
         - tar -zxf rostrum-master.tar.gz
-        # Some rostrum tests are unreliable if launched simultaneously because (for example) they require that the txpool contents be exactly what one test places in them
+        - python3 ci/shard-rostrum-tests.py rostrum-v14.0.1/test/functional --index "$((CI_NODE_INDEX - 1))" --count "$CI_NODE_TOTAL"
+        # Keep tests within each isolated shard serial because some require exact txpool contents.
         - ./rostrum-v14.0.1/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab -parallel=1
         #- ./rostrum-master/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab
-    dependencies:
-        - build-ubuntu
-        - build-ubuntu-rostrum
     artifacts:
         when: on_failure
         paths:
@@ -553,6 +574,7 @@ test-ubuntu-qa-rostrum:
             - ./build/ctorout.txt
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
+    parallel: 2
 
 ######################################################
 ######## nexad clang (no depend, only system lib installed via apt)
@@ -560,7 +582,7 @@ test-ubuntu-qa-rostrum:
 .cache-ubuntu-clang:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: ubuntu_cache_clang
 
 .ubuntu-clang-env:
@@ -596,7 +618,9 @@ build-ubuntu-clang:
 build-ubuntu-tests-clang:
     stage: build_tests
     extends: .ubuntu-clang-env
-    needs: ["build-ubuntu-clang"]
+    needs:
+        - job: build-ubuntu-clang
+          artifacts: true
     cache: {}
     script:
         - (cd build/src; ./test/test_nexa)
@@ -604,28 +628,30 @@ build-ubuntu-tests-clang:
         when: on_failure
         paths:
             - ./build/src/test/
-    dependencies:
-        - build-ubuntu-clang
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 ######################################################
 ######## ARM64
 ######################################################
-.cache-arm-64:
+.ccache-arm-64:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: arm_cache-64
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/aarch64-linux-gnu
+        <<: *ccache_settings
+        key: ccache-arm-64
 
 build-arm-depends-64:
     stage: build_depends
-    extends: [.cache-arm-64, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key:
+            prefix: depends-arm-64
+            files:
+                - depends/**/*
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/aarch64-linux-gnu
     script:
         - make -C depends HOST=aarch64-linux-gnu clean
         - cd depends
@@ -638,16 +664,16 @@ build-arm-depends-64:
 
 build-arm-64:
     stage: build
-    extends: [.cache-arm-64, .detect-cpus]
-    needs: ["build-arm-depends-64"]
+    extends: [.ccache-arm-64, .detect-cpus]
+    needs:
+        - job: build-arm-depends-64
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/aarch64-linux-gnu --enable-glibc-back-compat --enable-reduce-exports CXXFLAGS=-Wno-psabi
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-arm-depends-64
     artifacts:
         when: on_failure
         paths:
@@ -658,20 +684,24 @@ build-arm-64:
 ######################################################
 ######## ARM32
 ######################################################
-.cache-arm-32:
+.ccache-arm-32:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: arm_cache-32
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/arm-linux-gnueabihf
+        <<: *ccache_settings
+        key: ccache-arm-32
 
 build-arm-depends-32:
     stage: build_depends
-    extends: [.cache-arm-32, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key:
+            prefix: depends-arm-32
+            files:
+                - depends/**/*
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/arm-linux-gnueabihf
     script:
         - make -C depends HOST=arm-linux-gnueabihf clean
         - cd depends
@@ -684,16 +714,16 @@ build-arm-depends-32:
 
 build-arm-32:
     stage: build
-    extends: [.cache-arm-32, .detect-cpus]
-    needs: ["build-arm-depends-32"]
+    extends: [.ccache-arm-32, .detect-cpus]
+    needs:
+        - job: build-arm-depends-32
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/arm-linux-gnueabihf --enable-glibc-back-compat --enable-reduce-exports
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-arm-depends-32
     artifacts:
         when: on_failure
         paths:
@@ -705,20 +735,24 @@ build-arm-32:
 ######################################################
 ######## RISC-V 64
 ######################################################
-.cache-riscv-64:
+.ccache-riscv-64:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: riscv_cache-64
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/riscv64-linux-gnu
+        <<: *ccache_settings
+        key: ccache-riscv-64
 
 build-riscv-depends-64:
     stage: build_depends
-    extends: [.cache-riscv-64, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key:
+            prefix: depends-riscv-64
+            files:
+                - depends/**/*
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/riscv64-linux-gnu
     script:
         - make -C depends HOST=riscv64-linux-gnu clean
         - cd depends
@@ -731,16 +765,16 @@ build-riscv-depends-64:
 
 build-riscv-64:
     stage: build
-    extends: [.cache-riscv-64, .detect-cpus]
-    needs: ["build-riscv-depends-64"]
+    extends: [.ccache-riscv-64, .detect-cpus]
+    needs:
+        - job: build-riscv-depends-64
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/riscv64-linux-gnu
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-riscv-depends-64
     artifacts:
         when: on_failure
         paths:
@@ -752,20 +786,24 @@ build-riscv-64:
 ######################################################
 ######## Win64
 ######################################################
-.cache-win-64:
+.ccache-win-64:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: win_cache-64
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/x86_64-w64-mingw32
+        <<: *ccache_settings
+        key: ccache-win-64
 
 build-win-64-depends:
     stage: build_depends
-    extends: [.cache-win-64, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key:
+            prefix: depends-win-64
+            files:
+                - depends/**/*
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/x86_64-w64-mingw32
     script:
         - cd depends
         - make HOST=x86_64-w64-mingw32 NO_QT=1 -j$CPUS NO_RUST=1
@@ -777,45 +815,48 @@ build-win-64-depends:
 
 build-win-64:
     stage: build
-    extends: [.cache-win-64, .detect-cpus]
-    needs: ["build-win-64-depends"]
+    extends: [.ccache-win-64, .detect-cpus]
+    needs:
+        - job: build-win-64-depends
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/x86_64-w64-mingw32
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-win-64-depends
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 ######################################################
 ######## macOS Intel X86_64
 ######################################################
-.cache-osx:
+.ccache-osx:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: osx_cache
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/x86_64-apple-darwin
+        <<: *ccache_settings
+        key: ccache-osx
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 build-osx-depends:
     stage: build_depends
-    extends: [.cache-osx, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key:
+            prefix: depends-osx
+            files:
+                - depends/**/*
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/x86_64-apple-darwin
     script:
         - mkdir -p depends/sdk-sources; mkdir depends/SDKs
         - curl --location --fail https://www.bitcoinunlimited.info/sdks/MacOSX11.3.sdk.tar.xz -o ./depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - tar -C depends/SDKs -xf depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - cd depends
         - make HOST=x86_64-apple-darwin -j$CPUS NO_RUST=1
-        - ccache --show-stats
     artifacts:
         paths:
             - depends/x86_64-apple-darwin
@@ -825,16 +866,16 @@ build-osx-depends:
 
 build-osx:
     stage: build
-    extends: [.cache-osx, .detect-cpus]
-    needs: ["build-osx-depends"]
+    extends: [.ccache-osx, .detect-cpus]
+    needs:
+        - job: build-osx-depends
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/x86_64-apple-darwin
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-osx-depends
     artifacts:
         when: always
         paths:
@@ -847,29 +888,32 @@ build-osx:
 ######################################################
 ######## macOS ARM 64
 ######################################################
-.cache-osx-arm64:
+.ccache-osx-arm64:
     extends: .ubuntu_ccache_scripts
     cache:
-        <<: *global_cache_settings
-        key: osx_cache_arm64
-        paths:
-            - ccache/
-            - depends/sources
-            - depends/built
-            - depends/arm64-apple-darwin
+        <<: *ccache_settings
+        key: ccache-osx-arm64
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
 build-osx-arm64-depends:
     stage: build_depends
-    extends: [.cache-osx-arm64, .detect-cpus]
+    extends: [.ubuntu_base, .detect-cpus]
+    cache:
+        key:
+            prefix: depends-osx-arm64
+            files:
+                - depends/**/*
+        paths:
+            - depends/sources
+            - depends/built
+            - depends/arm64-apple-darwin
     script:
         - mkdir -p depends/sdk-sources; mkdir depends/SDKs
         - curl --location --fail https://www.bitcoinunlimited.info/sdks/MacOSX11.3.sdk.tar.xz -o ./depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - tar -C depends/SDKs -xf depends/sdk-sources/MacOSX11.3.sdk.tar.xz
         - cd depends
         - make HOST=arm64-apple-darwin -j$CPUS NO_RUST=1
-        - ccache --show-stats
     artifacts:
         paths:
             - depends/arm64-apple-darwin
@@ -879,16 +923,16 @@ build-osx-arm64-depends:
 
 build-osx-arm64:
     stage: build
-    extends: [.cache-osx-arm64, .detect-cpus]
-    needs: ["build-osx-arm64-depends"]
+    extends: [.ccache-osx-arm64, .detect-cpus]
+    needs:
+        - job: build-osx-arm64-depends
+          artifacts: true
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/arm64-apple-darwin
         - make -j"$CPUS"
         - ccache --show-stats
-    dependencies:
-        - build-osx-arm64-depends
     artifacts:
         when: always
         paths:
@@ -906,11 +950,12 @@ build-osx-arm64:
 
 .debian_ccache_scripts:
     extends: .debian_base
+    variables:
+        CCACHE_BASEDIR: ${CI_PROJECT_DIR}
+        CCACHE_DIR: ${CI_PROJECT_DIR}/ccache
+        CCACHE_COMPILERCHECK: content
     before_script:
         - mkdir -p ccache
-        - export CCACHE_BASEDIR=${PWD}
-        - export CCACHE_DIR=${PWD}/ccache
-        - export CCACHE_COMPILERCHECK=content
         - ccache --zero-stats || true
 
 ######################################################
@@ -919,7 +964,7 @@ build-osx-arm64:
 .cache-debian-nodeps:
     extends: .debian_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: debian_cache-nodeps
 
 build-debian-nodeps:
@@ -967,11 +1012,12 @@ build-debian-nodeps-qt:
 
 .ubuntu24_ccache_scripts:
     extends: .ubuntu24_base
+    variables:
+        CCACHE_BASEDIR: ${CI_PROJECT_DIR}
+        CCACHE_DIR: ${CI_PROJECT_DIR}/ccache
+        CCACHE_COMPILERCHECK: content
     before_script:
         - mkdir -p ccache
-        - export CCACHE_BASEDIR=${PWD}
-        - export CCACHE_DIR=${PWD}/ccache
-        - export CCACHE_COMPILERCHECK=content
         - ccache --zero-stats || true
 
 ######################################################
@@ -980,7 +1026,7 @@ build-debian-nodeps-qt:
 .cache-ubuntu24-nodeps:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: ubuntu24_cache-nodeps
 
 build-ubuntu24-nodeps:
@@ -1023,7 +1069,7 @@ build-ubuntu24-nodeps-qt:
 .cache-android-aarch64:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: android_aarch64
 
 build-android-aarch64-depends:
@@ -1070,7 +1116,7 @@ build-android-aarch64:
 .cache-android-armv7a:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: android_armv7a
 
 build-android-armv7a-depends:
@@ -1102,7 +1148,7 @@ build-android-armv7a:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/armv7a-linux-androideabi --enable-only-libnexa --host=armv7a-linux-androideabi
-        - make -j"$JOBS"
+        - make -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -1117,7 +1163,7 @@ build-android-armv7a:
 .cache-android-i686:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: android_i686
 
 build-android-i686-depends:
@@ -1164,7 +1210,7 @@ build-android-i686:
 .cache-android-x86_64:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: android_x86_64
 
 build-android-x86_64-depends:
@@ -1211,7 +1257,7 @@ build-android-x86_64:
 .cache-android-riscv64:
     extends: .ubuntu24_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: android_riscv64
 
 build-android-riscv64-depends:
@@ -1261,11 +1307,12 @@ build-android-riscv64:
 
 .alpine_ccache_scripts:
     extends: .alpine_base
+    variables:
+        CCACHE_BASEDIR: ${CI_PROJECT_DIR}
+        CCACHE_DIR: ${CI_PROJECT_DIR}/ccache
+        CCACHE_COMPILERCHECK: content
     before_script:
         - mkdir -p ccache
-        - export CCACHE_BASEDIR=${PWD}
-        - export CCACHE_DIR=${PWD}/ccache
-        - export CCACHE_COMPILERCHECK=content
         - ccache --zero-stats || true
 
 ######################################################
@@ -1274,7 +1321,7 @@ build-android-riscv64:
 .cache-alpine-nodeps:
     extends: .alpine_ccache_scripts
     cache:
-        <<: *global_cache_settings
+        <<: *ccache_settings
         key: alpine_cache-nodeps
 
 build-alpine-nodeps:
