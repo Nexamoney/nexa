@@ -1408,50 +1408,27 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
                 const auto &subblock = iter->second->subblock;
                 assert(subblock);
                 const uint256 &prevhash = subblock->hashPrevBlock;
-                bool fIsLinked = (*chainActive.Tip()->phashBlock == prevhash);
 
                 auto setHashes = GetSubblockHashes(subblock->GetBlockHeader());
-                bool fHaveAllPrevSubblocks = true;
-                for (auto &hash : setHashes)
+                auto hash = iter->second->hash;
+                if (_Insert(iter->second))
                 {
-                    if (hash == prevhash)
-                        continue;
-
-                    if (!mapAllGrovesByNode.count(hash))
-                    {
-                        fHaveAllPrevSubblocks = false;
-                    }
+                    LOG(DAG, "%s(): Success: Insert of subblock orphan %s connecting to prev summary block %s",
+                        __func__, __func__, hash.ToString(), prevhash.ToString());
+                    setLinked.insert(hash);
+                    changes = true;
                 }
-
-                bool placed = false;
-                // Do we have the previous summary block and is it the chain active tip
-                // and do we have all the parent subblocks?
-                if (fIsLinked && fHaveAllPrevSubblocks)
+                else
                 {
-                    auto hash = iter->second->hash;
-                    LOG(DAG, "%s(): process orphans - found subblock orphan %s connecting to prev summary block %s",
-                        __func__, hash.ToString(), prevhash.ToString());
-                    if (_Insert(iter->second))
-                    {
-                        LOG(DAG, "%s(): Success: Insert of subblock orphan %s connecting to prev summary block %s",
-                            __func__, __func__, hash.ToString(), prevhash.ToString());
-                        setLinked.insert(hash);
-                        changes = true;
-                        placed = true;
-                    }
-                }
-                if (!placed)
-                {
-                    LOG(DAG,
-                        "%s(): Cannot insert orphan subblock %s returning to unlinked map (size %ld)"
-                        "islinked=%d allprev=%d",
-                        __func__, iter->second->hash.ToString(), orphans.size(), fIsLinked, fHaveAllPrevSubblocks);
+                    LOG(DAG, "%s(): Cannot insert orphan subblock %s returning to unlinked map (size %ld)", __func__,
+                        iter->second->hash.ToString(), orphans.size());
 
                     // If its already inserted, this is a no-op
                     AddSubblockOrphan(iter->second);
                 }
             }
         }
+
 
         // Process any summary block orphans that has all subblocks present and valid in the dag.
         // NOTE: we don't add the summary block to setLinked because block processing doesn't
