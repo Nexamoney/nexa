@@ -484,7 +484,11 @@ test-ubuntu-qa:
     script:
         - mkdir -p $CI_PROJECT_DIR/cores
         - mkdir -p $CI_PROJECT_DIR/saved-cores
-        - echo $CI_PROJECT_DIR/cores/core.%e.%p.%h.%t | tee /proc/sys/kernel/core_pattern
+        - |
+            CORE_PATTERN="$CI_PROJECT_DIR/cores/core.%e.%p.%h.%t"
+            if ! printf '%s\n' "$CORE_PATTERN" > /proc/sys/kernel/core_pattern; then
+                echo "WARNING: runner does not permit configuring core dumps"
+            fi
         - cd build;
         - ./qa/pull-tester/rpc-tests.py -shard="$CI_NODE_INDEX/$CI_NODE_TOTAL" --coverage --no-ipv6-rpc-listen --gitlab
     artifacts:
@@ -507,7 +511,11 @@ test-ubuntu-qa-extended:
     script:
         - mkdir -p $CI_PROJECT_DIR/cores
         - mkdir -p $CI_PROJECT_DIR/saved-cores
-        - echo $CI_PROJECT_DIR/cores/core.%e.%p.%h.%t | tee /proc/sys/kernel/core_pattern
+        - |
+            CORE_PATTERN="$CI_PROJECT_DIR/cores/core.%e.%p.%h.%t"
+            if ! printf '%s\n' "$CORE_PATTERN" > /proc/sys/kernel/core_pattern; then
+                echo "WARNING: runner does not permit configuring core dumps"
+            fi
         - cd build;
         - ./qa/pull-tester/rpc-tests.py --coverage --no-ipv6-rpc-listen --gitlab --extended-only
     artifacts:
@@ -553,7 +561,11 @@ test-ubuntu-qa-rostrum:
     script:
         - mkdir -p $CI_PROJECT_DIR/cores
         - mkdir -p $CI_PROJECT_DIR/saved-cores
-        - echo $CI_PROJECT_DIR/cores/core.%e.%p.%h.%t | tee /proc/sys/kernel/core_pattern
+        - |
+            CORE_PATTERN="$CI_PROJECT_DIR/cores/core.%e.%p.%h.%t"
+            if ! printf '%s\n' "$CORE_PATTERN" > /proc/sys/kernel/core_pattern; then
+                echo "WARNING: runner does not permit configuring core dumps"
+            fi
 
         - export NODE_PATH=`pwd`/build/src/nexad
         - export ROSTRUM_PATH=`pwd`/build/src/rostrum
