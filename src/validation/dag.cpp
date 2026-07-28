@@ -312,12 +312,12 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             DbgAssert(newNode->nSequenceId > 0, );
 
             newNode->fProcessed = false;
-            if (chainTip->pprev == pindexSummaryRoot)
+            // A summary can reference a subblock only at its own height (a regular subblock) or one below it
+            // (an uncle; uncle depth is 1). So a subblock stays usable while its grove root is within two
+            // summaries of the tip - gap 1 is the tip's own epoch, gap 2 an uncle of it. Park anything older.
+            const int64_t gap = (int64_t)chainTip->height() - (int64_t)pindexSummaryRoot->height();
+            if (gap <= 2)
             {
-                // If the pprev of the chaintip is for the epoch we're currently
-                // trying to insert into then this newNode is going to be an orphaned subblock
-                // block and so we can and need to insert it direclty into the dag so it
-                // can be picked up and used as an Uncle block in the next epoch.
                 dag.emplace(newNode->hash, newNode);
                 return newNode;
             }
