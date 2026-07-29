@@ -6,7 +6,7 @@ activate with Nexa Hard Fork 2 (also called "fork2"; the source code calls
 it "Upgrade 2" since !782 renamed the fork symbols).  It is based on the
 changes merged into `dev` since the Nexa 2.1.0.0 release, the
 [Hard Fork (Minor) Features](https://gitlab.com/nexa/nexa/-/issues/37)
-tracking issue, and [doc/scripts2026.md](../scripts2026.md).
+tracking issue, and [doc/scripts2026.md](scripts2026.md).
 
 Hard Fork 2 is still under active development.  Feature scope and activation
 times may change before release.
@@ -19,7 +19,7 @@ Activation
 ==========
 
 Hard Fork 2 uses the same 2 phase activation as Fork 1 (see
-[doc/fork1.md](../fork1.md)).  When the MTP (median time past) of a block
+[doc/fork1.md](fork1.md)).  When the MTP (median time past) of a block
 reaches the activation time the fork is "pending": the txpool is
 re-admitted under the new rules, but blocks still follow the old ruleset.
 The next block and all subsequent blocks are evaluated under the Hard Fork 2
@@ -46,7 +46,7 @@ blocks with a DAG of `k` subblocks (mainnet `TAILSTORM_K = 120`) that are
 tied together by a summary block, giving ~1 second commitment intervals
 while keeping the 2 minute settlement cadence.  Merged in !754 with many
 follow-up fixes, and described in detail in
-[doc/tailstorm.md](../tailstorm.md).
+[doc/tailstorm.md](tailstorm.md).
 
 Key points:
 
@@ -63,7 +63,7 @@ Key points:
   trees, and the DAG data is regenerated after a reorg completes.
 * Difficulty: summary block work adjustment integrated with ASERT (!809),
   with distinct nBits/chainWork handling for subblocks and summary blocks
-  (see [doc/tailstorm.md](../tailstorm.md)).
+  (see [doc/tailstorm.md](tailstorm.md)).
 * Blocks containing subblocks are only accepted once Hard Fork 2 is pending
   or activated.  At fork time a `GET_DAG` message recovers subblocks that
   arrived before the last legacy block was processed.
@@ -73,7 +73,7 @@ Key points:
 
 ### Script and VM changes
 
-Described in [doc/scripts2026.md](../scripts2026.md), gated by the
+Described in [doc/scripts2026.md](scripts2026.md), gated by the
 `SCRIPT_UPGRADE2_OPCODES` verify flag:
 
 * Bignum operation argument order is aligned with the integer operation
@@ -102,7 +102,7 @@ References
 
 * [Hard Fork (Minor) Features tracking issue #37](https://gitlab.com/nexa/nexa/-/issues/37)
 * [Hard Fork 2 feature description request, issue #76](https://gitlab.com/nexa/nexa/-/issues/76)
-* [doc/tailstorm.md](../tailstorm.md), [doc/scripts2026.md](../scripts2026.md), [doc/fork1.md](../fork1.md)
+* [doc/tailstorm.md](tailstorm.md), [doc/scripts2026.md](scripts2026.md), [doc/fork1.md](fork1.md)
 * Major merge requests: !754 (Tailstorm), !770 (EC snap to chain),
   !782 (Upgrade2 flags), !793 (retargetable sighash), !809 (summary block
   work adjustment)
