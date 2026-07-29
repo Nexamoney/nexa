@@ -186,6 +186,7 @@ protected:
 class CTailstormForest
 {
     friend class CTailstormGrove;
+    friend class CTailstormForestTest;
 
 public:
     // Use for locking all data structure except pDagActiveTip and bestGrove.
