@@ -4,13 +4,221 @@
 
 #include "validation/dag.h"
 
+#include "blockstorage/blockcache.h"
+#include "daa.h"
+#include "main.h"
+#include "pow.h"
 #include "test/test_nexa.h"
+#include "validation/tailstorm.h"
 
 #include <boost/test/unit_test.hpp>
 
 using namespace std;
 
-BOOST_FIXTURE_TEST_SUITE(tailstorm_dag_tests, BasicTestingSetup)
+class CTailstormForestTest
+{
+public:
+    static void AddGroveLookup(
+        CTailstormForest &forest, const uint256 &hash, const CTailstormGroveRef &grove)
+    {
+        LOCK(forest.cs_forest);
+        forest.mapAllGrovesByNode.emplace(hash, grove);
+    }
+
+    static void Reset(CTailstormForest &forest)
+    {
+        LOCK(forest.cs_forest);
+
+        for (auto &[hash, node] : forest.mapAllNodes)
+        {
+            node->setAncestors.clear();
+            node->setDescendants.clear();
+        }
+
+        std::atomic_store(&forest.pDagActiveTip, CTreeNodeRef{});
+        forest.bestGrove.reset();
+        forest.mapAllGrovesByNode.clear();
+        forest.mapAllNodes.clear();
+        forest.mapNodesUnlinked.clear();
+        forest.mapSummaryBlocksUnlinked.clear();
+        forest._pcoinsTip = nullptr;
+        forest.processingOrphans = false;
+    }
+};
+
+namespace
+{
+class TestTailstormTree : public CTailstormTree
+{
+public:
+    void SetSummaryRoot(CBlockIndex *summaryRoot) { pindexSummaryRoot = summaryRoot; }
+    void AddNode(const CTreeNodeRef &node) { dag.emplace(node->hash, node); }
+    CTreeNodeRef InsertNode(CTreeNodeRef node) { return Insert(node); }
+    size_t Size() const { return dag.size(); }
+};
+
+class ScopedChainTip
+{
+    CBlockIndex *originalTip;
+
+public:
+    explicit ScopedChainTip(CBlockIndex *tip) : originalTip(chainActive.Tip()) { chainActive.SetTip(tip); }
+    ~ScopedChainTip() { chainActive.SetTip(originalTip); }
+};
+
+CTreeNodeRef MakeTestTreeNode(const unsigned char nonce)
+{
+    CBlockRef block = MakeBlockRef();
+    block->nonce = {nonce};
+    block->UpdateHeader();
+    return MakeTreeNodeRef(ConstCBlockRef(block));
+}
+
+class LookupOnlyTailstormGrove : public CTailstormGrove
+{
+public:
+    explicit LookupOnlyTailstormGrove(CCoinsViewCache *coinsCache) : CTailstormGrove(coinsCache) {}
+    ~LookupOnlyTailstormGrove() { tree.reset(); }
+};
+
+class ScopedBlockIndexEntry
+{
+    uint256 hash;
+    CBlockIndex *index;
+
+public:
+    ScopedBlockIndexEntry(const uint256 &_hash, CBlockIndex *_index) : hash(_hash), index(_index)
+    {
+        WRITELOCK(cs_mapBlockIndex);
+        auto [iter, inserted] = mapBlockIndex.emplace(hash, index);
+        assert(inserted);
+        index->phashBlock = &iter->first;
+    }
+
+    ~ScopedBlockIndexEntry()
+    {
+        WRITELOCK(cs_mapBlockIndex);
+        auto iter = mapBlockIndex.find(hash);
+        if (iter != mapBlockIndex.end() && iter->second == index)
+        {
+            mapBlockIndex.erase(iter);
+        }
+        index->phashBlock = nullptr;
+    }
+};
+
+class ScopedBlockCacheEntry
+{
+    uint256 hash;
+
+public:
+    ScopedBlockCacheEntry(const ConstCBlockRef &block, const uint64_t height) : hash(block->GetHash())
+    {
+        blockcache.Init();
+        blockcache.AddBlock(block, height);
+    }
+
+    ~ScopedBlockCacheEntry() { blockcache.EraseBlock(hash); }
+};
+
+struct TailstormForestTestingSetup : TestingSetup
+{
+    CCoinsView coins;
+    CCoinsViewCache coinsCache;
+
+    TailstormForestTestingSetup() : TestingSetup(CBaseChainParams::REGTEST), coinsCache(&coins)
+    {
+        CTailstormForestTest::Reset(tailstormForest);
+        tailstormForest.SetBackend(&coinsCache);
+    }
+
+    ~TailstormForestTestingSetup() { CTailstormForestTest::Reset(tailstormForest); }
+};
+
+CBlockHeader MakeTestSummaryHeader(
+    const uint256 &prevHash,
+    const uint32_t height,
+    const arith_uint256 &prevWork,
+    const unsigned char nonce,
+    const std::vector<uint8_t> &minerData = {})
+{
+    CBlock block;
+    block.hashPrevBlock = prevHash;
+    block.height = height;
+    block.nBits = Params().GenesisBlock().nBits;
+    block.chainWork = ArithToUint256(prevWork + GetWorkForDifficultyBits(block.nBits));
+    block.nTime = height + 1;
+    block.minerData = minerData;
+    block.nonce = {nonce};
+    block.UpdateHeader();
+    return block.GetBlockHeader();
+}
+
+class PreviousEpochTestChain
+{
+public:
+    CBlockHeader olderHeader;
+    uint256 olderHash;
+    CBlockIndex olderSummary;
+    CBlockHeader previousHeader;
+    uint256 previousHash;
+    CBlockIndex previousSummary;
+    ScopedBlockIndexEntry previousEntry;
+    ConstCBlockRef previousBlock;
+    ScopedBlockCacheEntry previousCacheEntry;
+    std::shared_ptr<LookupOnlyTailstormGrove> predecessorGrove;
+
+    PreviousEpochTestChain(
+        CCoinsViewCache *coinsCache, const unsigned char olderNonce, const unsigned char previousNonce)
+        : olderHeader(MakeTestSummaryHeader(uint256(), 0, 0, olderNonce)),
+          olderHash(olderHeader.GetHash()),
+          olderSummary(olderHeader),
+          previousHeader(MakeTestSummaryHeader(olderHash, 1, olderSummary.chainWork(), previousNonce)),
+          previousHash(previousHeader.GetHash()),
+          previousSummary(previousHeader),
+          previousEntry(previousHash, &previousSummary),
+          previousBlock(std::make_shared<const CBlock>(previousHeader)),
+          previousCacheEntry(previousBlock, previousSummary.height()),
+          predecessorGrove(std::make_shared<LookupOnlyTailstormGrove>(coinsCache))
+    {
+        olderSummary.phashBlock = &olderHash;
+        olderSummary.nStatus |= BLOCK_LINKED;
+        previousSummary.pprev = &olderSummary;
+        previousSummary.nStatus |= BLOCK_LINKED;
+        previousSummary.nNextMaxBlockSize = Params().GetConsensus().nNextMaxBlockSize;
+        CTailstormForestTest::AddGroveLookup(tailstormForest, olderHash, predecessorGrove);
+    }
+};
+
+ConstCBlockRef MakeTestSubblock(
+    const CBlockIndex &summaryRoot, const std::set<CTreeNodeRef> &parents, const unsigned char nonce)
+{
+    CBlockRef block = MakeBlockRef();
+    block->hashPrevBlock = summaryRoot.GetBlockHash();
+    block->height = summaryRoot.height() + 1;
+    block->nTime = summaryRoot.GetBlockTime() + 1;
+    block->minerData =
+        GenerateMinerData(Params().GetConsensus().tailstorm_k, parents, summaryRoot.pprev->GetBlockHash());
+    block->nBits = GetNextWorkRequired(&summaryRoot, block.get(), Params().GetConsensus());
+    block->chainWork =
+        ArithToUint256(summaryRoot.chainWork() + GetWorkForDifficultyBits(block->nBits));
+    block->nonce = {nonce};
+    CMutableTransaction coinbase;
+    coinbase.vout.emplace_back(0, CScript() << OP_RETURN << block->height);
+    block->vtx.push_back(MakeTransactionRef(coinbase));
+    block->UpdateHeader();
+    return ConstCBlockRef(block);
+}
+
+CTreeNodeRef FindTestNode(const std::set<CTreeNodeRef> &dag, const uint256 &hash)
+{
+    auto iter =
+        std::find_if(dag.begin(), dag.end(), [&hash](const CTreeNodeRef &node) { return node->hash == hash; });
+    return iter == dag.end() ? CTreeNodeRef{} : *iter;
+}
+} // namespace
+
+BOOST_FIXTURE_TEST_SUITE(tailstorm_dag_tests, TailstormForestTestingSetup)
 
 BOOST_AUTO_TEST_CASE(coinbase_rewards)
 {
@@ -1736,6 +1944,187 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
         BOOST_CHECK_EQUAL(mapExpectedScores[mi.first->hash], mi.second);
     }
 
+}
+
+BOOST_AUTO_TEST_CASE(late_orphan_replay)
+{
+    // Verify that a previous-epoch child arriving before its parent is replayed
+    // into that epoch's DAG once the missing parent arrives.
+    PreviousEpochTestChain chain(&coinsCache, 10, 11);
+    BOOST_REQUIRE(blockcache.GetBlock(chain.previousHash));
+
+    CBlockHeader currentHeader =
+        MakeTestSummaryHeader(chain.previousHash, 2, chain.previousSummary.chainWork(), 12);
+    CBlockIndex currentSummary(currentHeader);
+    currentSummary.pprev = &chain.previousSummary;
+    const uint256 currentHash = currentHeader.GetHash();
+    currentSummary.phashBlock = &currentHash;
+    ScopedChainTip scopedChainTip(&currentSummary);
+
+    ConstCBlockRef parent = MakeTestSubblock(chain.previousSummary, {}, 20);
+    CTreeNodeRef parentNode = MakeTreeNodeRef(parent);
+    ConstCBlockRef child = MakeTestSubblock(chain.previousSummary, {parentNode}, 21);
+
+    // The child arrives first and is orphaned because its subblock parent is missing.
+    BOOST_CHECK(!tailstormForest.Insert(child));
+    BOOST_CHECK_EQUAL(tailstormForest.GetUnlinkedSubblocks(), 1);
+
+    // Its parent then arrives after the next summary block is already the active tip.
+    // It is parked, unprocessed, in the previous epoch's DAG.
+    BOOST_REQUIRE(tailstormForest.Insert(parent));
+
+    std::set<CTreeNodeRef> previousDag;
+    BOOST_REQUIRE(tailstormForest.GetFullDagFor(chain.previousHash, previousDag));
+    CTreeNodeRef parentNodeInDag = FindTestNode(previousDag, parent->GetHash());
+    BOOST_REQUIRE(parentNodeInDag);
+    BOOST_CHECK(!parentNodeInDag->fProcessed);
+
+    std::set<uint256> linked;
+    {
+        LOCK(tailstormForest.cs_forest);
+        linked = tailstormForest.ProcessOrphans();
+    }
+
+    BOOST_CHECK_EQUAL(linked.count(child->GetHash()), 1);
+    BOOST_CHECK_EQUAL(tailstormForest.GetUnlinkedSubblocks(), 0);
+
+    previousDag.clear();
+    BOOST_REQUIRE(tailstormForest.GetFullDagFor(chain.previousHash, previousDag));
+    CTreeNodeRef childNodeInDag = FindTestNode(previousDag, child->GetHash());
+    BOOST_REQUIRE(childNodeInDag);
+    BOOST_CHECK(!childNodeInDag->fProcessed);
+
+    CTailstormGroveRef childGrove;
+    BOOST_REQUIRE(tailstormForest.GetGrove(child->GetHash(), childGrove));
+    BOOST_CHECK_EQUAL(childGrove->id(), chain.previousHash);
+}
+
+BOOST_AUTO_TEST_CASE(late_uncle_inclusion)
+{
+    // Verify that a late previous-epoch orphan completing a k-node DAG remains
+    // available and is selected as an uncle by the current epoch.
+    const uint32_t tailstormK = Params().GetConsensus().tailstorm_k;
+    BOOST_REQUIRE(tailstormK >= 3);
+
+    PreviousEpochTestChain chain(&coinsCache, 30, 31);
+    BOOST_REQUIRE(blockcache.GetBlock(chain.previousHash));
+
+    std::vector<ConstCBlockRef> existingSubblocks;
+    std::set<CTreeNodeRef> summarySubblocks;
+    for (uint32_t i = 0; i < tailstormK - 2; ++i)
+    {
+        ConstCBlockRef subblock =
+            MakeTestSubblock(chain.previousSummary, {}, static_cast<unsigned char>(40 + i));
+        existingSubblocks.push_back(subblock);
+        summarySubblocks.insert(MakeTreeNodeRef(subblock));
+    }
+
+    ConstCBlockRef parent = MakeTestSubblock(chain.previousSummary, {}, 60);
+    CTreeNodeRef parentNode = MakeTreeNodeRef(parent);
+    summarySubblocks.insert(parentNode);
+    BOOST_REQUIRE_EQUAL(summarySubblocks.size(), tailstormK - 1);
+    ConstCBlockRef child = MakeTestSubblock(chain.previousSummary, {parentNode}, 61);
+
+    std::vector<uint8_t> currentMinerData =
+        GenerateMinerData(tailstormK, summarySubblocks, chain.olderHash);
+    CBlockHeader currentHeader =
+        MakeTestSummaryHeader(chain.previousHash, 2, chain.previousSummary.chainWork(), 32, currentMinerData);
+    CBlockIndex currentSummary(currentHeader);
+    currentSummary.pprev = &chain.previousSummary;
+    currentSummary.nStatus |= BLOCK_LINKED;
+    currentSummary.nNextMaxBlockSize = Params().GetConsensus().nNextMaxBlockSize;
+    const uint256 currentHash = currentHeader.GetHash();
+    ScopedBlockIndexEntry currentEntry(currentHash, &currentSummary);
+    ConstCBlockRef currentBlock = std::make_shared<const CBlock>(currentHeader);
+    ScopedBlockCacheEntry currentCacheEntry(currentBlock, currentSummary.height());
+    BOOST_REQUIRE(blockcache.GetBlock(currentHash));
+    ScopedChainTip scopedChainTip(&currentSummary);
+
+    for (const ConstCBlockRef &subblock : existingSubblocks)
+    {
+        BOOST_REQUIRE(tailstormForest.Insert(subblock));
+    }
+
+    // The child arrives first. Its parent will become node k-1, while replaying
+    // the child will make it the omitted kth node eligible for uncle adoption.
+    BOOST_CHECK(!tailstormForest.Insert(child));
+    BOOST_CHECK_EQUAL(tailstormForest.GetUnlinkedSubblocks(), 1);
+    BOOST_REQUIRE(tailstormForest.Insert(parent));
+
+    std::set<CTreeNodeRef> previousDag;
+    BOOST_REQUIRE(tailstormForest.GetFullDagFor(chain.previousHash, previousDag));
+    BOOST_REQUIRE_EQUAL(previousDag.size(), tailstormK - 1);
+    CTreeNodeRef parentNodeInDag = FindTestNode(previousDag, parent->GetHash());
+    BOOST_REQUIRE(parentNodeInDag);
+    BOOST_CHECK(!parentNodeInDag->fProcessed);
+
+    std::set<uint256> linked;
+    {
+        LOCK(tailstormForest.cs_forest);
+        linked = tailstormForest.ProcessOrphans();
+    }
+
+    BOOST_CHECK_EQUAL(linked.count(child->GetHash()), 1);
+    BOOST_CHECK_EQUAL(tailstormForest.GetUnlinkedSubblocks(), 0);
+    previousDag.clear();
+    BOOST_REQUIRE(tailstormForest.GetFullDagFor(chain.previousHash, previousDag));
+    BOOST_REQUIRE_EQUAL(previousDag.size(), tailstormK);
+    CTreeNodeRef childNodeInPreviousDag = FindTestNode(previousDag, child->GetHash());
+    BOOST_REQUIRE(childNodeInPreviousDag);
+    BOOST_CHECK(!childNodeInPreviousDag->fProcessed);
+    BOOST_CHECK(!childNodeInPreviousDag->fUncle);
+
+    ConstCBlockRef currentSubblock = MakeTestSubblock(currentSummary, {}, 70);
+    BOOST_REQUIRE(tailstormForest.Insert(currentSubblock));
+
+    std::set<CTreeNodeRef> currentDag;
+    BOOST_REQUIRE(tailstormForest.GetFullDagFor(currentHash, currentDag));
+    CTreeNodeRef childUncle = FindTestNode(currentDag, child->GetHash());
+    BOOST_REQUIRE(childUncle);
+    BOOST_CHECK(childUncle->fUncle);
+    BOOST_CHECK_EQUAL(childUncle->roothash, currentHash);
+
+    std::set<CTreeNodeRef> bestDag;
+    BOOST_REQUIRE(tailstormForest.GetBestDagFor(currentHash, bestDag));
+    CTreeNodeRef selectedChildUncle = FindTestNode(bestDag, child->GetHash());
+    BOOST_REQUIRE(selectedChildUncle);
+    BOOST_CHECK(selectedChildUncle->fUncle);
+    BOOST_CHECK_EQUAL(selectedChildUncle->roothash, currentHash);
+}
+
+BOOST_AUTO_TEST_CASE(unprocessed_ancestor_parks_child_during_reorg_gap)
+{
+    CBlockIndex summaryRoot;
+    summaryRoot.SetBlockHeader(std::make_shared<CBlockHeader>());
+    summaryRoot.SetBlockHeaderHeight(0);
+    ScopedChainTip scopedChainTip(&summaryRoot);
+
+    LOCK(tailstormForest.cs_forest);
+
+    TestTailstormTree tree;
+    tree.SetSummaryRoot(&summaryRoot);
+
+    CTreeNodeRef parent = MakeTestTreeNode(1);
+    parent->nSequenceId = 1;
+    parent->dagHeight = 1;
+    parent->fProcessed = false;
+    tree.AddNode(parent);
+
+    CTreeNodeRef child = MakeTestTreeNode(2);
+    child->dagHeight = 2;
+    child->setAncestors.insert(parent);
+    parent->setDescendants.insert(child);
+
+    // Model the reorg gap directly: the grove root is the transient chain tip, but
+    // the child's parent was parked while this was a non-tip grove.
+    CTreeNodeRef inserted = tree.InsertNode(child);
+
+    BOOST_REQUIRE(inserted != nullptr);
+    BOOST_CHECK(inserted == child);
+    BOOST_CHECK_EQUAL(tree.Size(), 2);
+    BOOST_CHECK_EQUAL(child->nSequenceId, 2);
+    BOOST_CHECK(!child->fProcessed);
+    BOOST_CHECK(!parent->fProcessed);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
