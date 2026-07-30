@@ -201,7 +201,7 @@ bool _ActivateBestChain(CValidationState &state,
     CNode *pfrom = nullptr);
 
 /** Initially performs a re-org if necessary before connecting all the blocks to the most work chain */
-bool ActivateBestChainStep(CValidationState &state,
+bool ActivateBestChainSummaryBlocks(CValidationState &state,
     const CChainParams &chainparams,
     CBlockIndex *pindexMostWork,
     ConstCBlockRef pblock,

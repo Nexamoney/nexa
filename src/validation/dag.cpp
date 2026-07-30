@@ -2020,7 +2020,7 @@ void CTailstormForest::CheckForReorg()
 
             CValidationState state;
             const CChainParams &chainparams = Params();
-            if (!ActivateBestChainStep(state, chainparams, pindexMostWork, nullptr, SINGLE_THREADED))
+            if (!ActivateBestChainSummaryBlocks(state, chainparams, pindexMostWork, nullptr, SINGLE_THREADED))
             {
                 LOG(DAG, "%s():  failed to reorg to %s", __func__, pindexMostWork->phashBlock->ToString());
             }
@@ -2039,7 +2039,7 @@ void CTailstormForest::CheckForReorg()
                     {
                         auto treenode = tree->dag.begin()->second;
                         // Only regenerate if we actually reorged to the grove that we were trying to reorg to.
-                        // ActivateBestChainStep may activate a different fork.
+                        // ActivateBestChainSummaryBlocks may activate a different fork.
                         if (treenode->subblock->hashPrevBlock == chainTip->GetHash())
                             ReGenerateDagData(grove);
                     }
