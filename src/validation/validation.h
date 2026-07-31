@@ -21,7 +21,7 @@
 #include "wallet/grouptokencache.h"
 
 /** Default for -blockchain.maxReorgDepth. A value less than zero disables the feature */
-static const int DEFAULT_MAX_REORG_DEPTH = -1; // disabled
+static const int DEFAULT_MAX_REORG_DEPTH = 200;
 
 /** Is express validation turned on/off */
 static const bool DEFAULT_XVAL_ENABLED = false;

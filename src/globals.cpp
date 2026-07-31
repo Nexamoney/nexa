@@ -439,7 +439,6 @@ CTweak<bool> fastBlockTemplate("mining.fastBlockTemplate",
     strprintf("Use the optimized getblocktemplate when the txpool is smaller than max block size (default: %u)",
         DEFAULT_FASTBLOCKTEMPLATE));
 
-
 CTweakRef<uint64_t> miningForkTime("consensus.fork2Time",
     "Time in seconds since the epoch to initiate the Nexa Fork2 protocol upgrade.  A "
     "setting of 0 will turn on the fork at the appropriate time.",
@@ -751,8 +750,10 @@ CTweak<uint64_t> checkScriptDays("blockchain.checkScriptDays",
     DEFAULT_CHECKPOINT_DAYS);
 
 /** depth at which we mark blocks as final */
-CTweak<int> maxReorgDepth("blockchain.maxReorgDepth",
-    strprintf("After how many new blocks do we consider a block final(default: %ld)", DEFAULT_MAX_REORG_DEPTH),
+CTweak<int> maxReorgDepth("test.maxReorgDepth",
+    strprintf(
+        "After how many new blocks do we consider a block final (default: %ld).  This implements a rolling checkpoint.",
+        DEFAULT_MAX_REORG_DEPTH),
     DEFAULT_MAX_REORG_DEPTH);
 
 /** How large in MB do we allow in the transaction pool to get */
