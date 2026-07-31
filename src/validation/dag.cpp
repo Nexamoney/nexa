@@ -2020,7 +2020,7 @@ void CTailstormForest::CheckForReorg()
 
             CValidationState state;
             const CChainParams &chainparams = Params();
-            if (!ActivateBestChainStep(state, chainparams, pindexMostWork, nullptr, SINGLE_THREADED))
+            if (!ActivateBestChainSummaryBlocks(state, chainparams, pindexMostWork, nullptr, SINGLE_THREADED))
             {
                 if (startingChainTip == chainActive.Tip())
                     LOG(DAG, "%s():  failed to reorg to %s", __func__, pindexMostWork->phashBlock->ToString());

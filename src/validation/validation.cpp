@@ -4005,7 +4005,7 @@ static void CheckForkWarningConditionsOnNewFork(CBlockIndex *pindexNewForkTip)
  * Try to make some progress towards making pindexMostWork the active block.
  * pblock is either nullptr or a pointer to a CBlock corresponding to pindexMostWork.
  */
-bool ActivateBestChainStep(CValidationState &state,
+bool ActivateBestChainSummaryBlocks(CValidationState &state,
     const CChainParams &chainparams,
     CBlockIndex *pindexMostWork,
     ConstCBlockRef pblock,
@@ -4358,7 +4358,7 @@ bool _ActivateBestChain(CValidationState &state,
             }
         }
 
-        if (!ActivateBestChainStep(state, chainparams, pindexMostWork,
+        if (!ActivateBestChainSummaryBlocks(state, chainparams, pindexMostWork,
                 ((pblock) && pblock->GetHash() == pindexMostWork->GetBlockHash() ? pblock : nullptr), fParallel))
         {
             // If we fail to activate a chain because it is bad, send a reject message
