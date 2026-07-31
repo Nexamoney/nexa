@@ -101,7 +101,6 @@ References
 ==========
 
 * [Hard Fork (Minor) Features tracking issue #37](https://gitlab.com/nexa/nexa/-/issues/37)
-* [Hard Fork 2 feature description request, issue #76](https://gitlab.com/nexa/nexa/-/issues/76)
 * [doc/tailstorm.md](tailstorm.md), [doc/scripts2026.md](scripts2026.md), [doc/fork1.md](fork1.md)
 * Major merge requests: !754 (Tailstorm), !770 (EC snap to chain),
   !782 (Upgrade2 flags), !793 (retargetable sighash), !809 (summary block
