@@ -1673,6 +1673,14 @@ bool CTailstormForest::GetDagForBlock(ConstCBlockRef &pblock,
         // accepted into the dag and is not also not an orphaned subblock.
         auto &tree = grove->tree;
 
+        // Refresh the uncle set before matching. It is otherwise written only on
+        // insert into this grove, and it only captures what was linked into the PARENT grove
+        // at that instant. A parent-epoch subblock that links after this grove's last insert can
+        // therefore never enter the set, and any summary committing it as an uncle stays unvalidatable
+        // for the life of the grove.
+        for (auto &mi : GetUncles(grove))
+            tree->mapUncles.emplace(mi.first, mi.second);
+
         // get all mining hashes in the tree
         std::map<uint256, CTreeNodeRef> mapDagMiningHashes;
         for (auto &mi : tree->dag)
@@ -2301,11 +2309,18 @@ uint256 CTailstormForest::GetDagActiveTip()
 
 std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTreeNodeRef treenode)
 {
+    CTailstormGroveRef grove = nullptr;
+    if (!GetGrove(treenode->hash, grove))
+        return {};
+    return GetUncles(grove);
+}
+
+std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTailstormGroveRef grove)
+{
     std::map<uint256, CTreeNodeRef> mapUncles;
 
     // Find and include subblock uncles
-    CTailstormGroveRef grove = nullptr;
-    if (GetGrove(treenode->hash, grove))
+    if (grove)
     {
         auto pblock = ReadBlockFromDisk(grove->tree->pindexSummaryRoot, Params().GetConsensus());
         if (!pblock)

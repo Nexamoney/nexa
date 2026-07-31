@@ -379,6 +379,9 @@ public:
         summary blocks, which can then be added to a trees Uncle map */
     std::map<uint256, CTreeNodeRef> GetUncles(CTreeNodeRef node);
 
+    //! As above, but for a grove that is already resolved.
+    std::map<uint256, CTreeNodeRef> GetUncles(CTailstormGroveRef grove);
+
     //! Remove a node and any descendants from the forest
     bool Remove(uint256 &hash);
 
