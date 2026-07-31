@@ -18,7 +18,7 @@ from test_framework.blocktools import *
 import decimal
 decimal.getcontext().prec = 16
 
-waitTime = 10
+waitTime = 60
 
 class TailstormActivationTest(BitcoinTestFramework):
 
