@@ -152,13 +152,12 @@ bool MineIt(CBlockHeader &blockHeader, unsigned long int tries, const Consensus:
 
     while (tries > 0)
     {
-        if ((tries & ((1 << 12) - 1)) == 0)
+        // By printing on try #1 mod 4095, I will not print if the provided nonce just works (no search needed)
+        if ((tries & ((1 << 12) - 1)) == 1)
             printf("nonce: %s\n", GetHex(blockHeader.nonce).c_str());
         uint256 mhash = ::GetMiningHash(headerCommitment, blockHeader.nonce);
         if (CheckProofOfWork(mhash, blockHeader.hashPrevBlock, bnTarget, cparams, nullptr))
-        // if (CheckPow(mhash, blockHeader.nBits, cparams))
         {
-            // printf("pow hash: %s\n", mhash.GetHex().c_str());
             return true;
         }
         ++count;
@@ -534,7 +533,7 @@ public:
         std::vector<unsigned char> hardCodedNonce;
 
         uint256 hashGenesis;
-#if 1
+#if 0
         // slower mining like -testnet: use fPowNoRetargeting = false;
         uint32_t tgtBits = 0x1f0fffff; // 0x207fffff; // easiest possible
         consensus.fPowAllowMinDifficultyBlocks = false;
@@ -544,17 +543,24 @@ public:
         consensus.nPowTargetSpacing = 30;
         consensus.tailstorm_k = 40;
         consensus.powAlgorithm = 1;
-        consensus.nASERTAnchorAt = 2;
 #else
+        // This initial tgtBits is quite easy even for a laptop, so you'll produce 100+ fast blocks before things
+        // settle down.
+        uint32_t tgtBits = 0x1f0fffff;
+        consensus.fPowAllowMinDifficultyBlocks = false;
         // faster mining of nearly 1 per second- use fPowNoReTargeting = true;
-        uint32_t tgtBits = 0x1f0effff;
-        consensus.fPowAllowMinDifficultyBlocks = true;
-        consensus.fPowNoRetargeting = true;
-        nonce = hardCodedNonce = ParseHex("e8382500");
-        hashGenesis = uint256S("0c33d2c4023d3071f4f71741556a0c4585586d28804f991d9266a2ee4aab58e6");
+        consensus.fPowNoRetargeting = false;
+        nonce = hardCodedNonce = ParseHex("ad0e00");
+        hashGenesis = uint256S("fe0c4e6c1617524f45541ec62c1361fa28349db3830c974afd910de965c57c5c");
         consensus.nPowTargetSpacing = 2 * 60;
+        consensus.tailstorm_k = 40;
         consensus.powAlgorithm = 1;
 #endif
+        // The ASERT start time is the parent of this anchor.  So this sets the start time to block 1.
+        // By using block 1, not the genesis block, as the ASERT start time, we can keep the same genesis block
+        // without having the problem of having a large gap of no block discovery between the
+        // genesis block and the time you started a stormtest run.
+        consensus.nASERTAnchorAt = 2;
 
         bool fNegative;
         bool fOverflow;

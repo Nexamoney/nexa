@@ -18,7 +18,8 @@ from test_framework.blocktools import *
 import decimal
 decimal.getcontext().prec = 16
 
-waitTime = 60
+# Give more time in slow CI machines than for developer's machines.
+waitTime = 60 if os.getenv("CI") == "true" else 10
 
 class TailstormActivationTest(BitcoinTestFramework):
 
@@ -78,7 +79,7 @@ class TailstormActivationTest(BitcoinTestFramework):
         for i in range(6):
             mocktime = mocktime + 120
             self.setmocktime(mocktime)
-            
+
             # get the mining commitment and make sure it changes after a block is mined
             commitment_before = self.nodes[0].getminingcandidate()
             self.nodes[0].generate(1)
@@ -734,7 +735,7 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[1].getbestblockhash() == summary_block_node1[0],
                 onError= lambda: print(f"Expected block: {summary_block_node1[0]}  actual: {self.nodes[1].getbestblockhash()}\ntips:\n{self.nodes[1].getchaintips()}"))
         waitFor(waitTime, lambda: self.nodes[0].getbestblockhash() == summary_block_node1[0],
-                onError= lambda: print(f"Expected block: {summary_block_node1[0]}  actual: {self.nodes[0].getbestblockhash()}\ntips:\n{self.nodes[0].getchaintips()}"))
+                onError= lambda: print(f"Expected block: {summary_block_node1[0]}  actual: {self.nodes[0].getbestblockhash()}\ntips:\n{self.nodes[0].getchaintips()}\npeers:\n{self.nodes[0].getpeerinfo()}"))
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 0)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 0)
         waitFor(waitTime, lambda: self.nodes[0].getblockcount() == self.nodes[1].getblockcount())
@@ -1372,6 +1373,7 @@ if __name__ == '__main__':
 
 def Test():
     for i in range(0,1):
+        print(f"\n\nTEST #{i}:")
         TestOne()
 
 def TestOne():

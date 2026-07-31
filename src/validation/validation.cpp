@@ -1853,6 +1853,7 @@ CBlockIndex *FindMostWorkChain()
         uint64_t depth = 0;
         bool fFailedChain = false;
         bool fMissingData = false;
+        bool fTooDeep = false;
 
         // follow the chain all the way back to where it joins the current active chain.
         while (pindexTest && !chainActive.Contains(pindexTest) && pindexTest->height() > 0)
@@ -1871,8 +1872,22 @@ CBlockIndex *FindMostWorkChain()
             depth++;
         }
 
+        // how far back doe we have to go in the current chain to switch over to this other one?
+        auto tip = chainActive.Tip();
+        uint64_t forkDepth = tip ? (tip->height() - pindexTest->height()) : 0;
+
+        auto maxReorg = maxReorgDepth.Value();
+        // Refusing to allow maxReorg to be configured to 0 because that would mean that we cannot extend the tip.
+        if ((maxReorg > 0) && (forkDepth > (uint64_t)maxReorg))
+        {
+            // We don't want to mark blocks in this chain as bad, like in the case above.  We just want to
+            // skip it.
+            LOG(BLK, "Will NOT reorg, depth %d exceeds max %d\n", depth, maxReorg);
+            fTooDeep = true;
+        }
+
         // Conditions where we want to reject the chain
-        if (fFailedChain || fMissingData)
+        if (fFailedChain || fMissingData || fTooDeep)
         {
             // Candidate chain is not usable (either invalid or missing data)
             CBlockIndex *pBestInvalid = pindexBestInvalid.load();
