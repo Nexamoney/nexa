@@ -1844,15 +1844,15 @@ void CTailstormForest::CheckForReorg()
     LOCK(cs_forest);
 
     CTailstormGroveRef grovetip = nullptr;
-    CBlockIndex *chainTip = chainActive.Tip();
-    CBlockIndex *pindexMostWork = chainTip;
-    arith_uint256 nChainTipWork = chainTip->chainWork();
-    arith_uint256 nMaxChainWork = chainTip->chainWork();
+    CBlockIndex *startingChainTip = chainActive.Tip();
+    CBlockIndex *pindexMostWork = startingChainTip;
+    arith_uint256 nChainTipWork = startingChainTip->chainWork();
+    arith_uint256 nMaxChainWork = startingChainTip->chainWork();
     auto tailstorm_k = Params().GetConsensus().tailstorm_k;
 
 
-    LOG(DAG, "%s(): current chain active height %ld for %s", __func__, chainTip->height(),
-        chainTip->phashBlock->ToString());
+    LOG(DAG, "%s(): current chain active height %ld for %s", __func__, startingChainTip->height(),
+        startingChainTip->phashBlock->ToString());
     {
         // Find all groves
         std::set<CTailstormGroveRef> setAllGroves;
@@ -1863,7 +1863,7 @@ void CTailstormForest::CheckForReorg()
         //
         // The chainwork includes "all" subblocks for the full dag, so uncles as well as dag blocks.
         std::set<CTreeNodeRef> tipdag;
-        GetFullDagFor(*chainTip->phashBlock, tipdag);
+        GetFullDagFor(*startingChainTip->phashBlock, tipdag);
         unsigned int subblockCount = 0;
         for (auto node : tipdag)
         {
@@ -1930,7 +1930,7 @@ void CTailstormForest::CheckForReorg()
                 if (pindexMostWork != pindexSummaryRoot)
                 {
                     LOG(DAG, "%s : switching summary block: pindexMostWork %s > chaintip %s\n", __func__,
-                        pindexMostWork->phashBlock->ToString(), chainTip->phashBlock->ToString());
+                        pindexMostWork->phashBlock->ToString(), startingChainTip->phashBlock->ToString());
                     pindexMostWork = pindexSummaryRoot;
                 }
                 else
@@ -1971,7 +1971,7 @@ void CTailstormForest::CheckForReorg()
                 pindexMostWork = pindexSummaryRoot;
 
                 LOG(DAG, "%s : pindexMostWork %s > chaintip %s\n", __func__, pindexMostWork->phashBlock->ToString(),
-                    chainTip->phashBlock->ToString());
+                    startingChainTip->phashBlock->ToString());
             }
         }
     }
@@ -1993,13 +1993,13 @@ void CTailstormForest::CheckForReorg()
 
     const CBlockIndex *pindexFork = chainActive.FindFork(pindexMostWork);
     // Initiate reorg if there is a tree with greater work on another fork
-    if (((nMaxChainWork > nChainTipWork) && (chainTip != pindexFork)) ||
+    if (((nMaxChainWork > nChainTipWork) && (startingChainTip != pindexFork)) ||
         // Or just move forward if the next summary block on this chain is ready
-        ((chainTip == pindexFork) && (pindexMostWork->GetHeight() == chainTip->GetHeight() + 1)))
+        ((startingChainTip == pindexFork) && (pindexMostWork->GetHeight() == startingChainTip->GetHeight() + 1)))
     {
         LOG(DAG, "%s(): Attempting to initiate a reorg from %s at height %d to %s at height %d", __func__,
-            chainTip->phashBlock->ToString(), chainTip->height(), pindexMostWork->phashBlock->ToString(),
-            pindexMostWork->height());
+            startingChainTip->phashBlock->ToString(), startingChainTip->height(),
+            pindexMostWork->phashBlock->ToString(), pindexMostWork->height());
 
         {
             // If there is a reorg currently happening within PV, then we must terminate it by
@@ -2011,7 +2011,7 @@ void CTailstormForest::CheckForReorg()
 
             TxAdmissionPause txlock;
 
-            if (chainTip != chainActive.Tip())
+            if (startingChainTip != chainActive.Tip())
             {
                 LOG(DAG, "%s():  failed to reorg to %s because chain active tip changed already", __func__,
                     pindexMostWork->phashBlock->ToString());
@@ -2022,28 +2022,24 @@ void CTailstormForest::CheckForReorg()
             const CChainParams &chainparams = Params();
             if (!ActivateBestChainStep(state, chainparams, pindexMostWork, nullptr, SINGLE_THREADED))
             {
-                LOG(DAG, "%s():  failed to reorg to %s", __func__, pindexMostWork->phashBlock->ToString());
+                if (startingChainTip == chainActive.Tip())
+                    LOG(DAG, "%s():  failed to reorg to %s", __func__, pindexMostWork->phashBlock->ToString());
+                else
+                    LOG(DAG, "%s():  failed to fully reorg to %s but did reorg to %s", __func__,
+                        pindexMostWork->phashBlock->ToString(), chainActive.Tip()->phashBlock->ToString());
             }
-            else
+
+            // If the starting chaintip changed then a reorg was successful.
+            auto newChainTip = chainActive.Tip();
+            if (startingChainTip != newChainTip)
             {
-                LOG(DAG, "%s():  completed a reorg to %s", __func__, pindexMostWork->phashBlock->ToString());
+                LOG(DAG, "%s():  completed a reorg to %s", __func__, newChainTip->phashBlock->ToString());
 
                 // Regenerate the dag data since there may be unprocessed subblocks present which were
                 // added to the tree when the fork was inactive.
                 CTailstormGroveRef grove;
-                if (GetGrove(*pindexMostWork->phashBlock, grove))
-                {
-                    chainTip = chainActive.Tip();
-                    auto &tree = grove->tree;
-                    if (tree->dag.size())
-                    {
-                        auto treenode = tree->dag.begin()->second;
-                        // Only regenerate if we actually reorged to the grove that we were trying to reorg to.
-                        // ActivateBestChainStep may activate a different fork.
-                        if (treenode->subblock->hashPrevBlock == chainTip->GetHash())
-                            ReGenerateDagData(grove);
-                    }
-                }
+                if (GetGrove(*newChainTip->phashBlock, grove))
+                    ReGenerateDagData(grove);
 
                 // Since all subblocks already in the dag have been processed we just need to process
                 // any unlinked subblocks.
