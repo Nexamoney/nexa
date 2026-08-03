@@ -367,6 +367,10 @@ build-ubuntu-only-libnexa:
         key: ccache-ubuntu
 
 build-ubuntu-deps:
+    variables:
+        FF_USE_FASTZIP: "true"
+        CACHE_REQUEST_TIMEOUT: "30"
+        TRANSFER_METER_FREQUENCY: "5s"
     stage: build_depends
     extends: [.ubuntu_base, .detect-cpus]
     needs: []
