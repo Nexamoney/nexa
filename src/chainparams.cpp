@@ -572,11 +572,10 @@ public:
         // Fork1 rules always valid on stormnet
         consensus.fork1Height = 0;
         consensus.nextForkActivationTime = NEXT_FORK_ACTIVATION_TIME;
-
         // The half life for the ASERT DAA. For every (nASERTHalfLife) seconds behind schedule the blockchain gets,
         // difficulty is cut in half. Doubled if blocks are ahead of schedule.
         // (in seconds)  10 min is massively over-reactive (but great for testing)
-        consensus.nASERTHalfLife = 10 * 60;
+        consensus.nASERTHalfLife = 50 * 60;
 
         genesis = CreateGenesisBlock("this is nexa stormtest", CScript() << OP_1, 1781010927, nonce, tgtBits, 0 * COIN);
         // Uncomment this code block when you want to enable extremely fast mining like found on regtest
