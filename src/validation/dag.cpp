@@ -2055,6 +2055,57 @@ void CTailstormForest::CheckForReorg()
             }
         }
     }
+
+    // The tip can also settle onto a grove by the normal forward path
+    // (ProcessNewBlock -> ActivateBestChain -> ConnectTip), which runs before CheckForReorg is called.
+    // When it does, the reorg logic above is a no-op and the grove's parked subblocks are never re-layered.
+    // Subblocks are parked (fProcessed = false) when they arrive for a grove while the active tip is
+    // transiently on another fork (see CTailstormTree::Insert). Left unprocessed after the tip settles they
+    // remain live descendants of the processed tips yet are excluded from the best dag, so they block each
+    // processed tip out of IsTip(). The miner then finds no tip to extend and falls back to mining the root,
+    // and once the total subblock count reaches tailstorm_k - 1 a summary can no longer be built and the
+    // epoch livelocks. Therefore if the tip did not move above, re-layer any parked subblocks it has.
+    if (startingChainTip == chainActive.Tip())
+    {
+        CTailstormGroveRef grove;
+        if (GetGrove(*startingChainTip->phashBlock, grove) && grove->tree)
+        {
+            uint32_t nProcessed = 0;
+            bool fHasUnprocessed = false;
+            for (const auto &mi : grove->tree->dag)
+            {
+                if (mi.second->fProcessed)
+                    nProcessed++;
+                else
+                    fHasUnprocessed = true;
+            }
+
+            // Only act while the epoch is genuinely short of a mineable summary. Once tailstorm_k - 1
+            // subblocks are processed the dag is full and any further unprocessed subblocks are
+            // overflow/uncle candidates, which a regeneration would not adopt in any case.
+            if (fHasUnprocessed && nProcessed < tailstorm_k - 1)
+            {
+                // Stop txadmission so the subblocks are layered against the tip's coins view, matching how
+                // ReGenerateDagData is invoked on the reorg path above.
+                TxAdmissionPause txlock;
+
+                // Acquiring the pause can block, so re-check that the tip has not moved underneath us.
+                if (startingChainTip != chainActive.Tip())
+                {
+                    LOG(DAG, "%s(): not reprocessing settled grove %s because the chain active tip changed already",
+                        __func__, startingChainTip->phashBlock->ToString());
+                    return;
+                }
+
+                LOG(DAG, "%s(): reprocessing parked subblocks for settled tip grove %s (%d of %d processed)", __func__,
+                    startingChainTip->phashBlock->ToString(), (int)nProcessed, (int)(tailstorm_k - 1));
+                ReGenerateDagData(grove);
+
+                // Regenerating may have exposed a grove for subblocks that are still unlinked.
+                ProcessOrphans();
+            }
+        }
+    }
     return;
 }
 
