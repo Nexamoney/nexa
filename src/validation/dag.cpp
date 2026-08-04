@@ -2139,11 +2139,11 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
         // does not get created until the block has succesfully finished connecting.
         std::map<COutPoint, CTransactionRef> mapInputs;
         auto tailstorm_k = chainparams.GetConsensus().tailstorm_k;
-        // Put the first received tailstorm_k blocks in setDag
+        // Put the first received tailstorm_k - 1 blocks in setDag
         std::set<CTreeNodeRef> setDag;
         std::vector<CTreeNodeRef> kSortedDag; // the exact subblocks we will use
-        kSortedDag.reserve(tailstorm_k);
-        for (auto it = vSortedDag.begin(); (it != vSortedDag.end()) && (setDag.size() < tailstorm_k); it++)
+        kSortedDag.reserve(tailstorm_k - 1);
+        for (auto it = vSortedDag.begin(); (it != vSortedDag.end()) && (setDag.size() < tailstorm_k - 1); it++)
         {
             setDag.insert(it->second);
             kSortedDag.push_back(it->second);
