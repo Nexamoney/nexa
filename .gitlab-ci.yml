@@ -892,6 +892,7 @@ build-osx:
         when: always
         paths:
             - ./build/src/.libs/libnexa.*
+            - ./build/src/nexad
             - ./build/config.log # on failure
             - ./depends/x86_64-apple-darwin/share/config.site # on failure
     rules:
@@ -949,6 +950,7 @@ build-osx-arm64:
         when: always
         paths:
             - ./build/src/.libs/libnexa.*
+            - ./build/src/nexad
             - ./build/config.log # on failure
             - ./depends/arm64-apple-darwin/share/config.site # on failure
     rules:
