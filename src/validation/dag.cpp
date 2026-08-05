@@ -290,6 +290,76 @@ CTailstormTree::~CTailstormTree()
     }
 }
 
+void FindDagConflicts(const std::vector<CTreeNodeRef> &vOtherSubblocks,
+    const CTreeNodeRef &newNode,
+    std::vector<std::map<uint256, CTreeNodeRef> > &vDoubleSpendTxns,
+    std::set<CTreeNodeRef> *setConflictingSubblocks)
+{
+    if (!newNode->subblock)
+        return;
+
+    // Create the outpoint map, and alongside it the set of this subblock's own txids.
+    std::map<COutPoint, CTransactionRef> newNodeOutpoints;
+    std::set<uint256> newNodeTxns;
+    for (CTransactionRef ptx : newNode->subblock->vtx)
+    {
+        if (ptx->IsCoinBase())
+            continue;
+
+        newNodeTxns.insert(ptx->GetId());
+        for (size_t j = 0; j < ptx->vin.size(); j++)
+        {
+            newNodeOutpoints[ptx->vin[j].prevout] = ptx;
+        }
+    }
+
+    // Cycle through the dag from highest sequence id to lowest looking for a conflicting subblock.
+    std::vector<CTreeNodeRef> vSortedDag(vOtherSubblocks);
+    std::sort(vSortedDag.begin(), vSortedDag.end(),
+        [](const CTreeNodeRef &a, const CTreeNodeRef &b) { return a->nSequenceId < b->nSequenceId; });
+    for (auto it = vSortedDag.rbegin(); it != vSortedDag.rend(); it++)
+    {
+        const auto &existingSubblock = *it;
+        if (!existingSubblock->subblock)
+            continue;
+        if (existingSubblock->hash == newNode->hash)
+            continue; // Its the same block so ignore
+        for (CTransactionRef ptx : existingSubblock->subblock->vtx)
+        {
+            if (ptx->IsCoinBase())
+                continue;
+
+            // Subblocks sharing a transaction is normal, it is what the summary consolidates, and
+            // is not a conflict. Skip it before scanning inputs. This replaces a per-input test
+            // that reached the same conclusion but logged a TX self-conflict line for every
+            // matching input of every shared transaction, on every rescan.
+            if (newNodeTxns.count(ptx->GetId()))
+                continue;
+
+            std::map<uint256, CTreeNodeRef> mapDoubleSpendTxns;
+            for (size_t j = 0; j < ptx->vin.size(); j++)
+            {
+                // This block/tx pulls in an input that newNode spends
+                if (newNodeOutpoints.count(ptx->vin[j].prevout))
+                {
+                    LOG(DAG, "%s: TX doublespend txid=%s in subblocks %s and %s", __func__, ptx->GetId().ToString(),
+                        existingSubblock->subblock->GetHash().ToString(), newNode->subblock->GetHash().ToString());
+
+                    if (setConflictingSubblocks)
+                        setConflictingSubblocks->insert(existingSubblock);
+                    mapDoubleSpendTxns.emplace(ptx->GetId(), existingSubblock);
+                    mapDoubleSpendTxns.emplace(newNodeOutpoints[ptx->vin[j].prevout]->GetId(), newNode);
+                }
+            }
+            if (!mapDoubleSpendTxns.empty())
+            {
+                DbgAssert(mapDoubleSpendTxns.size() > 1, );
+                vDoubleSpendTxns.push_back(mapDoubleSpendTxns);
+            }
+        }
+    }
+}
+
 CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
 {
     AssertLockHeld(tailstormForest.cs_forest);
@@ -408,63 +478,13 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
                 state.GetLogString());
 
 
-            // Create the outpoint map
-            std::map<COutPoint, CTransactionRef> newNodeOutpoints;
-            for (CTransactionRef ptx : newNode->subblock->vtx)
+            std::vector<CTreeNodeRef> vOtherSubblocks;
+            vOtherSubblocks.reserve(dag.size());
+            for (const auto &mi : dag)
             {
-                if (ptx->IsCoinBase())
-                    continue;
-
-                for (size_t j = 0; j < ptx->vin.size(); j++)
-                {
-                    newNodeOutpoints[ptx->vin[j].prevout] = ptx;
-                }
+                vOtherSubblocks.push_back(mi.second);
             }
-
-            // Cycle through the dag from highest sequence id to lowest looking for a conflicting subblock.
-            std::vector<std::pair<uint256, CTreeNodeRef> > vSortedDag(dag.begin(), dag.end());
-            std::sort(vSortedDag.begin(), vSortedDag.end(),
-                [](const auto &a, const auto &b) { return a.second->nSequenceId < b.second->nSequenceId; });
-            for (auto it = vSortedDag.rbegin(); it != vSortedDag.rend(); it++)
-            {
-                const auto &existingSubblock = it->second;
-                if (existingSubblock->hash == newNode->hash)
-                    continue; // Its the same block so ignore
-                for (CTransactionRef ptx : existingSubblock->subblock->vtx)
-                {
-                    if (ptx->IsCoinBase())
-                        continue;
-
-                    std::map<uint256, CTreeNodeRef> mapDoubleSpendTxns;
-                    for (size_t j = 0; j < ptx->vin.size(); j++)
-                    {
-                        // This block/tx pulls in an input that newNode spends
-                        if (newNodeOutpoints.count(ptx->vin[j].prevout))
-                        {
-                            // Its the same transaction.  Subblocks don't conflict with the same tx
-                            if (ptx->GetId() == newNodeOutpoints[ptx->vin[j].prevout]->GetId())
-                            {
-                                LOG(DAG, "%s: TX self-conflict txid=%s", __func__, ptx->GetId().ToString());
-                            }
-                            else
-                            {
-                                LOG(DAG, "%s: TX doublespend txid=%s in subblocks %s and %s", __func__,
-                                    ptx->GetId().ToString(), existingSubblock->subblock->GetHash().ToString(),
-                                    newNode->subblock->GetHash().ToString());
-
-                                setConflictingSubblocks.insert(existingSubblock);
-                                mapDoubleSpendTxns.emplace(ptx->GetId(), existingSubblock);
-                                mapDoubleSpendTxns.emplace(newNodeOutpoints[ptx->vin[j].prevout]->GetId(), newNode);
-                            }
-                        }
-                    }
-                    if (!mapDoubleSpendTxns.empty())
-                    {
-                        DbgAssert(mapDoubleSpendTxns.size() > 1, );
-                        vDoubleSpendTxns.push_back(mapDoubleSpendTxns);
-                    }
-                }
-            }
+            FindDagConflicts(vOtherSubblocks, newNode, vDoubleSpendTxns, &setConflictingSubblocks);
 
             if (!setConflictingSubblocks.empty())
             {

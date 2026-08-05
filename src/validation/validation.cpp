@@ -2783,6 +2783,44 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
         {
             setBlockHashes.insert(pblock->vtx[i]->GetId());
         }
+        // Subblocks that were admitted to the dag unprocessed are never connected, so they
+        // are never evaluated for transaction conflicts. When an unprocessed subblock is included
+        // in an inbound Summary Block the miner will have rightfully removed any conflicting transactions.
+        // This node, unaware of the conflict, will incorrectly see the losing side of a double spend
+        // as a missing transaction from the Summary Block.
+        // Scan the unprocessed subblock transactions now otherwise this node will require both sides
+        // of a double spend to be present in the Summary block which is not allowed, resulting in
+        // this node perpetually rejecting this summary block.
+        {
+            // Evaluate over the subblocks this summary includes as regular subblocks. Uncles are
+            // excluded: the summary references them without requiring their transactions, so they
+            // cannot double spend anything it must contain. This matches GetDagTxns above.
+            std::vector<CTreeNodeRef> vDagSubblocks;
+            vDagSubblocks.reserve(setDag.size());
+            for (const auto &node : setDag)
+            {
+                if (node->subblock && !node->fUncle)
+                    vDagSubblocks.push_back(node);
+            }
+            for (const auto &node : setDag)
+            {
+                if (!node->subblock || node->fUncle)
+                    continue;
+
+                // A processed subblock was connected, so any conflict it has is already recorded.
+                if (node->fProcessed)
+                    continue;
+
+                size_t nBefore = vDoubleSpendTxns.size();
+                FindDagConflicts(vDagSubblocks, node, vDoubleSpendTxns);
+                if (vDoubleSpendTxns.size() != nBefore)
+                {
+                    LOG(DAG, "Unprocessed subblock %s in block %s yielded %d double spend conflict group(s)",
+                        node->hash.ToString(), pblock->GetHash().ToString(), (int)(vDoubleSpendTxns.size() - nBefore));
+                }
+            }
+        }
+
         std::set<uint256> setTxnExclusions = GetTxnExclusionSet(setDag, vDoubleSpendTxns, mapInputs);
         for (auto &mi : mapDagTxns)
         {
