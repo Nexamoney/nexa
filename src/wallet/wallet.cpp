@@ -3137,7 +3137,10 @@ bool CWallet::SelectCoins(const CAmount &nTargetValue,
         }
     }
 
-    // Cleanup the available map of entries that has already been spent.
+    // Cleanup the available map of entries that has already been spent, and of entries whose
+    // transaction has been marked conflicted since the map was filled.  The depth < 0 filter in
+    // AvailableCoins runs only at fill time, and MarkConflicted does not invalidate this map, so
+    // a coin cached while healthy can turn conflicted while it sits here.
     //
     // TODO: This is not the most performant but is a quick fix for a bug.  Ultimately
     // we should just directly use mapWalletUnspent when doing CoinSelection() however
@@ -3146,7 +3149,7 @@ bool CWallet::SelectCoins(const CAmount &nTargetValue,
         for (auto i = available.begin(); i != available.end();)
         {
             if (!mapWalletUnspent.count(i->second.GetOutPoint()) || IsSpent(i->second.GetOutPoint()) ||
-                IsLockedCoin(i->second.GetOutPoint()))
+                IsLockedCoin(i->second.GetOutPoint()) || i->second.tx->GetDepthInMainChain() < 0)
             {
                 i = available.erase(i);
                 continue;
@@ -3719,7 +3722,17 @@ bool CWallet::CreateOneTransaction(const vector<CRecipient> &vecSend,
                         // a chance at a free transaction.
                         // But txpool inputs might still be in the txpool, so their age stays 0
                         int age = coin.tx->GetDepthInMainChain();
-                        assert(age >= 0);
+                        // Negative depth means the coin's transaction was marked conflicted - a
+                        // competing spend confirmed after this coin was selected.  Reachable via
+                        // coincontrol-selected coins (never depth checked) and via MarkConflicted
+                        // landing while SelectCoins has released cs_wallet.
+                        if (age < 0)
+                        {
+                            LOGA("%s: coin %s is conflicted (depth %d), failing transaction creation\n", __func__,
+                                coin.GetOutPoint().ToString(), age);
+                            strFailReason = _("A selected coin was double spent by a confirmed transaction");
+                            return false;
+                        }
                         if (age != 0)
                             age += 1;
                         dPriority += (double)nCredit * age;
