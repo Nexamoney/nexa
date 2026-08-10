@@ -1825,6 +1825,26 @@ int32_t UnlimitedComputeBlockVersion(const CBlockIndex *pindexPrev, const Consen
     return nVersion;
 }
 
+/** Return whether switching from tip to a chain branching at fork is within the configured reorg depth. */
+static bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork)
+{
+    if (!tip || !fork)
+        return true;
+
+    const auto maxReorg = maxReorgDepth.Value();
+    // Refusing to allow maxReorg to be configured to 0 because that would mean
+    // that we cannot extend the tip.
+    if (maxReorg <= 0)
+        return true;
+
+    const uint64_t forkDepth = tip->height() - fork->height();
+    if (forkDepth <= (uint64_t)maxReorg)
+        return true;
+
+    LOG(BLK, "Will NOT reorg, depth %d exceeds max %d\n", forkDepth, maxReorg);
+    return false;
+}
+
 /**
  * Return the tip of the chain with the most work in it, that isn't
  * known to be invalid (it's however far from certain to be valid).
@@ -1853,7 +1873,7 @@ CBlockIndex *FindMostWorkChain()
         uint64_t depth = 0;
         bool fFailedChain = false;
         bool fMissingData = false;
-        bool fTooDeep = false;
+        bool fReorgInRange = true;
 
         // follow the chain all the way back to where it joins the current active chain.
         while (pindexTest && !chainActive.Contains(pindexTest) && pindexTest->height() > 0)
@@ -1872,22 +1892,11 @@ CBlockIndex *FindMostWorkChain()
             depth++;
         }
 
-        // how far back doe we have to go in the current chain to switch over to this other one?
-        auto tip = chainActive.Tip();
-        uint64_t forkDepth = tip ? (tip->height() - pindexTest->height()) : 0;
-
-        auto maxReorg = maxReorgDepth.Value();
-        // Refusing to allow maxReorg to be configured to 0 because that would mean that we cannot extend the tip.
-        if ((maxReorg > 0) && (forkDepth > (uint64_t)maxReorg))
-        {
-            // We don't want to mark blocks in this chain as bad, like in the case above.  We just want to
-            // skip it.
-            LOG(BLK, "Will NOT reorg, depth %d exceeds max %d\n", depth, maxReorg);
-            fTooDeep = true;
-        }
+        // We don't want to mark a chain that exceeds the reorg limit as bad. Just skip it.
+        fReorgInRange = IsReorgInRange(chainActive.Tip(), pindexTest);
 
         // Conditions where we want to reject the chain
-        if (fFailedChain || fMissingData || fTooDeep)
+        if (fFailedChain || fMissingData || !fReorgInRange)
         {
             // Candidate chain is not usable (either invalid or missing data)
             CBlockIndex *pBestInvalid = pindexBestInvalid.load();
@@ -4034,6 +4043,12 @@ bool ActivateBestChainSummaryBlocks(CValidationState &state,
     const CBlockIndex *pindexOldTip = chainActive.Tip();
     const CBlockIndex *pindexFork = chainActive.FindFork(pindexMostWork);
     CBlockIndex *pindexNewMostWork;
+
+    // Some callers, including Tailstorm grove selection, provide their target
+    // directly instead of obtaining it from FindMostWorkChain(). Enforce the
+    // reorg limit here as well, before any active blocks are disconnected.
+    if (!IsReorgInRange(pindexOldTip, pindexFork))
+        return true;
 
     bool fBlocksDisconnected = false;
     boost::thread::id this_id(boost::this_thread::get_id()); // get this thread's id
