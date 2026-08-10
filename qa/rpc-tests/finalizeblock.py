@@ -2,7 +2,7 @@
 # Copyright (c) 2018 The Bitcoin developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Test the finalizeblock RPC calls."""
+"""Test the maximum reorganization depth."""
 import os
 
 from test_framework.test_framework import BitcoinTestFramework
@@ -10,23 +10,59 @@ from test_framework.util import *
 import logging
 logging.getLogger().setLevel(logging.INFO)
 
-RPC_FINALIZE_INVALID_BLOCK_ERROR = 'finalize-invalid-block'
-AUTO_FINALIZATION_DEPTH = 10
-
 # Give more time in slow CI machines than for developer's machines.
 waitTime = 60 if os.getenv("CI") == "true" else 10
 
 class MaxReorgTest(BitcoinTestFramework):
     NUM_NODES = 4
-    # There should only be one chaintip, which is expected_tip
-    def only_valid_tip(self, expected_tip, other_tip_status=None):
+
+    def set_mock_time(self, mocktime):
+        for node in self.nodes:
+            node.setmocktime(mocktime)
+
+    def activate_tailstorm(self):
         node = self.nodes[0]
-        assert_equal(node.getbestblockhash(), expected_tip)
-        for tip in node.getchaintips():
-            if tip["hash"] == expected_tip:
-                assert_equal(tip["status"], "active")
+        mocktime = node.getblockheader(node.getbestblockhash())['time']
+
+        # Establish a predictable median time before scheduling Fork2.
+        for _ in range(10):
+            mocktime += 120
+            self.set_mock_time(mocktime)
+            node.generate(1)
+        self.sync_blocks()
+
+        activation_time = node.getblockheader(node.getbestblockhash())['time'] + 240
+        for peer in self.nodes:
+            peer.set("consensus.fork2Time=" + str(activation_time))
+
+        for _ in range(20):
+            if node.getblockchaininfo()['upgradeenforcednextblock']:
+                break
+            mocktime += 120
+            self.set_mock_time(mocktime)
+            node.generate(1)
+            self.sync_blocks()
+        else:
+            raise AssertionError("Fork2 did not become pending")
+
+        self.mine_summary_blocks(node, 1)
+        self.sync_blocks()
+        for peer in self.nodes:
+            assert_equal(peer.getblockchaininfo()['upgradeactive'], True)
+
+    def mine_summary_blocks(self, node, count):
+        summary_hashes = []
+        for _ in range(count):
+            previous_height = node.getblockcount()
+            for _ in range(10):
+                block_hash = node.generate(1)[0]
+                if node.getblockcount() != previous_height:
+                    assert_equal(node.getblockcount(), previous_height + 1)
+                    summary_hashes.append(block_hash)
+                    break
             else:
-                assert_equal(tip["status"], other_tip_status)
+                raise AssertionError("Failed to mine a Tailstorm summary block")
+        return summary_hashes
 
     def setup_chain(self,bitcoinConfDict=None, wallets=None):
         logging.info("Initializing test directory "+self.options.tmpdir)
@@ -104,6 +140,32 @@ class MaxReorgTest(BitcoinTestFramework):
         # to trigger a re-eval and switch over, we need to find a new block on the fork
         tip = node.generate(1)[0]
         waitFor(waitTime, lambda: self.nodes[1].getbestblockhash() == tip)
+
+        logging.info("Test maximum reorganization depth with Tailstorm grove work")
+        self.sync_blocks()
+        self.activate_tailstorm()
+
+        # Build equal-work forks whose common ancestor is four summary blocks
+        # behind their tips. Node 1 permits reorgs of at most three blocks.
+        for peer in self.nodes:
+            disconnect_all(peer)
+
+        common_height = self.nodes[0].getblockcount()
+        protected_tip = self.mine_summary_blocks(self.nodes[1], 4)[-1]
+        competing_tip = self.mine_summary_blocks(self.nodes[0], 4)[-1]
+        assert_equal(self.nodes[0].getblockcount(), common_height + 4)
+        assert_equal(self.nodes[1].getblockcount(), common_height + 4)
+
+        connect_nodes_bi(self.nodes, 0, 1)
+        waitFor(waitTime, lambda: any(tip['hash'] == competing_tip
+                                      for tip in self.nodes[1].getchaintips()))
+        assert_equal(self.nodes[1].getbestblockhash(), protected_tip)
+
+        # A subblock gives the competing grove more total work than node 1's
+        # active grove. It must not bypass the summary-chain reorg-depth limit.
+        competing_subblock = self.nodes[0].generate(1)[0]
+        waitFor(waitTime, lambda: self.nodes[1].getsubblock(competing_subblock))
+        assert_equal(self.nodes[1].getbestblockhash(), protected_tip)
 
 if __name__ == '__main__':
     MaxReorgTest().main()
