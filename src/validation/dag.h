@@ -44,6 +44,14 @@ std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &setBestDag,
     std::vector<std::map<uint256, CTreeNodeRef> > &_vDoubleSpendTxns,
     std::map<COutPoint, CTransactionRef> &mapInputs);
 
+// Scan newNode against vOtherSubblocks and append a group to vDoubleSpendTxns for every pair of
+// transactions that spend the same outpoint. If setConflictingSubblocks is supplied, each subblock
+// found to conflict with newNode is added to it.
+void FindDagConflicts(const std::vector<CTreeNodeRef> &vOtherSubblocks,
+    const CTreeNodeRef &newNode,
+    std::vector<std::map<uint256, CTreeNodeRef> > &vDoubleSpendTxns,
+    std::set<CTreeNodeRef> *setConflictingSubblocks = nullptr);
+
 class CTreeNode
 {
 public:
