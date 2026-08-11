@@ -2820,6 +2820,19 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
                 if (node->fProcessed)
                     continue;
 
+                // mapInputs is otherwise only filled when a subblock connects, so without this the
+                // descendant walk cannot find transactions chained off a losing double spend.
+                for (CTransactionRef ptx : node->subblock->vtx)
+                {
+                    if (ptx->IsCoinBase())
+                        continue;
+
+                    for (auto &input : ptx->vin)
+                    {
+                        mapInputs.emplace(input.prevout, ptx);
+                    }
+                }
+
                 size_t nBefore = vDoubleSpendTxns.size();
                 FindDagConflicts(vDagSubblocks, node, vDoubleSpendTxns);
                 if (vDoubleSpendTxns.size() != nBefore)

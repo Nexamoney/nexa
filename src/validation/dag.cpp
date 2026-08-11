@@ -179,68 +179,131 @@ std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &setBestDag,
 
     // Get the set of invalid double spends which we "DO NOT" want to include in the final summary block.
     //
-    // We need to remove low score double spends but if there's a tie then we compare the block
-    // hashes of the subblock they are in with the high block hash being the transaction we want to keep.
+    // Of each group of conflicting transactions we keep the one that occurred first in the DAG and exclude
+    // the rest, along with anything descended from them.
     std::set<uint256> setTxnExclusions;
 
-    auto mapScores = GetDagScores(setBestDag);
-    std::map<uint256, uint32_t> mapScoresByTxId;
-    for (auto &mi : mapScores)
+    // A transaction is routinely carried by more than one subblock, so take the min() height
+    // of any subblock carrying it (excluding uncles) not the order in which subblocks were received.
+    //
+    // dagHeight is structural: it is assigned from the subblock's ancestors at insert
+    // (maxAncestorHeight + 1) and those ancestors chain back to the summary root, so every node
+    // derives the same value.
+    // Several subblocks can share that min() height, so also carry the lowest hash among them,
+    // which is what breaks a tie below. Both values are derived from setBestDag, so every node
+    // computes the same pair.
+    std::map<uint256, std::pair<uint32_t, uint256> > mapHeightsByTxId;
+    for (const auto &node : setBestDag)
     {
-        for (auto &ptx : mi.first->subblock->vtx)
+        if (!node->subblock || node->fUncle)
+            continue;
+
+        for (const auto &ptx : node->subblock->vtx)
         {
             if (ptx->IsCoinBase())
                 continue;
 
-            mapScoresByTxId.emplace(ptx->GetId(), mi.second);
+            auto res = mapHeightsByTxId.emplace(ptx->GetId(), std::make_pair(node->dagHeight, node->hash));
+            if (!res.second)
+            {
+                if (node->dagHeight < res.first->second.first)
+                    res.first->second = std::make_pair(node->dagHeight, node->hash);
+                else if ((node->dagHeight == res.first->second.first) && (node->hash < res.first->second.second))
+                    res.first->second.second = node->hash;
+            }
         }
     }
 
-    // find scores for ds transactions
-    // Add lowest scores to a set of txns to exclude.
-    // if there's a tie in score then use the txn with the highest block hash.
+    // Discard candidates this summary does not carry, and any group left with fewer than two.
+    //
+    // The groups arrive as a copy of tree->vDoubleSpendTxns, which accumulates every conflict
+    // recorded against the tree. The tree holds more subblocks than a summary commits, so a group
+    // can name transactions that are in none of the subblocks this summary requires. Those cannot
+    // be demanded of the block, so there is no conflict here to resolve and no winner to find.
+    for (auto iter = vDoubleSpendTxns.begin(); iter != vDoubleSpendTxns.end();)
+    {
+        for (auto mi = iter->begin(); mi != iter->end();)
+        {
+            if (!mapHeightsByTxId.count(mi->first))
+                mi = iter->erase(mi);
+            else
+                mi++;
+        }
+
+        if (iter->size() < 2)
+        {
+            LOG(DAG, "Ignoring double spend not carried by this summary, %d candidate(s) remain", (int)iter->size());
+            iter = vDoubleSpendTxns.erase(iter);
+        }
+        else
+        {
+            iter++;
+        }
+    }
+
+    // Resolve each double spend in favour of the transaction with min() subblock height,
+    // so that a payment cannot be displaced by a conflicting one broadcast after it.
+    //
+    // Height rather than score, because score (uncles + ancestors + descendants) measures a
+    // subblock's connectivity and varies as the dag fills, so a later transaction in a
+    // well-connected subblock can outrank an earlier one.
     for (auto &mapDoubleSpends : vDoubleSpendTxns)
     {
-        // Iterate through each map find the highest score txn and also
-        // if there's a tie, the one with the highest block hash.
-        // Then remove that txn from the map and insert the remaining
-        // map values into the exclusion set.
-        uint256 hashHighScore;
-        uint256 subblockHashHighScore;
-        uint32_t nHighScore = 0;
+        // Iterate through each map to find the earliest txn, then remove it from the map and
+        // insert the remaining map values into the exclusion set.
+        uint256 hashWinner;
+        uint256 subblockHashWinner;
+        uint32_t nWinnerHeight = UINT32_MAX;
         for (auto &mi : mapDoubleSpends)
         {
-            // Pick and set the high score transaction
-            uint32_t nScore = 0;
-            if (mapScoresByTxId.count(mi.first))
-                nScore = mapScoresByTxId[mi.first];
-
-            if (nScore > nHighScore)
+            uint32_t nHeight = UINT32_MAX;
+            uint256 subblockHash;
+            auto it = mapHeightsByTxId.find(mi.first);
+            if (it != mapHeightsByTxId.end())
             {
-                nHighScore = nScore;
-                hashHighScore = mi.first;
-                subblockHashHighScore = mi.second->hash;
+                nHeight = it->second.first;
+                subblockHash = it->second.second;
             }
-            // If scores are equal then determine which txn to keep.
-            // Keep the one that has the highest "subblock" hash.
-            else if (nScore == nHighScore)
+
+            if (nHeight < nWinnerHeight)
             {
-                if (mi.second->hash > subblockHashHighScore)
-                {
-                    hashHighScore = mi.first;
-                    subblockHashHighScore = mi.second->hash;
-                }
+                nWinnerHeight = nHeight;
+                hashWinner = mi.first;
+                subblockHashWinner = subblockHash;
+            }
+            // If the heights are equal then both entered the dag at the same depth and neither
+            // occurred first. Keep the one in the lowest subblock hash.
+            else if ((nHeight == nWinnerHeight) && (subblockHash < subblockHashWinner))
+            {
+                hashWinner = mi.first;
+                subblockHashWinner = subblockHash;
             }
         }
-        mapDoubleSpends.erase(hashHighScore);
 
-        // Add any descendant txns to the exclusion set regardless of what score
+        // Additional logging to show how many candidates sat at the winning height to review if
+        // the hash decided this or the height did. Two nodes picking different sides can only be
+        // attributed by comparing these lines for the same conflict.
+        uint32_t nAtWinnerHeight = 0;
+        for (auto &mi : mapDoubleSpends)
+        {
+            auto it = mapHeightsByTxId.find(mi.first);
+            if ((it != mapHeightsByTxId.end()) && (it->second.first == nWinnerHeight))
+                nAtWinnerHeight++;
+        }
+        LOG(DAG, "Double spend winner %s height %u subblock %s, %d candidate(s), %u at that height",
+            hashWinner.ToString(), nWinnerHeight, subblockHashWinner.ToString(), (int)mapDoubleSpends.size(),
+            nAtWinnerHeight);
+
+        mapDoubleSpends.erase(hashWinner);
+
+        // Add any descendant txns to the exclusion set regardless of what
         // subblock they're in.
         std::map<uint256, CTransactionRef> mapDagTxns;
         tailstormForest.GetDagTxns(setBestDag, mapDagTxns);
         for (auto &mi : mapDoubleSpends)
         {
             setTxnExclusions.insert(mi.first);
+            LOG(DAG, "Excluding double spend loser %s", mi.first.ToString());
 
             // Anything left in the map needs to have all it's descendants chains also removed.
             // Find all the descendants and add them to the exclusion set.
@@ -250,6 +313,7 @@ std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &setBestDag,
                 std::set<CTransactionRef> descendants;
                 descendants.insert(pDoubleSpend);
 
+                uint32_t nDescendants = 0;
                 while (!descendants.empty())
                 {
                     auto ptx = *descendants.begin();
@@ -262,8 +326,16 @@ std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &setBestDag,
                             auto pNewDescendant = mapInputs[outpoint];
                             descendants.insert(pNewDescendant);
                             setTxnExclusions.insert(pNewDescendant->GetId());
+                            nDescendants++;
+                            LOG(DAG, "Excluding txn %s, it descends from double spend %s",
+                                pNewDescendant->GetId().ToString(), mi.first.ToString());
                         }
                     }
+                }
+                if (nDescendants > 0)
+                {
+                    LOG(DAG, "Excluded %d descendant txn(s) of double spend %s", (int)nDescendants,
+                        mi.first.ToString());
                 }
             }
         }
