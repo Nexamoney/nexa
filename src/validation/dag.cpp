@@ -1480,45 +1480,88 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
         // Process subblock orphans
         std::set<uint256> setLinked;
 
-        bool changes = true;
-        int loopNum = 0;
-        while (changes)
+        // By grouping orphans by prevBlockHash we can prevent unnecessary repeated insert calls
+        // failing by checking the prevBlockHash once in advance before processing that group.
+        // This only avoids unneeded work - calling _Insert is still free to fail.
+        auto canInsertForPrev = [this](const uint256 &prevhash) -> bool
         {
-            loopNum++;
-            LOG(DAG, "%s(): Loop %d.  Removing %d orphans from mapNodesUnlinked", __func__, loopNum,
-                mapNodesUnlinked.size());
-            changes = false;
+            auto pindex = LookupBlockIndex(prevhash);
+            if (!pindex)
+                return false;
+            {
+                READLOCK(cs_mapBlockIndex);
+                if (!pindex->IsLinked())
+                    return false;
+            }
+            if (pindex->height() == chainActive.Height())
+                return true;
 
-            // Move all current orphans to a new map
+            CTailstormGroveRef grove = nullptr;
+            if (GetGrove(*(pindex->phashBlock), grove))
+                return true;
+            if (pindex->pprev && (pindex->height() != 0) && GetGrove(*(pindex->pprev->phashBlock), grove))
+                return true;
+            return false;
+        };
+
+        // Group the orphans by the prev summary block they wait on, so a blocked group costs one
+        // lookup instead of a failed insert per member.
+        std::map<uint256, std::vector<CTreeNodeRef> > orphansByPrev;
+        {
             std::map<uint256, CTreeNodeRef> orphans;
             orphans.swap(mapNodesUnlinked);
-
-            // Now stick them into the dag or back into the orphans list
-            for (auto iter = orphans.begin(); iter != orphans.end(); ++iter)
+            for (auto &mi : orphans)
             {
-                LOG(DAG, "%s(): consider orphan %s", __func__, iter->first.ToString());
-                const auto &subblock = iter->second->subblock;
-                assert(subblock);
-                const uint256 &prevhash = subblock->hashPrevBlock;
-
-                auto setHashes = GetSubblockHashes(subblock->GetBlockHeader());
-                auto hash = iter->second->hash;
-                if (_Insert(iter->second))
-                {
-                    LOG(DAG, "%s(): Success: Insert of subblock orphan %s connecting to prev summary block %s",
-                        __func__, __func__, hash.ToString(), prevhash.ToString());
-                    setLinked.insert(hash);
-                    changes = true;
-                }
-                else
-                {
-                    LOG(DAG, "%s(): Cannot insert orphan subblock %s returning to unlinked map (size %ld)", __func__,
-                        iter->second->hash.ToString(), orphans.size());
-
-                    // If its already inserted, this is a no-op
-                    AddSubblockOrphan(iter->second);
-                }
+                assert(mi.second->subblock);
+                orphansByPrev[mi.second->subblock->hashPrevBlock].push_back(mi.second);
             }
+        }
+
+        for (auto &group : orphansByPrev)
+        {
+            const uint256 &prevhash = group.first;
+            std::vector<CTreeNodeRef> &pending = group.second;
+
+            if (!canInsertForPrev(prevhash))
+            {
+                for (auto &node : pending)
+                    AddSubblockOrphan(node);
+                LOG(DAG, "%s(): %d orphan(s) waiting on prev summary block %s", __func__, (int)pending.size(),
+                    prevhash.ToString());
+                continue;
+            }
+
+            // Inserting one member can make another insertable, so repeat until a pass links nothing.
+            bool changes = true;
+            while (changes && !pending.empty())
+            {
+                changes = false;
+
+                std::vector<CTreeNodeRef> stillUnlinked;
+                for (auto &node : pending)
+                {
+                    const uint256 hash = node->hash;
+                    if (_Insert(node))
+                    {
+                        LOG(DAG, "%s(): Success: Insert of subblock orphan %s connecting to prev summary block %s",
+                            __func__, hash.ToString(), prevhash.ToString());
+                        setLinked.insert(hash);
+                        changes = true;
+                    }
+                    else
+                    {
+                        stillUnlinked.push_back(node);
+                        // If its already inserted, this is a no-op
+                        AddSubblockOrphan(node);
+                    }
+                }
+
+                pending.swap(stillUnlinked);
+            }
+
+            // Anything left could not be placed: park it for the next call.
+            for (auto &node : pending)
+                AddSubblockOrphan(node);
         }
 
 
