@@ -13,6 +13,8 @@ import logging
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
 from test_framework.blocktools import *
+from test_framework.mininode import NetworkThread, NodeConn, P2PDataStore
+from test_framework.nodemessages import CBlock, CBlockHeader, FromHex, msg_block, msg_headers
 
 # Accurately count satoshis
 import decimal
@@ -41,6 +43,106 @@ class TailstormActivationTest(BitcoinTestFramework):
     def setforktime(self, time):
         for node in self.nodes:
             node.set("consensus.fork2Time=" + str(time))
+
+    def test_same_message_deferred_headers(self):
+        logging.info("Test same-message Tailstorm header deferral")
+
+        # Start from a shared summary tip, then keep two summary epochs and a
+        # child subblock private on node 1.
+        assert_equal(self.nodes[0].getbestblockhash(), self.nodes[1].getbestblockhash())
+        assert_equal(self.nodes[0].gettailstorminfo()['bestdag'], 0)
+        assert_equal(self.nodes[1].gettailstorminfo()['bestdag'], 0)
+        disconnect_all(self.nodes[0])
+        waitFor(waitTime, lambda: len(self.nodes[0].getpeerinfo()) == 0)
+        waitFor(waitTime, lambda: len(self.nodes[1].getpeerinfo()) == 0)
+
+        parent_epoch_hashes = self.nodes[1].generate(4)
+        parent_summary_hash = parent_epoch_hashes[-1]
+        assert_equal(self.nodes[1].getbestblockhash(), parent_summary_hash)
+        deferred_epoch_hashes = self.nodes[1].generate(4)
+        deferred_summary_hash = deferred_epoch_hashes[-1]
+        assert_equal(self.nodes[1].getbestblockhash(), deferred_summary_hash)
+        deferred_subblock_hash = self.nodes[1].generate(1)[0]
+
+        parent_subblocks = [
+            FromHex(CBlock(), self.nodes[1].getsubblock(block_hash, 0))
+            for block_hash in parent_epoch_hashes[:-1]
+        ]
+        parent_summary = FromHex(CBlock(), self.nodes[1].getblock(parent_summary_hash, 0))
+        deferred_epoch_subblocks = [
+            FromHex(CBlock(), self.nodes[1].getsubblock(block_hash, 0))
+            for block_hash in deferred_epoch_hashes[:-1]
+        ]
+        deferred_summary = FromHex(CBlock(), self.nodes[1].getblock(deferred_summary_hash, 0))
+        deferred_subblock = FromHex(CBlock(), self.nodes[1].getsubblock(deferred_subblock_hash, 0))
+
+        assert_equal(deferred_summary.hashPrevBlock, parent_summary.gethash())
+        assert_equal(deferred_subblock.hashPrevBlock, deferred_summary.gethash())
+
+        p2p = P2PDataStore()
+        # Serve the parent epoch and both summary blocks automatically. Keep the
+        # newer epoch's subblocks unavailable so its summary enters the block
+        # candidate set before the forest can validate its complete DAG.
+        for block in parent_subblocks + [parent_summary, deferred_summary]:
+            p2p.block_store[block.gethash()] = block
+            p2p.last_block_hash = block.gethash()
+
+        connection = NodeConn('127.0.0.1', p2p_port(0), self.nodes[0], p2p)
+        p2p.add_connection(connection)
+        NetworkThread().start()
+        p2p.wait_for_verack()
+
+        p2p.send_message(msg_headers([CBlockHeader(block) for block in parent_subblocks]))
+        waitFor(waitTime, lambda: all(block.gethash() in p2p.getdata_requests for block in parent_subblocks))
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == len(parent_subblocks))
+
+        # The subblock appears before its summary in one HEADERS message. The
+        # summary is also unconnected because its parent summary is withheld,
+        # forcing the same-message deferral through the early-return fallback.
+        deferred_headers = [CBlockHeader(deferred_subblock)]
+        deferred_headers.extend(CBlockHeader(block) for block in deferred_epoch_subblocks)
+        deferred_headers.append(CBlockHeader(deferred_summary))
+        p2p.send_message(msg_headers(deferred_headers))
+        p2p.sync_with_ping()
+        assert deferred_subblock.gethash() not in p2p.getdata_requests
+
+        # Supplying the missing parent connects both summaries. The deferred
+        # headers must then be replayed and their bodies requested. The newer
+        # summary body is served, but it cannot activate without its subblocks.
+        p2p.send_message(msg_headers([CBlockHeader(parent_summary)]))
+        withheld_blocks = deferred_epoch_subblocks + [deferred_subblock]
+        waitFor(waitTime, lambda: all(block.gethash() in p2p.getdata_requests for block in withheld_blocks))
+
+        def has_deferred_summary():
+            try:
+                self.nodes[0].getblock(deferred_summary_hash, 0)
+                return True
+            except JSONRPCException:
+                return False
+
+        waitFor(waitTime, has_deferred_summary)
+        assert self.nodes[0].getbestblockhash() != deferred_summary_hash
+
+        # Deliver the child first so a grove exists on the still-unvalidated
+        # summary. The summary orphan must remain queued while the committed
+        # epoch subblocks arrive, then retry and advance the active tip.
+        p2p.send_message(msg_block(deferred_subblock))
+
+        def has_deferred_subblock():
+            try:
+                self.nodes[0].getsubblock(deferred_subblock_hash, 0)
+                return True
+            except JSONRPCException:
+                return False
+
+        waitFor(waitTime, has_deferred_subblock)
+        for block in deferred_epoch_subblocks:
+            p2p.send_message(msg_block(block))
+
+        waitFor(waitTime, lambda: self.nodes[0].getbestblockhash() == deferred_summary_hash)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == deferred_subblock_hash)
+        connection.disconnect_node()
+        waitFor(waitTime, lambda: p2p.disconnected)
 
     def run_test(self):
 
@@ -892,9 +994,10 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['chaintip'] == summary_hash[0])
         self.sync_all()
 
-        # Check that the right double spend transaction was chosen for the summary block
+        # Both conflicting transactions entered the DAG at the same height, so
+        # the transaction in the lower-hash subblock wins the tie.
         summary_block = self.nodes[0].getblock(summary_hash[0])
-        if node1_ds_hash > node0_ds_hash:
+        if node1_ds_hash < node0_ds_hash:
             assert(doublespend2_txidem in summary_block['txidem'])
 
             # check ds on node0 and any associated chained txns are "NOT" in the summary block
@@ -1366,6 +1469,8 @@ class TailstormActivationTest(BitcoinTestFramework):
         node0_chaintip = self.nodes[0].getbestblockhash()
         node1_chaintip = self.nodes[1].getbestblockhash()
         assert_equal(node0_chaintip, node1_chaintip)
+
+        self.test_same_message_deferred_headers()
 
 
 if __name__ == '__main__':

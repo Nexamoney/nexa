@@ -21,6 +21,7 @@
 #include "compat/sanity.h"
 #include "config.h"
 #include "connmgr.h"
+#include "consensus/consensus.h"
 #include "consensus/validation.h"
 #include "dosman.h"
 #include "electrum/electrumserver.h"
@@ -1491,7 +1492,7 @@ bool AppInit2(Config &config)
                 // we intentionally do not check if tip is a nullptr here
                 // ActivateBestChain has already been called in either LoadBlockIndex or InitBlockIndex, if tip
                 // is nullptr here then there is a critical error somewhere
-                if (tip->GetBlockTime() > GetAdjustedTime() + 2 * 60 * 60)
+                if (tip->GetBlockTime() > GetAdjustedTime() + MAX_FUTURE_BLOCK_TIME)
                 {
                     strLoadError = _("The block database contains a block which appears to be from the future. "
                                      "This may be due to your computer's date and time being set incorrectly. "

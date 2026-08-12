@@ -20,6 +20,8 @@ extern std::atomic<uint64_t> nLargestNextMaxBlockSize;
 static const uint32_t TAILSTORM_K = 120;
 /** How many blocks from the chaintip to enforce the correctness of the subblocks within the summary block */
 static const uint32_t DEPTH_TO_ENFORCE_CORRECT_SUBBLOCKS = 5;
+/** Maximum amount by which a block timestamp may be ahead of adjusted network time. */
+static const int64_t MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60;
 
 static const unsigned int ONE_MEGABYTE = 1000000;
 static const unsigned int ONE_DAY_OF_BLOCKS = 144 * 5; // average number of blocks mined per day

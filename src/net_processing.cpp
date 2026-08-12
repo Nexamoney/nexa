@@ -17,6 +17,8 @@
 #include "capd/capd.h"
 #include "chain.h"
 #include "connmgr.h"
+#include "consensus/consensus.h"
+#include "daa.h"
 #include "dosman.h"
 #include "electrum/rostrum.h"
 #include "expedited.h"
@@ -37,6 +39,8 @@
 #include "version.h"
 #include "wallet/grouptokencache.h"
 
+#include <limits>
+
 
 extern std::atomic<int64_t> nTimeBestReceived;
 extern std::atomic<int> nPreferredDownload;
@@ -55,6 +59,196 @@ extern CTweak<uint32_t> doubleSpendProofs;
 extern CTweak<bool> extVersionEnabled;
 extern CTweak<bool> allowp2pTxVal;
 extern bool nDropMessages;
+
+static size_t MaxTailstormSubblockHeadersPerPeer()
+{
+    const auto &consensus = Params().GetConsensus();
+    return static_cast<size_t>(consensus.tailstorm_k) * (consensus.tailstormEnforceDepth + 1);
+}
+
+static size_t MaxTailstormFallbackHeaders() { return MaxTailstormSubblockHeadersPerPeer(); }
+
+static size_t MaxTailstormFallbackHeadersPerPeer() { return Params().GetConsensus().tailstorm_k; }
+
+CUnconnectedSubblockHeaderCache::CUnconnectedSubblockHeaderCache()
+    : maxSize(MAX_UNCONNECTED_SUBBLOCK_HEADERS), maxPerPeer(0), maxFallbackSize(0), maxFallbackPerPeer(0),
+      deriveMaxPerPeer(true)
+{
+}
+
+CUnconnectedSubblockHeaderCache::CUnconnectedSubblockHeaderCache(size_t maxCacheSize, size_t maxPeerEntries)
+    : CUnconnectedSubblockHeaderCache(maxCacheSize, maxPeerEntries, 0, 0)
+{
+}
+
+CUnconnectedSubblockHeaderCache::CUnconnectedSubblockHeaderCache(size_t maxCacheSize,
+    size_t maxPeerEntries,
+    size_t maxFallbackCacheSize,
+    size_t maxFallbackPeerEntries)
+    : maxSize(maxCacheSize), maxPerPeer(maxPeerEntries), maxFallbackSize(maxFallbackCacheSize),
+      maxFallbackPerPeer(maxFallbackPeerEntries), deriveMaxPerPeer(false)
+{
+}
+
+size_t CUnconnectedSubblockHeaderCache::Count(NodeId source) const
+{
+    auto it = peerCounts.find(source);
+    const size_t primaryCount = it == peerCounts.end() ? 0 : it->second;
+    return primaryCount + FallbackCount(source);
+}
+
+size_t CUnconnectedSubblockHeaderCache::FallbackCount(NodeId source) const
+{
+    auto it = fallbackPeerCounts.find(source);
+    return it == fallbackPeerCounts.end() ? 0 : it->second;
+}
+
+size_t CUnconnectedSubblockHeaderCache::TierCount(NodeId source, Tier tier) const
+{
+    if (tier == Tier::FALLBACK)
+        return FallbackCount(source);
+    auto it = peerCounts.find(source);
+    return it == peerCounts.end() ? 0 : it->second;
+}
+
+void CUnconnectedSubblockHeaderCache::Erase(EntryMap::iterator it)
+{
+    auto &counts = it->second.tier == Tier::FALLBACK ? fallbackPeerCounts : peerCounts;
+    size_t &tierSize = it->second.tier == Tier::FALLBACK ? fallbackSize : primarySize;
+    auto countIt = counts.find(it->second.source);
+    DbgAssert(countIt != counts.end() && countIt->second > 0 && tierSize > 0, entries.erase(it); return);
+    if (--countIt->second == 0)
+        counts.erase(countIt);
+    --tierSize;
+    entries.erase(it);
+}
+
+CUnconnectedSubblockHeaderCache::AddResult CUnconnectedSubblockHeaderCache::Add(const CBlockHeader &header,
+    NodeId source,
+    int64_t nTime,
+    Tier tier)
+{
+    const uint256 hash = header.GetHash();
+    if (entries.count(hash))
+        return AddResult::DUPLICATE;
+
+    auto &counts = tier == Tier::FALLBACK ? fallbackPeerCounts : peerCounts;
+    size_t &tierSize = tier == Tier::FALLBACK ? fallbackSize : primarySize;
+    const size_t cacheLimit =
+        deriveMaxPerPeer ? (tier == Tier::FALLBACK ? MaxTailstormFallbackHeaders() : MAX_UNCONNECTED_SUBBLOCK_HEADERS) :
+                           (tier == Tier::FALLBACK ? maxFallbackSize : maxSize);
+    const size_t peerLimit = deriveMaxPerPeer ? (tier == Tier::FALLBACK ? MaxTailstormFallbackHeadersPerPeer() :
+                                                                          MaxTailstormSubblockHeadersPerPeer()) :
+                                                (tier == Tier::FALLBACK ? maxFallbackPerPeer : maxPerPeer);
+    const size_t sourceCount = TierCount(source, tier);
+    if (sourceCount >= peerLimit)
+        return tier == Tier::FALLBACK ? AddResult::FALLBACK_PEER_LIMIT : AddResult::PEER_LIMIT;
+
+    if (tierSize >= cacheLimit)
+    {
+        NodeId largestPeer = source;
+        size_t largestCount = sourceCount;
+        for (const auto &item : counts)
+        {
+            if (item.second > largestCount)
+            {
+                largestPeer = item.first;
+                largestCount = item.second;
+            }
+        }
+
+        // Give a less-represented peer room by evicting the oldest entry from
+        // the peer currently occupying the largest share of the cache.
+        if (largestCount <= sourceCount)
+            return tier == Tier::FALLBACK ? AddResult::FALLBACK_GLOBAL_LIMIT : AddResult::GLOBAL_LIMIT;
+
+        auto oldest = entries.end();
+        for (auto it = entries.begin(); it != entries.end(); ++it)
+        {
+            if (it->second.tier == tier && it->second.source == largestPeer &&
+                (oldest == entries.end() || it->second.nTime < oldest->second.nTime))
+                oldest = it;
+        }
+        DbgAssert(oldest != entries.end(),
+            return tier == Tier::FALLBACK ? AddResult::FALLBACK_GLOBAL_LIMIT : AddResult::GLOBAL_LIMIT);
+        Erase(oldest);
+    }
+
+    entries.emplace(hash, Entry{header, nTime, source, tier});
+    ++counts[source];
+    ++tierSize;
+    return tier == Tier::FALLBACK ? AddResult::ADDED_FALLBACK : AddResult::ADDED;
+}
+
+size_t CUnconnectedSubblockHeaderCache::Expire(int64_t now, int64_t timeout)
+{
+    size_t expired = 0;
+    for (auto it = entries.begin(); it != entries.end();)
+    {
+        if (now - it->second.nTime >= timeout)
+        {
+            auto stale = it++;
+            Erase(stale);
+            ++expired;
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    return expired;
+}
+
+std::vector<CUnconnectedSubblockHeaderCache::Entry> CUnconnectedSubblockHeaderCache::ExtractReady(
+    const std::function<bool(const CBlockHeader &)> &isReady)
+{
+    std::vector<Entry> ready;
+    for (auto it = entries.begin(); it != entries.end();)
+    {
+        if (isReady(it->second.header))
+        {
+            ready.push_back(it->second);
+            auto extracted = it++;
+            Erase(extracted);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    return ready;
+}
+
+void CUnconnectedSubblockHeaderCache::RemovePeer(NodeId source)
+{
+    for (auto it = entries.begin(); it != entries.end();)
+    {
+        if (it->second.source == source)
+        {
+            auto removed = it++;
+            Erase(removed);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+}
+
+void CUnconnectedSubblockHeaderCache::Clear()
+{
+    entries.clear();
+    peerCounts.clear();
+    fallbackPeerCounts.clear();
+    primarySize = 0;
+    fallbackSize = 0;
+}
+
+void RemoveUnconnectedSubblockHeadersForPeer(NodeId nodeid)
+{
+    LOCK(csUnconnectedHeaders);
+    unconnectedSubblockHeaders.RemovePeer(nodeid);
+}
 
 bool HandleHeaderPathMessage(CDataStream &vRecv, CNode *pfrom, uint32_t msgCookie);
 
@@ -123,7 +317,7 @@ static bool PeerHasSubblockHeader(CNodeStateAccessor &state, const uint256 &hash
     // The map is allowed to grow larger than the trim size before a trim is triggered
     // so that we don't end up trying to trim the map every time this function is called.
     auto tsEnforce = Params().GetConsensus().tailstormEnforceDepth;
-    if (state->mapSubblockHeaders.size() > (Params().GetConsensus().tailstorm_k * (tsEnforce + 1)))
+    if (state->mapSubblockHeaders.size() > MaxTailstormSubblockHeadersPerPeer())
     {
         uint64_t nTrimHeight = chainActive.Height() - tsEnforce;
         auto mi = state->mapSubblockHeaders.begin();
@@ -1787,65 +1981,122 @@ bool ProcessMessage(CNode *pfrom,
             vRecv >> headers[n];
         }
 
+        std::set<uint256> summaryHashesInMessage;
+        for (const CBlockHeader &header : headers)
+        {
+            if (IsSummaryBlock(header))
+                summaryHashesInMessage.insert(header.GetHash());
+        }
+
+        const CBlockIndex *tip = chainActive.Tip();
+        const int64_t nTipHeight = tip ? tip->height() : 0;
+        arith_uint256 deferredWorkThreshold = 0;
+        if (tip)
+        {
+            // The missing summary may arrive at any point during the cache lifetime. Account for that delay when
+            // deriving the easiest target that can still pass the future-time check when contextual validation runs.
+            const int64_t maximumSummaryTime = GetAdjustedTime() + MAX_FUTURE_BLOCK_TIME + UNCONNECTED_HEADERS_TIMEOUT;
+            deferredWorkThreshold =
+                GetDeferredSubblockWorkThreshold(tip, maximumSummaryTime, chainparams.GetConsensus());
+        }
+
+        std::vector<CUnconnectedSubblockHeaderCache::Entry> vSameMessageDeferredSubblocks;
+        auto cacheDeferredSubblock = [&](const CUnconnectedSubblockHeaderCache::Entry &entry)
+        {
+            const auto tier = GetWorkForDifficultyBits(entry.header.nBits) >= deferredWorkThreshold ?
+                                  CUnconnectedSubblockHeaderCache::Tier::PRIMARY :
+                                  CUnconnectedSubblockHeaderCache::Tier::FALLBACK;
+            auto result = unconnectedSubblockHeaders.Add(entry.header, entry.source, entry.nTime, tier);
+            if (result == CUnconnectedSubblockHeaderCache::AddResult::ADDED_FALLBACK)
+            {
+                LOG(NET, "Retaining deferred subblock header %s in the low-work fallback cache.\n",
+                    entry.header.GetHash().ToString());
+            }
+            if (result == CUnconnectedSubblockHeaderCache::AddResult::PEER_LIMIT)
+            {
+                LOG(NET, "Ignoring deferred subblock header %s -- peer cache limit reached.\n",
+                    entry.header.GetHash().ToString());
+            }
+            else if (result == CUnconnectedSubblockHeaderCache::AddResult::GLOBAL_LIMIT)
+            {
+                LOG(NET, "Ignoring deferred subblock header %s -- global cache limit reached.\n",
+                    entry.header.GetHash().ToString());
+            }
+            else if (result == CUnconnectedSubblockHeaderCache::AddResult::FALLBACK_PEER_LIMIT)
+            {
+                LOG(NET, "Ignoring low-work deferred subblock header %s -- peer fallback limit reached.\n",
+                    entry.header.GetHash().ToString());
+            }
+            else if (result == CUnconnectedSubblockHeaderCache::AddResult::FALLBACK_GLOBAL_LIMIT)
+            {
+                LOG(NET, "Ignoring low-work deferred subblock header %s -- global fallback limit reached.\n",
+                    entry.header.GetHash().ToString());
+            }
+        };
 
         // Process subblock headers first.
         {
             std::vector<CBlockHeader> vTempHeaders;
-            auto tip = chainActive.Tip();
-            int64_t nTipHeight = tip->height();
-            for (auto &header : headers)
+            std::vector<CBlockHeader> vSubblocksToFetch;
+            std::vector<int> vMisbehaviorScores;
             {
-                // Save any summary block headers to a temporary vector to be
-                // processed later.
-                if (IsSummaryBlock(header))
+                // Serialize the subblock accept/defer decision with summary-header acceptance below. Otherwise a
+                // summary thread can scan the deferred map after AcceptBlockHeader() reports missing context but
+                // before this thread stores the header, leaving the subblock stranded with no later replay event.
+                LOCK(csUnconnectedHeaders);
+                unconnectedSubblockHeaders.Expire(receiptTime, UNCONNECTED_HEADERS_TIMEOUT);
+                for (auto &header : headers)
                 {
-                    vTempHeaders.push_back(header);
-                    continue;
-                }
-
-                CValidationState state;
-                if (!AcceptBlockHeader(header, state, chainparams, nullptr))
-                {
-                    // A subblock header can fail here for two reasons:
-                    //  (a) it arrived before its base (epoch summary) block, so it has no
-                    //      context to be validated against and AcceptBlockHeader rejects it as a
-                    //      non-DoS REJECT_NO_CONTEXT ("subblock-no-context") before any contextual check.
-                    //  (b) any other failure is genuinely bad and is penalized as before.
-                    int nDos = 0;
-                    state.IsInvalid(nDos);
-                    if (state.GetRejectCode() == REJECT_NO_CONTEXT)
+                    // Save any summary block headers to a temporary vector to be
+                    // processed later.
+                    if (IsSummaryBlock(header))
                     {
-                        // Rejected due to missing context
-                        LOCK(csUnconnectedHeaders);
-                        if (mapUnconnectedSubblockHeaders.size() < MAX_UNCONNECTED_HEADERS)
+                        vTempHeaders.push_back(header);
+                        continue;
+                    }
+
+                    CValidationState state;
+                    if (!AcceptBlockHeader(header, state, chainparams, nullptr))
+                    {
+                        // A subblock header can fail here for two reasons:
+                        //  (a) it arrived before its base (epoch summary) block, so it has no
+                        //      context to be validated against and AcceptBlockHeader rejects it as a
+                        //      non-DoS REJECT_NO_CONTEXT ("subblock-no-context") before any contextual check.
+                        //  (b) any other failure is genuinely bad and is penalized as before.
+                        int nDos = 0;
+                        state.IsInvalid(nDos);
+                        if (state.GetRejectCode() == REJECT_NO_CONTEXT)
                         {
-                            // Only retain if subblock headers met a level of difficulty
-                            if (GetWorkForDifficultyBits(header.nBits) > (GetWorkForDifficultyBits(tip->nBits) >> 1))
+                            if (summaryHashesInMessage.count(header.hashPrevBlock))
                             {
-                                // Retain to re-evaluate after the summary loop below.
-                                mapUnconnectedSubblockHeaders.emplace(
-                                    header.GetHash(), std::make_pair(header, GetTime()));
+                                // This message also carries the missing summary. Keep the subblock local to this
+                                // call and retry it immediately after processing the summary headers below.
+                                vSameMessageDeferredSubblocks.push_back({header, receiptTime, pfrom->GetId()});
                             }
                             else
                             {
-                                LOG(NET, "Ignoring subblock header %s -- too low difficulty.\n",
-                                    header.GetHash().ToString());
-                                nDos = 100;
+                                cacheDeferredSubblock({header, receiptTime, pfrom->GetId()});
                             }
                         }
-                        else
+                        if (nDos > 0)
                         {
-                            LOG(NET, "Ignoring subblock header %s -- too many unconnected headers.\n",
-                                header.GetHash().ToString());
+                            vMisbehaviorScores.push_back(nDos);
                         }
+                        continue;
                     }
-                    if (nDos > 0)
-                    {
-                        dosMan.Misbehaving(pfrom, nDos, BanReasonInvalidHeader);
-                    }
-                    continue;
-                }
 
+                    vSubblocksToFetch.push_back(header);
+                }
+            }
+
+            for (int nDos : vMisbehaviorScores)
+            {
+                dosMan.Misbehaving(pfrom, nDos, BanReasonInvalidHeader);
+            }
+
+            // FetchAcceptedSubblock() takes additional locks, so do this after releasing csUnconnectedHeaders.
+            for (const CBlockHeader &header : vSubblocksToFetch)
+            {
                 FetchAcceptedSubblock(pfrom, header, nTipHeight);
             }
 
@@ -1859,7 +2110,7 @@ bool ProcessMessage(CNode *pfrom,
         CBlockIndex *pindexLast = nullptr;
         // Retained subblock headers whose base summary just became known; collected under
         // csUnconnectedHeaders below, then accepted+fetched off the lock.
-        std::vector<CBlockHeader> vReadySubblocks;
+        std::vector<CUnconnectedSubblockHeaderCache::Entry> vReadySubblocks;
         {
             // We need to handle appending the header and analyzing the unconnected ones sequentially, or
             // 2 simultaneously processed header messages may cause an out of order header to not be reconnected
@@ -1923,7 +2174,13 @@ bool ProcessMessage(CNode *pfrom,
             // return without error if we have an unconnected header.  This way we can try to connect it when the
             // next header arrives.
             if (fNewUnconnectedHeaders)
+            {
+                // The summary that would make these subblocks contextual is itself waiting for context.
+                // Preserve the subblocks in the bounded cache until that summary can be accepted.
+                for (const auto &entry : vSameMessageDeferredSubblocks)
+                    cacheDeferredSubblock(entry);
                 return true;
+            }
 
             {
                 // If possible add any previously unconnected headers to the headers vector and remove any expired
@@ -2027,23 +2284,17 @@ bool ProcessMessage(CNode *pfrom,
             }
 
             // A summary we just accepted may be the base of subblock headers we retained earlier.
-            // Collect the now-connectable ones (and expire stale entries) here;
-            // accept + fetch them below, off the lock.
-            for (auto mi = mapUnconnectedSubblockHeaders.begin(); mi != mapUnconnectedSubblockHeaders.end();)
+            // Collect the now-connectable ones here; accept + fetch them below, off the lock.
+            auto cachedReady = unconnectedSubblockHeaders.ExtractReady(
+                [](const CBlockHeader &header) { return LookupBlockIndex(header.hashPrevBlock) != nullptr; });
+            vReadySubblocks.insert(vReadySubblocks.end(), cachedReady.begin(), cachedReady.end());
+
+            for (const auto &entry : vSameMessageDeferredSubblocks)
             {
-                if (LookupBlockIndex(mi->second.first.hashPrevBlock))
-                {
-                    vReadySubblocks.push_back(mi->second.first); // Push block header to ready list
-                    mi = mapUnconnectedSubblockHeaders.erase(mi);
-                }
-                else if (GetTime() - mi->second.second >= UNCONNECTED_HEADERS_TIMEOUT) // Expire stale entries
-                {
-                    mi = mapUnconnectedSubblockHeaders.erase(mi);
-                }
+                if (LookupBlockIndex(entry.header.hashPrevBlock))
+                    vReadySubblocks.push_back(entry);
                 else
-                {
-                    ++mi;
-                }
+                    cacheDeferredSubblock(entry);
             }
         }
 
@@ -2053,11 +2304,15 @@ bool ProcessMessage(CNode *pfrom,
         if (!vReadySubblocks.empty())
         {
             int64_t nTip = chainActive.Height();
-            for (const CBlockHeader &h : vReadySubblocks)
+            for (const auto &entry : vReadySubblocks)
             {
+                const CBlockHeader &header = entry.header;
                 CValidationState st;
-                if (AcceptBlockHeader(h, st, chainparams, nullptr))
-                    FetchAcceptedSubblock(pfrom, h, nTip);
+                if (AcceptBlockHeader(header, st, chainparams, nullptr))
+                {
+                    CNodeRef sourcePeer(connmgr ? connmgr->FindNodeFromId(entry.source) : nullptr);
+                    FetchAcceptedSubblock(sourcePeer ? sourcePeer.get() : pfrom, header, nTip);
+                }
                 else
                 {
                     // The base summary is now in the block index, so this can no longer
@@ -2066,7 +2321,7 @@ bool ProcessMessage(CNode *pfrom,
                     // the peer exactly as the initial header loop would have.
                     int nDos = 0;
                     if (st.IsInvalid(nDos) && nDos > 0)
-                        dosMan.Misbehaving(pfrom, nDos, BanReasonInvalidHeader);
+                        dosMan.Misbehaving(entry.source, nDos, BanReasonInvalidHeader);
                 }
             }
         }

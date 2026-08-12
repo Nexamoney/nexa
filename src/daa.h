@@ -46,6 +46,11 @@ arith_uint256 CalculateASERT(const arith_uint256 &refTarget,
     const arith_uint256 &powLimit,
     const int64_t nHalfLife) noexcept;
 
+/** Minimum work for a deferred subblock to use the primary header cache. */
+arith_uint256 GetDeferredSubblockWorkThreshold(const CBlockIndex *pindexTip,
+    int64_t maximumSummaryTime,
+    const Consensus::Params &params);
+
 uint32_t GetNextASERTWorkRequired(const CBlockIndex *pindexPrev,
     const CBlockHeader *pblock,
     const Consensus::Params &params,

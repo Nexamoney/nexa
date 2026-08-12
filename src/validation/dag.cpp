@@ -1464,9 +1464,16 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
         // exists a connected summary block.
         for (auto iter = mapSummaryBlocksUnlinked.begin(); iter != mapSummaryBlocksUnlinked.end();)
         {
-            CTailstormGroveRef grove = nullptr;
             const ConstCBlockRef &pblock = iter->second;
-            bool fBlockAlreadyConnected = GetGrove(pblock->GetHash(), grove);
+            CBlockIndex *pindex = LookupBlockIndex(pblock->GetHash());
+            bool fBlockAlreadyConnected = false;
+            if (pindex)
+            {
+                // A next-epoch subblock can create a grove rooted at this hash before the summary validates.
+                // Script validity is only raised after ConnectBlock() succeeds.
+                READLOCK(cs_mapBlockIndex);
+                fBlockAlreadyConnected = pindex->IsValid(BLOCK_VALID_SCRIPTS);
+            }
             if (fBlockAlreadyConnected)
             {
                 iter = mapSummaryBlocksUnlinked.erase(iter);

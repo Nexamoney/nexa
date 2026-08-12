@@ -4,6 +4,7 @@
 
 
 #include "validation/headervalidation.h"
+#include "consensus/consensus.h"
 #include "consensus/validation.h"
 #include "pow.h"
 #include "timedata.h"
@@ -137,7 +138,7 @@ bool CheckBlockHeader(const Consensus::Params &consensusParams,
     // based on time -- its more likely that the light client's time is incorrect
 #ifndef LIGHT
     // Check timestamp
-    if (block.GetBlockTime() > GetAdjustedTime() + 2 * 60 * 60)
+    if (block.GetBlockTime() > GetAdjustedTime() + MAX_FUTURE_BLOCK_TIME)
         return state.Invalid(
             error("CheckBlockHeader(): block timestamp too far in the future"), REJECT_INVALID, "time-too-new");
 #endif
