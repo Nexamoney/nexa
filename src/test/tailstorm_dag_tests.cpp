@@ -25,6 +25,12 @@ public:
         forest.mapAllGrovesByNode.emplace(hash, grove);
     }
 
+    static size_t SummaryOrphanCount(CTailstormForest &forest)
+    {
+        LOCK(forest.cs_forest);
+        return forest.mapSummaryBlocksUnlinked.size();
+    }
+
     static void Reset(CTailstormForest &forest)
     {
         LOCK(forest.cs_forest);
@@ -2090,6 +2096,64 @@ BOOST_AUTO_TEST_CASE(late_uncle_inclusion)
     BOOST_REQUIRE(selectedChildUncle);
     BOOST_CHECK(selectedChildUncle->fUncle);
     BOOST_CHECK_EQUAL(selectedChildUncle->roothash, currentHash);
+}
+
+BOOST_AUTO_TEST_CASE(summary_orphan_survives_descendant_grove)
+{
+    // A future-epoch subblock can create a grove rooted at a summary block before
+    // that summary has all of its own subblocks. The grove must not make the
+    // unvalidated summary look connected or it will never be retried.
+    const uint32_t tailstormK = Params().GetConsensus().tailstorm_k;
+    BOOST_REQUIRE(tailstormK >= 3);
+
+    PreviousEpochTestChain chain(&coinsCache, 80, 81);
+    chain.olderSummary.nNextMaxBlockSize = Params().GetConsensus().nNextMaxBlockSize;
+    ScopedChainTip scopedChainTip(&chain.previousSummary);
+
+    std::vector<ConstCBlockRef> summarySubblocks;
+    std::set<CTreeNodeRef> summarySubblockNodes;
+    for (uint32_t i = 0; i < tailstormK - 1; ++i)
+    {
+        ConstCBlockRef subblock =
+            MakeTestSubblock(chain.previousSummary, {}, static_cast<unsigned char>(90 + i));
+        summarySubblocks.push_back(subblock);
+        summarySubblockNodes.insert(MakeTreeNodeRef(subblock));
+    }
+
+    std::vector<uint8_t> minerData =
+        GenerateMinerData(tailstormK, summarySubblockNodes, chain.olderHash);
+    CBlockHeader currentHeader =
+        MakeTestSummaryHeader(chain.previousHash, 2, chain.previousSummary.chainWork(), 100, minerData);
+    CBlockIndex currentSummary(currentHeader);
+    currentSummary.pprev = &chain.previousSummary;
+    currentSummary.nStatus |= BLOCK_PROCESSED | BLOCK_HAVE_DATA | BLOCK_LINKED;
+    {
+        WRITELOCK(cs_mapBlockIndex);
+        currentSummary.RaiseValidity(BLOCK_VALID_TRANSACTIONS);
+    }
+    currentSummary.nNextMaxBlockSize = Params().GetConsensus().nNextMaxBlockSize;
+    const uint256 currentHash = currentHeader.GetHash();
+    ScopedBlockIndexEntry currentEntry(currentHash, &currentSummary);
+    ConstCBlockRef currentBlock = std::make_shared<const CBlock>(currentHeader);
+    ScopedBlockCacheEntry currentCacheEntry(currentBlock, currentSummary.height());
+
+    // One subblock is enough to create the current summary's predecessor grove,
+    // but the remaining summary proofs are deliberately absent.
+    BOOST_REQUIRE(tailstormForest.Insert(summarySubblocks.front()));
+    ConstCBlockRef futureSubblock = MakeTestSubblock(currentSummary, {}, 110);
+    BOOST_REQUIRE(tailstormForest.Insert(futureSubblock));
+
+    CTailstormGroveRef descendantGrove;
+    BOOST_REQUIRE(tailstormForest.GetGrove(currentHash, descendantGrove));
+
+    tailstormForest.AddSummaryBlockOrphan(currentBlock);
+    BOOST_REQUIRE_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 1);
+    {
+        LOCK(tailstormForest.cs_forest);
+        tailstormForest.ProcessOrphans();
+    }
+
+    BOOST_CHECK_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 1);
 }
 
 BOOST_AUTO_TEST_CASE(unprocessed_ancestor_parks_child_during_reorg_gap)

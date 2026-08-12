@@ -27,6 +27,7 @@
 #include "leakybucket.h"
 #include "main.h"
 #include "miner.h"
+#include "net_processing.h"
 #include "netbase.h"
 #include "nodestate.h"
 #include "policy/policy.h"
@@ -170,7 +171,7 @@ std::map<uint256, std::pair<CBlockHeader, int64_t> > mapUnConnectedHeaders GUARD
 
 /** A cache to store subblock headers received before their base block is in the block index.
     Retained and re-evaluated when that summary is accepted. **/
-std::map<uint256, std::pair<CBlockHeader, int64_t> > mapUnconnectedSubblockHeaders GUARDED_BY(csUnconnectedHeaders);
+CUnconnectedSubblockHeaderCache unconnectedSubblockHeaders GUARDED_BY(csUnconnectedHeaders);
 
 CCriticalSection cs_main;
 /**

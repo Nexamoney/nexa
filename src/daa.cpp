@@ -151,6 +151,54 @@ static const CBlockIndex *GetASERTAnchorBlock(const CBlockIndex *const pindex, c
     return anchor;
 }
 
+arith_uint256 GetDeferredSubblockWorkThreshold(const CBlockIndex *pindexTip,
+    int64_t maximumSummaryTime,
+    const Consensus::Params &params)
+{
+    const arith_uint256 powLimit = UintToArith256(params.powLimit);
+    const arith_uint256 minimumWork = GetWorkForTarget(powLimit);
+    if (!pindexTip || params.tailstorm_k == 0)
+        return minimumWork;
+
+    if (params.fPowAllowMinDifficultyBlocks)
+        return minimumWork;
+
+    if (params.fPowNoRetargeting)
+    {
+        arith_uint256 target;
+        bool fNegative = false;
+        bool fOverflow = false;
+        target.SetCompact(pindexTip->tgtBits(), &fNegative, &fOverflow);
+        if (fNegative || fOverflow || target == 0 || target > powLimit)
+            return minimumWork;
+        return GetWorkForTarget(target);
+    }
+
+    if (params.nPowTargetSpacing <= 0 || params.nASERTHalfLife <= 0)
+        return minimumWork;
+
+    const CBlockIndex *pindexAnchor = GetASERTAnchorBlock(pindexTip, params);
+    const int64_t anchorTime = pindexAnchor->pprev ? pindexAnchor->pprev->GetBlockTime() : pindexAnchor->GetBlockTime();
+    const int64_t nTimeDiff = maximumSummaryTime - anchorTime;
+
+    // A subblock deferred for missing context belongs to the epoch rooted at
+    // that missing summary. Model the easiest forward gap: one summary after
+    // the current tip, at the latest time it could still pass header checks.
+    const int64_t nHeightDiff = pindexTip->height() + 1 - pindexAnchor->height();
+    const arith_uint256 referenceTarget = arith_uint256().SetCompact(pindexAnchor->tgtBits());
+    arith_uint256 maximumTarget = CalculateASERT(
+        referenceTarget, params.nPowTargetSpacing, nTimeDiff, nHeightDiff, powLimit, params.nASERTHalfLife);
+
+    arith_uint320 tailstormTarget = maximumTarget;
+    tailstormTarget *= params.tailstorm_k;
+    if (tailstormTarget > arith_uint320(powLimit))
+        maximumTarget = powLimit;
+    else
+        maximumTarget = tailstormTarget.reduceTo256();
+
+    return GetWorkForTarget(maximumTarget);
+}
+
 
 /**
  * Compute the next required proof of work using an absolutely scheduled

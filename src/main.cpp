@@ -109,6 +109,8 @@ void InitializeNode(const CNode *pnode)
 
 void FinalizeNode(NodeId nodeid)
 {
+    RemoveUnconnectedSubblockHeadersForPeer(nodeid);
+
     // Clean up the sync maps
     ClearDisconnectedFromMempoolSyncMaps(nodeid);
 

@@ -22,6 +22,7 @@
 #include "index/txindex.h"
 #include "init.h"
 #include "miner.h"
+#include "net_processing.h"
 #include "requestManager.h"
 #include "sync.h"
 #include "tailstorm.h"
@@ -971,6 +972,7 @@ void UnloadBlockIndex()
     {
         LOCK(csUnconnectedHeaders);
         mapUnConnectedHeaders.clear();
+        unconnectedSubblockHeaders.Clear();
     }
 
     {

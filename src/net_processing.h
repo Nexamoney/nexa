@@ -8,8 +8,85 @@
 #define NEXA_NET_PROCESSING_H
 
 #include "net.h"
+#include "primitives/block.h"
+
+#include <functional>
+#include <map>
+#include <vector>
 
 class CUtxo;
+
+static const size_t MAX_UNCONNECTED_SUBBLOCK_HEADERS = 2000;
+
+class CUnconnectedSubblockHeaderCache
+{
+public:
+    enum class Tier
+    {
+        PRIMARY,
+        FALLBACK,
+    };
+
+    struct Entry
+    {
+        CBlockHeader header;
+        int64_t nTime;
+        NodeId source;
+        Tier tier = Tier::PRIMARY;
+    };
+
+    enum class AddResult
+    {
+        ADDED,
+        ADDED_FALLBACK,
+        DUPLICATE,
+        PEER_LIMIT,
+        GLOBAL_LIMIT,
+        FALLBACK_PEER_LIMIT,
+        FALLBACK_GLOBAL_LIMIT,
+    };
+
+    CUnconnectedSubblockHeaderCache();
+    CUnconnectedSubblockHeaderCache(size_t maxCacheSize, size_t maxPeerEntries);
+    CUnconnectedSubblockHeaderCache(size_t maxCacheSize,
+        size_t maxPeerEntries,
+        size_t maxFallbackCacheSize,
+        size_t maxFallbackPeerEntries);
+
+    AddResult Add(const CBlockHeader &header, NodeId source, int64_t nTime, Tier tier = Tier::PRIMARY);
+    size_t Expire(int64_t now, int64_t timeout);
+    std::vector<Entry> ExtractReady(const std::function<bool(const CBlockHeader &)> &isReady);
+    void RemovePeer(NodeId source);
+    void Clear();
+
+    size_t Size() const { return entries.size(); }
+    size_t PrimarySize() const { return primarySize; }
+    size_t FallbackSize() const { return fallbackSize; }
+    size_t Count(NodeId source) const;
+    size_t FallbackCount(NodeId source) const;
+
+private:
+    typedef std::map<uint256, Entry> EntryMap;
+
+    size_t TierCount(NodeId source, Tier tier) const;
+    void Erase(EntryMap::iterator it);
+
+    const size_t maxSize;
+    const size_t maxPerPeer;
+    const size_t maxFallbackSize;
+    const size_t maxFallbackPerPeer;
+    const bool deriveMaxPerPeer;
+    size_t primarySize = 0;
+    size_t fallbackSize = 0;
+    EntryMap entries;
+    std::map<NodeId, size_t> peerCounts;
+    std::map<NodeId, size_t> fallbackPeerCounts;
+};
+
+extern CCriticalSection csUnconnectedHeaders;
+extern CUnconnectedSubblockHeaderCache unconnectedSubblockHeaders GUARDED_BY(csUnconnectedHeaders);
+
+void RemoveUnconnectedSubblockHeadersForPeer(NodeId nodeid);
 
 /** Process protocol messages received from a given node */
 bool ProcessMessages(CNode *pfrom);
