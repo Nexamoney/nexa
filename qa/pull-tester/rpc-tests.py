@@ -31,7 +31,6 @@ import pdb
 import os
 import time
 import shutil
-import psutil
 import signal
 import sys
 import subprocess
@@ -66,6 +65,7 @@ if os.name == 'posix':
 RPC_TESTS_DIR = SRCDIR + '/qa/rpc-tests/'
 
 CORE_ANALYSIS_SCRIPT = SRCDIR + '/contrib/devtools/coreanalysis.gdb'
+CORE_ANALYSIS_TIMEOUT = 60
 
 #If imported values are not defined then set to zero (or disabled)
 if 'ENABLE_WALLET' not in vars():
@@ -552,27 +552,49 @@ class RPCTestHandler:
         self.portseed_offset = int(time.time() * 1000) % 3750
         self.jobs = []
 
+    @staticmethod
+    def _new_log_file():
+        return tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8", delete=False)
+
+    @staticmethod
+    def _read_and_remove_log(log_file):
+        path = log_file.name
+        log_file.close()
+        try:
+            with open(path, mode="r", encoding="utf-8", errors="replace") as reader:
+                return reader.read()
+        finally:
+            os.remove(path)
+
+    @staticmethod
+    def _retire_core(full_core_file, core, test_name):
+        if inGitLabCI():
+            saved_cores = os.path.join(os.environ.get("CI_PROJECT_DIR", None), "saved-cores")
+            os.makedirs(saved_cores, exist_ok=True)
+            shutil.move(full_core_file, os.path.join(saved_cores, str(core) + "-" + str(test_name)))
+        else:
+            os.remove(full_core_file)
+
     def get_next(self):
         while self.num_running < self.num_jobs and self.test_list:
             # Add tests
             self.num_running += 1
             t = self.test_list.pop(0)
             port_seed = ["--portseed={}".format(len(self.test_list) + self.portseed_offset)]
-            log_stdout = tempfile.SpooledTemporaryFile(max_size=2**16, mode="w+")
-            log_stderr = tempfile.SpooledTemporaryFile(max_size=2**16, mode="w+")
-            got_outputs = [False]
+            log_stdout = self._new_log_file()
+            log_stderr = self._new_log_file()
             print("Starting %s" % t)
             self.jobs.append((t,
                               time.time(),
                               subprocess.Popen((RPC_TESTS_DIR + t).split() + self.flags.split() + port_seed,
                                                universal_newlines=True,
                                                stdin=subprocess.DEVNULL,
-                                               stdout=subprocess.PIPE,
-                                               stderr=subprocess.PIPE,
+                                               stdout=log_stdout,
+                                               stderr=log_stderr,
                                                close_fds=True,
                                                restore_signals=True,
                                                start_new_session=True),
-                              log_stdout, log_stderr, got_outputs))
+                              log_stdout, log_stderr))
         if not self.jobs:
             raise IndexError('pop from empty list')
         count = 0
@@ -581,97 +603,57 @@ class RPCTestHandler:
             # Return first proc that finishes
             time.sleep(.5)
             for j in self.jobs:
-                (name, time0, proc, log_stdout, log_stderr, got_outputs) = j
+                (name, time0, proc, log_stdout, log_stderr) = j
                 if ((inGitLabCI() or inTravis()) and int(time.time() - time0) > 20 * 60):
                     # In external CI services, timeout individual tests after 20 minutes (to stop tests hanging and not
                     # providing useful output.
                     proc.send_signal(signal.SIGINT)
 
-                # print("handling " + str(proc))
+                retval = proc.poll()
+                if retval is not None:
 
-                def comms(timeout):
-                    stdout_data, stderr_data = proc.communicate(timeout=timeout)
-                    log_stdout.write(stdout_data)
-                    log_stderr.write(stderr_data)
-
-                # Poll for new data on stdout and stderr. This is also necessary as to not block
-                # the subprocess when the stdout or stderr pipe is full.
-                try:
-                    # WARNING: There seems to be a bug in python handling of .join() so that
-                    # when you do a .join() with a zero or negative timeout, it will not even try
-                    # joining the thread. This is for the handling of the stdout/stderr reader threads
-                    # in subprocess.py. A sufficiently positive value (and 0.1s seems to be enough)
-                    # seems to make the .join() logic to work, and in turn communicate() not to fail
-                    # with a timeout, even though the thread is done reading (which was another cause
-                    # of a hang)
-                    if not got_outputs[0]:
-                        comms(0.5)
-
-                    # .communicate() can only be called successfully once and we have to keep in mind now that
-                    # communication happened properly (and the files are closed). It _has_ to be called with a non-None
-                    # timeout initially, however, to start the communication threads internal to subprocess.Popen(..)
-                    # that are necessary to not block on more output than what fits into the OS' pipe buffer.
-                    # Note that end-of-communication does not necessarily indicate a finished subprocess.
-                    got_outputs[0] = True
-                except subprocess.TimeoutExpired:
-                    pass
-                except ValueError:
-                    # There is a bug in communicate that causes this exception if the child process has closed any pipes but is still running
-                    # see: https://bugs.python.org/issue35182
-                    pass
-
-                # it won't ever communicate() fully because child didn't close sockets
-                try:
-                    psproc = psutil.Process(proc.pid)
-                    if psproc.status() == psutil.STATUS_ZOMBIE:
-                        got_outputs[0] = True
-                except AttributeError:
-                    pass
-                except FileNotFoundError:
-                    pass # its ok means process exited cleanly
-                except psutil.NoSuchProcess:
-                    pass
-
-                if got_outputs[0]:
-                    retval = proc.returncode if proc.returncode != None else proc.poll()
-                    if retval is None:
-                        print("%s: should be impossible, got output from communicate but process is alive" % proc.args[0])
-                        dumpLogs = True
-
-                    coreOutput = ""
+                    coreOutputs = []
+                    if inGitLabCI():
+                        coreDir = os.path.join(os.environ.get("CI_PROJECT_DIR", None), "cores")
+                    else:
+                        coreDir = "/tmp/cores"
                     try:
-                        if inGitLabCI():
-                            coreDir = os.path.join(os.environ.get("CI_PROJECT_DIR", None), "cores")
-                        else:
-                            coreDir = "/tmp/cores"
                         cores = os.listdir(coreDir)
-                        for core in cores:
-                            print("Trying to analyze core file: " + str(core))
-                            fullCoreFile = os.path.join(coreDir, core)
+                    except Exception as e:
+                        print("Exception trying to list core files in " + coreDir + " :" + str(e))
+                        cores = []
+
+                    for core in cores:
+                        print("Trying to analyze core file: " + str(core))
+                        fullCoreFile = os.path.join(coreDir, core)
+                        try:
                             nexadBin = os.environ["NEXAD"]
-                            path, fil = os.path.split(nexadBin)
                             if os.path.isfile(CORE_ANALYSIS_SCRIPT):
                                 popenList = ["gdb", "-core", fullCoreFile, nexadBin, "-x", CORE_ANALYSIS_SCRIPT, "-batch"]
                             else:
                                 popenList = ["gdb", "-core", fullCoreFile, nexadBin, "-ex", "thread apply all bt", "-ex", "set pagination 0", "-batch"]
                             gdb = subprocess.Popen(popenList, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                            (out, err) = gdb.communicate(None, 60)
+                            try:
+                                (out, err) = gdb.communicate(timeout=CORE_ANALYSIS_TIMEOUT)
+                            except subprocess.TimeoutExpired:
+                                gdb.kill()
+                                (out, err) = gdb.communicate()
+                                err += "\nCore dump analysis timed out after %s seconds; GDB was terminated.\n" % CORE_ANALYSIS_TIMEOUT
                             fold_start = ("\ntravis_fold:start:%s\nCore dump analysis\n" % core) if inTravis() else ""
                             fold_end = ("\ntravis_fold:end:%s\n" % core) if inTravis() else ""
-                            coreOutput = fold_start + out + "\n-------\n" + err + fold_end
-                            # Now delete this file so we don't dump it repeatedly.  Better would be to move it somewhere for export out of the container.
-                            if inGitLabCI():
-                                newPath = os.path.join(os.environ.get("CI_PROJECT_DIR", None), "saved-cores")
-                                shutil.move(fullCoreFile, os.path.join(newPath, str(core) + "-" + str(name)))
-                            else:
-                                os.remove(fullCoreFile)
-                    except Exception as e:
-                        print("Exception trying to show core files in " + coreDir + " :" + str(e))
+                            coreOutputs.append(fold_start + out + "\n-------\n" + err + fold_end)
+                        except Exception as e:
+                            coreOutputs.append("Exception trying to analyze core file " + fullCoreFile + " :" + str(e))
+                        finally:
+                            try:
+                                self._retire_core(fullCoreFile, core, name)
+                            except Exception as e:
+                                coreOutputs.append("Exception trying to retire core file " + fullCoreFile + " :" + str(e))
+                    coreOutput = "\n".join(coreOutputs)
 
                     returnCode = "Process %s return code: %d" % (" ".join(proc.args),retval)
-                    log_stdout.seek(0), log_stderr.seek(0)
-                    stdout = log_stdout.read()
-                    stderr = log_stderr.read()
+                    stdout = self._read_and_remove_log(log_stdout)
+                    stderr = self._read_and_remove_log(log_stderr)
                     passed = stderr == "" and proc.returncode == 0
 
                     # This is a list of expected messages on stderr. If they appear, they do not
