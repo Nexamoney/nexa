@@ -65,6 +65,7 @@ if os.name == 'posix':
 RPC_TESTS_DIR = SRCDIR + '/qa/rpc-tests/'
 
 CORE_ANALYSIS_SCRIPT = SRCDIR + '/contrib/devtools/coreanalysis.gdb'
+CORE_ANALYSIS_TIMEOUT = 60
 
 #If imported values are not defined then set to zero (or disabled)
 if 'ENABLE_WALLET' not in vars():
@@ -565,6 +566,15 @@ class RPCTestHandler:
         finally:
             os.remove(path)
 
+    @staticmethod
+    def _retire_core(full_core_file, core, test_name):
+        if inGitLabCI():
+            saved_cores = os.path.join(os.environ.get("CI_PROJECT_DIR", None), "saved-cores")
+            os.makedirs(saved_cores, exist_ok=True)
+            shutil.move(full_core_file, os.path.join(saved_cores, str(core) + "-" + str(test_name)))
+        else:
+            os.remove(full_core_file)
+
     def get_next(self):
         while self.num_running < self.num_jobs and self.test_list:
             # Add tests
@@ -602,35 +612,44 @@ class RPCTestHandler:
                 retval = proc.poll()
                 if retval is not None:
 
-                    coreOutput = ""
+                    coreOutputs = []
+                    if inGitLabCI():
+                        coreDir = os.path.join(os.environ.get("CI_PROJECT_DIR", None), "cores")
+                    else:
+                        coreDir = "/tmp/cores"
                     try:
-                        if inGitLabCI():
-                            coreDir = os.path.join(os.environ.get("CI_PROJECT_DIR", None), "cores")
-                        else:
-                            coreDir = "/tmp/cores"
                         cores = os.listdir(coreDir)
-                        for core in cores:
-                            print("Trying to analyze core file: " + str(core))
-                            fullCoreFile = os.path.join(coreDir, core)
+                    except Exception as e:
+                        print("Exception trying to list core files in " + coreDir + " :" + str(e))
+                        cores = []
+
+                    for core in cores:
+                        print("Trying to analyze core file: " + str(core))
+                        fullCoreFile = os.path.join(coreDir, core)
+                        try:
                             nexadBin = os.environ["NEXAD"]
-                            path, fil = os.path.split(nexadBin)
                             if os.path.isfile(CORE_ANALYSIS_SCRIPT):
                                 popenList = ["gdb", "-core", fullCoreFile, nexadBin, "-x", CORE_ANALYSIS_SCRIPT, "-batch"]
                             else:
                                 popenList = ["gdb", "-core", fullCoreFile, nexadBin, "-ex", "thread apply all bt", "-ex", "set pagination 0", "-batch"]
                             gdb = subprocess.Popen(popenList, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                            (out, err) = gdb.communicate(None, 60)
+                            try:
+                                (out, err) = gdb.communicate(timeout=CORE_ANALYSIS_TIMEOUT)
+                            except subprocess.TimeoutExpired:
+                                gdb.kill()
+                                (out, err) = gdb.communicate()
+                                err += "\nCore dump analysis timed out after %s seconds; GDB was terminated.\n" % CORE_ANALYSIS_TIMEOUT
                             fold_start = ("\ntravis_fold:start:%s\nCore dump analysis\n" % core) if inTravis() else ""
                             fold_end = ("\ntravis_fold:end:%s\n" % core) if inTravis() else ""
-                            coreOutput = fold_start + out + "\n-------\n" + err + fold_end
-                            # Now delete this file so we don't dump it repeatedly.  Better would be to move it somewhere for export out of the container.
-                            if inGitLabCI():
-                                newPath = os.path.join(os.environ.get("CI_PROJECT_DIR", None), "saved-cores")
-                                shutil.move(fullCoreFile, os.path.join(newPath, str(core) + "-" + str(name)))
-                            else:
-                                os.remove(fullCoreFile)
-                    except Exception as e:
-                        print("Exception trying to show core files in " + coreDir + " :" + str(e))
+                            coreOutputs.append(fold_start + out + "\n-------\n" + err + fold_end)
+                        except Exception as e:
+                            coreOutputs.append("Exception trying to analyze core file " + fullCoreFile + " :" + str(e))
+                        finally:
+                            try:
+                                self._retire_core(fullCoreFile, core, name)
+                            except Exception as e:
+                                coreOutputs.append("Exception trying to retire core file " + fullCoreFile + " :" + str(e))
+                    coreOutput = "\n".join(coreOutputs)
 
                     returnCode = "Process %s return code: %d" % (" ".join(proc.args),retval)
                     stdout = self._read_and_remove_log(log_stdout)
