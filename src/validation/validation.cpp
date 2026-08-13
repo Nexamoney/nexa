@@ -778,8 +778,30 @@ bool LoadBlockIndexDB()
             {
                 if (pindex->pprev)
                 {
-                    if (!pindex->IsLinked())
+                    // The stored linked flag may be stale: an unclean shutdown can persist an index
+                    // where a block that was relinked only in memory was never rewritten, leaving a
+                    // linked descendant above an unlinked ancestor. We iterate by height so the
+                    // parent has already been reconciled; recompute the flag from the parent.
+                    if (pindex->pprev->IsLinked() && (pindex->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_TRANSACTIONS)
                     {
+                        if (!pindex->IsLinked())
+                        {
+                            LOGA("LoadBlockIndex: repairing unlinked block %d:%s whose chain is complete\n",
+                                pindex->height(), pindex->phashBlock->ToString());
+                            pindex->nStatus |= BLOCK_LINKED;
+                            setDirtyBlockIndex.insert(pindex);
+                        }
+                    }
+                    else
+                    {
+                        if (pindex->IsLinked())
+                        {
+                            LOGA("LoadBlockIndex: clearing linked flag of block %d:%s whose ancestor chain is "
+                                 "incomplete\n",
+                                pindex->height(), pindex->phashBlock->ToString());
+                            pindex->nStatus &= ~BLOCK_LINKED;
+                            setDirtyBlockIndex.insert(pindex);
+                        }
                         // This handles a rare condition where someone has previously aborted a sync in progress
                         // and then tries to restart.
                         if (pindex->nStatus & BLOCK_HAVE_DATA && pindex->pprev->IsValid(BLOCK_VALID_TREE))
@@ -1916,6 +1938,7 @@ CBlockIndex *FindMostWorkChain()
                 {
                     pindexFailed->nStatus &= ~BLOCK_LINKED;
                     pindexFailed->nStatus &= ~BLOCK_PROCESSED;
+                    setDirtyBlockIndex.insert(pindexFailed);
                 }
                 setBlockIndexCandidates.erase(pindexFailed);
                 pindexFailed = pindexFailed->pprev;
@@ -2281,6 +2304,10 @@ bool ReceivedBlockTransactions(ConstCBlockRef pblock,
                 mapBlocksUnlinked.erase(it);
             }
             pindex->nStatus |= BLOCK_LINKED;
+            // Mark dirty: blocks pulled from mapBlocksUnlinked may have been flushed to disk while
+            // still unlinked, and without a rewrite the stale flag would survive an unclean shutdown,
+            // leaving a linked descendant above an unlinked ancestor in the stored index.
+            setDirtyBlockIndex.insert(pindex);
             LOG(PARALLEL, "Block %d:%s is linked\n", pindex->height(), pindex->phashBlock->ToString());
         }
     }
