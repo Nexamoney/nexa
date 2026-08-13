@@ -972,8 +972,8 @@ void UnloadBlockIndex()
     {
         LOCK(csUnconnectedHeaders);
         mapUnConnectedHeaders.clear();
-        unconnectedSubblockHeaders.Clear();
     }
+    subblockHeaders.Clear();
 
     {
         LOCK(cs_main);

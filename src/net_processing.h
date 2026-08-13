@@ -18,9 +18,11 @@ class CUtxo;
 
 static const size_t MAX_UNCONNECTED_SUBBLOCK_HEADERS = 2000;
 
-class CUnconnectedSubblockHeaderCache
+class CSubblockHeaderCache
 {
 public:
+    mutable CCriticalSection cs_headersCache;
+
     enum class Tier
     {
         PRIMARY,
@@ -46,9 +48,9 @@ public:
         FALLBACK_GLOBAL_LIMIT,
     };
 
-    CUnconnectedSubblockHeaderCache();
-    CUnconnectedSubblockHeaderCache(size_t maxCacheSize, size_t maxPeerEntries);
-    CUnconnectedSubblockHeaderCache(size_t maxCacheSize,
+    CSubblockHeaderCache();
+    CSubblockHeaderCache(size_t maxCacheSize, size_t maxPeerEntries);
+    CSubblockHeaderCache(size_t maxCacheSize,
         size_t maxPeerEntries,
         size_t maxFallbackCacheSize,
         size_t maxFallbackPeerEntries);
@@ -59,32 +61,42 @@ public:
     void RemovePeer(NodeId source);
     void Clear();
 
-    size_t Size() const { return entries.size(); }
-    size_t PrimarySize() const { return primarySize; }
-    size_t FallbackSize() const { return fallbackSize; }
+    size_t Size() const
+    {
+        LOCK(cs_headersCache);
+        return entries.size();
+    }
+    size_t PrimarySize() const
+    {
+        LOCK(cs_headersCache);
+        return primarySize;
+    }
+    size_t FallbackSize() const
+    {
+        LOCK(cs_headersCache);
+        return fallbackSize;
+    }
     size_t Count(NodeId source) const;
     size_t FallbackCount(NodeId source) const;
 
 private:
     typedef std::map<uint256, Entry> EntryMap;
 
-    size_t TierCount(NodeId source, Tier tier) const;
-    void Erase(EntryMap::iterator it);
+    size_t _TierCount(NodeId source, Tier tier) const;
+    void _Erase(EntryMap::iterator it);
 
     const size_t maxSize;
     const size_t maxPerPeer;
     const size_t maxFallbackSize;
     const size_t maxFallbackPerPeer;
     const bool deriveMaxPerPeer;
-    size_t primarySize = 0;
-    size_t fallbackSize = 0;
-    EntryMap entries;
-    std::map<NodeId, size_t> peerCounts;
-    std::map<NodeId, size_t> fallbackPeerCounts;
+    size_t primarySize GUARDED_BY(cs_headersCache) = 0;
+    size_t fallbackSize GUARDED_BY(cs_headersCache) = 0;
+    EntryMap entries GUARDED_BY(cs_headersCache);
+    std::map<NodeId, size_t> peerCounts GUARDED_BY(cs_headersCache);
+    std::map<NodeId, size_t> fallbackPeerCounts GUARDED_BY(cs_headersCache);
 };
-
-extern CCriticalSection csUnconnectedHeaders;
-extern CUnconnectedSubblockHeaderCache unconnectedSubblockHeaders GUARDED_BY(csUnconnectedHeaders);
+extern CSubblockHeaderCache subblockHeaders;
 
 void RemoveUnconnectedSubblockHeadersForPeer(NodeId nodeid);
 
