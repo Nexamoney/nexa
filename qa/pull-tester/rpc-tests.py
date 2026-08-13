@@ -31,7 +31,6 @@ import pdb
 import os
 import time
 import shutil
-import psutil
 import signal
 import sys
 import subprocess
@@ -552,27 +551,40 @@ class RPCTestHandler:
         self.portseed_offset = int(time.time() * 1000) % 3750
         self.jobs = []
 
+    @staticmethod
+    def _new_log_file():
+        return tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8", delete=False)
+
+    @staticmethod
+    def _read_and_remove_log(log_file):
+        path = log_file.name
+        log_file.close()
+        try:
+            with open(path, mode="r", encoding="utf-8", errors="replace") as reader:
+                return reader.read()
+        finally:
+            os.remove(path)
+
     def get_next(self):
         while self.num_running < self.num_jobs and self.test_list:
             # Add tests
             self.num_running += 1
             t = self.test_list.pop(0)
             port_seed = ["--portseed={}".format(len(self.test_list) + self.portseed_offset)]
-            log_stdout = tempfile.SpooledTemporaryFile(max_size=2**16, mode="w+")
-            log_stderr = tempfile.SpooledTemporaryFile(max_size=2**16, mode="w+")
-            got_outputs = [False]
+            log_stdout = self._new_log_file()
+            log_stderr = self._new_log_file()
             print("Starting %s" % t)
             self.jobs.append((t,
                               time.time(),
                               subprocess.Popen((RPC_TESTS_DIR + t).split() + self.flags.split() + port_seed,
                                                universal_newlines=True,
                                                stdin=subprocess.DEVNULL,
-                                               stdout=subprocess.PIPE,
-                                               stderr=subprocess.PIPE,
+                                               stdout=log_stdout,
+                                               stderr=log_stderr,
                                                close_fds=True,
                                                restore_signals=True,
                                                start_new_session=True),
-                              log_stdout, log_stderr, got_outputs))
+                              log_stdout, log_stderr))
         if not self.jobs:
             raise IndexError('pop from empty list')
         count = 0
@@ -581,62 +593,14 @@ class RPCTestHandler:
             # Return first proc that finishes
             time.sleep(.5)
             for j in self.jobs:
-                (name, time0, proc, log_stdout, log_stderr, got_outputs) = j
+                (name, time0, proc, log_stdout, log_stderr) = j
                 if ((inGitLabCI() or inTravis()) and int(time.time() - time0) > 20 * 60):
                     # In external CI services, timeout individual tests after 20 minutes (to stop tests hanging and not
                     # providing useful output.
                     proc.send_signal(signal.SIGINT)
 
-                # print("handling " + str(proc))
-
-                def comms(timeout):
-                    stdout_data, stderr_data = proc.communicate(timeout=timeout)
-                    log_stdout.write(stdout_data)
-                    log_stderr.write(stderr_data)
-
-                # Poll for new data on stdout and stderr. This is also necessary as to not block
-                # the subprocess when the stdout or stderr pipe is full.
-                try:
-                    # WARNING: There seems to be a bug in python handling of .join() so that
-                    # when you do a .join() with a zero or negative timeout, it will not even try
-                    # joining the thread. This is for the handling of the stdout/stderr reader threads
-                    # in subprocess.py. A sufficiently positive value (and 0.1s seems to be enough)
-                    # seems to make the .join() logic to work, and in turn communicate() not to fail
-                    # with a timeout, even though the thread is done reading (which was another cause
-                    # of a hang)
-                    if not got_outputs[0]:
-                        comms(0.5)
-
-                    # .communicate() can only be called successfully once and we have to keep in mind now that
-                    # communication happened properly (and the files are closed). It _has_ to be called with a non-None
-                    # timeout initially, however, to start the communication threads internal to subprocess.Popen(..)
-                    # that are necessary to not block on more output than what fits into the OS' pipe buffer.
-                    # Note that end-of-communication does not necessarily indicate a finished subprocess.
-                    got_outputs[0] = True
-                except subprocess.TimeoutExpired:
-                    pass
-                except ValueError:
-                    # There is a bug in communicate that causes this exception if the child process has closed any pipes but is still running
-                    # see: https://bugs.python.org/issue35182
-                    pass
-
-                # it won't ever communicate() fully because child didn't close sockets
-                try:
-                    psproc = psutil.Process(proc.pid)
-                    if psproc.status() == psutil.STATUS_ZOMBIE:
-                        got_outputs[0] = True
-                except AttributeError:
-                    pass
-                except FileNotFoundError:
-                    pass # its ok means process exited cleanly
-                except psutil.NoSuchProcess:
-                    pass
-
-                if got_outputs[0]:
-                    retval = proc.returncode if proc.returncode != None else proc.poll()
-                    if retval is None:
-                        print("%s: should be impossible, got output from communicate but process is alive" % proc.args[0])
-                        dumpLogs = True
+                retval = proc.poll()
+                if retval is not None:
 
                     coreOutput = ""
                     try:
@@ -669,9 +633,8 @@ class RPCTestHandler:
                         print("Exception trying to show core files in " + coreDir + " :" + str(e))
 
                     returnCode = "Process %s return code: %d" % (" ".join(proc.args),retval)
-                    log_stdout.seek(0), log_stderr.seek(0)
-                    stdout = log_stdout.read()
-                    stderr = log_stderr.read()
+                    stdout = self._read_and_remove_log(log_stdout)
+                    stderr = self._read_and_remove_log(log_stderr)
                     passed = stderr == "" and proc.returncode == 0
 
                     # This is a list of expected messages on stderr. If they appear, they do not
