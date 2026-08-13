@@ -171,7 +171,7 @@ std::map<uint256, std::pair<CBlockHeader, int64_t> > mapUnConnectedHeaders GUARD
 
 /** A cache to store subblock headers received before their base block is in the block index.
     Retained and re-evaluated when that summary is accepted. **/
-CUnconnectedSubblockHeaderCache unconnectedSubblockHeaders GUARDED_BY(csUnconnectedHeaders);
+CSubblockHeaderCache subblockHeaders;
 
 CCriticalSection cs_main;
 /**

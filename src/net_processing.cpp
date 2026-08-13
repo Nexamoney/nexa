@@ -70,18 +70,18 @@ static size_t MaxTailstormFallbackHeaders() { return MaxTailstormSubblockHeaders
 
 static size_t MaxTailstormFallbackHeadersPerPeer() { return Params().GetConsensus().tailstorm_k; }
 
-CUnconnectedSubblockHeaderCache::CUnconnectedSubblockHeaderCache()
+CSubblockHeaderCache::CSubblockHeaderCache()
     : maxSize(MAX_UNCONNECTED_SUBBLOCK_HEADERS), maxPerPeer(0), maxFallbackSize(0), maxFallbackPerPeer(0),
       deriveMaxPerPeer(true)
 {
 }
 
-CUnconnectedSubblockHeaderCache::CUnconnectedSubblockHeaderCache(size_t maxCacheSize, size_t maxPeerEntries)
-    : CUnconnectedSubblockHeaderCache(maxCacheSize, maxPeerEntries, 0, 0)
+CSubblockHeaderCache::CSubblockHeaderCache(size_t maxCacheSize, size_t maxPeerEntries)
+    : CSubblockHeaderCache(maxCacheSize, maxPeerEntries, 0, 0)
 {
 }
 
-CUnconnectedSubblockHeaderCache::CUnconnectedSubblockHeaderCache(size_t maxCacheSize,
+CSubblockHeaderCache::CSubblockHeaderCache(size_t maxCacheSize,
     size_t maxPeerEntries,
     size_t maxFallbackCacheSize,
     size_t maxFallbackPeerEntries)
@@ -90,29 +90,33 @@ CUnconnectedSubblockHeaderCache::CUnconnectedSubblockHeaderCache(size_t maxCache
 {
 }
 
-size_t CUnconnectedSubblockHeaderCache::Count(NodeId source) const
+size_t CSubblockHeaderCache::Count(NodeId source) const
 {
+    LOCK(cs_headersCache);
     auto it = peerCounts.find(source);
     const size_t primaryCount = it == peerCounts.end() ? 0 : it->second;
     return primaryCount + FallbackCount(source);
 }
 
-size_t CUnconnectedSubblockHeaderCache::FallbackCount(NodeId source) const
+size_t CSubblockHeaderCache::FallbackCount(NodeId source) const
 {
+    LOCK(cs_headersCache);
     auto it = fallbackPeerCounts.find(source);
     return it == fallbackPeerCounts.end() ? 0 : it->second;
 }
 
-size_t CUnconnectedSubblockHeaderCache::TierCount(NodeId source, Tier tier) const
+size_t CSubblockHeaderCache::_TierCount(NodeId source, Tier tier) const
 {
+    AssertLockHeld(cs_headersCache);
     if (tier == Tier::FALLBACK)
         return FallbackCount(source);
     auto it = peerCounts.find(source);
     return it == peerCounts.end() ? 0 : it->second;
 }
 
-void CUnconnectedSubblockHeaderCache::Erase(EntryMap::iterator it)
+void CSubblockHeaderCache::_Erase(EntryMap::iterator it)
 {
+    AssertLockHeld(cs_headersCache);
     auto &counts = it->second.tier == Tier::FALLBACK ? fallbackPeerCounts : peerCounts;
     size_t &tierSize = it->second.tier == Tier::FALLBACK ? fallbackSize : primarySize;
     auto countIt = counts.find(it->second.source);
@@ -123,11 +127,12 @@ void CUnconnectedSubblockHeaderCache::Erase(EntryMap::iterator it)
     entries.erase(it);
 }
 
-CUnconnectedSubblockHeaderCache::AddResult CUnconnectedSubblockHeaderCache::Add(const CBlockHeader &header,
+CSubblockHeaderCache::AddResult CSubblockHeaderCache::Add(const CBlockHeader &header,
     NodeId source,
     int64_t nTime,
     Tier tier)
 {
+    LOCK(cs_headersCache);
     const uint256 hash = header.GetHash();
     if (entries.count(hash))
         return AddResult::DUPLICATE;
@@ -140,7 +145,7 @@ CUnconnectedSubblockHeaderCache::AddResult CUnconnectedSubblockHeaderCache::Add(
     const size_t peerLimit = deriveMaxPerPeer ? (tier == Tier::FALLBACK ? MaxTailstormFallbackHeadersPerPeer() :
                                                                           MaxTailstormSubblockHeadersPerPeer()) :
                                                 (tier == Tier::FALLBACK ? maxFallbackPerPeer : maxPerPeer);
-    const size_t sourceCount = TierCount(source, tier);
+    const size_t sourceCount = _TierCount(source, tier);
     if (sourceCount >= peerLimit)
         return tier == Tier::FALLBACK ? AddResult::FALLBACK_PEER_LIMIT : AddResult::PEER_LIMIT;
 
@@ -171,7 +176,7 @@ CUnconnectedSubblockHeaderCache::AddResult CUnconnectedSubblockHeaderCache::Add(
         }
         DbgAssert(oldest != entries.end(),
             return tier == Tier::FALLBACK ? AddResult::FALLBACK_GLOBAL_LIMIT : AddResult::GLOBAL_LIMIT);
-        Erase(oldest);
+        _Erase(oldest);
     }
 
     entries.emplace(hash, Entry{header, nTime, source, tier});
@@ -180,15 +185,16 @@ CUnconnectedSubblockHeaderCache::AddResult CUnconnectedSubblockHeaderCache::Add(
     return tier == Tier::FALLBACK ? AddResult::ADDED_FALLBACK : AddResult::ADDED;
 }
 
-size_t CUnconnectedSubblockHeaderCache::Expire(int64_t now, int64_t timeout)
+size_t CSubblockHeaderCache::Expire(int64_t now, int64_t timeout)
 {
+    LOCK(cs_headersCache);
     size_t expired = 0;
     for (auto it = entries.begin(); it != entries.end();)
     {
         if (now - it->second.nTime >= timeout)
         {
             auto stale = it++;
-            Erase(stale);
+            _Erase(stale);
             ++expired;
         }
         else
@@ -199,9 +205,10 @@ size_t CUnconnectedSubblockHeaderCache::Expire(int64_t now, int64_t timeout)
     return expired;
 }
 
-std::vector<CUnconnectedSubblockHeaderCache::Entry> CUnconnectedSubblockHeaderCache::ExtractReady(
+std::vector<CSubblockHeaderCache::Entry> CSubblockHeaderCache::ExtractReady(
     const std::function<bool(const CBlockHeader &)> &isReady)
 {
+    LOCK(cs_headersCache);
     std::vector<Entry> ready;
     for (auto it = entries.begin(); it != entries.end();)
     {
@@ -209,7 +216,7 @@ std::vector<CUnconnectedSubblockHeaderCache::Entry> CUnconnectedSubblockHeaderCa
         {
             ready.push_back(it->second);
             auto extracted = it++;
-            Erase(extracted);
+            _Erase(extracted);
         }
         else
         {
@@ -219,14 +226,15 @@ std::vector<CUnconnectedSubblockHeaderCache::Entry> CUnconnectedSubblockHeaderCa
     return ready;
 }
 
-void CUnconnectedSubblockHeaderCache::RemovePeer(NodeId source)
+void CSubblockHeaderCache::RemovePeer(NodeId source)
 {
+    LOCK(cs_headersCache);
     for (auto it = entries.begin(); it != entries.end();)
     {
         if (it->second.source == source)
         {
             auto removed = it++;
-            Erase(removed);
+            _Erase(removed);
         }
         else
         {
@@ -235,8 +243,9 @@ void CUnconnectedSubblockHeaderCache::RemovePeer(NodeId source)
     }
 }
 
-void CUnconnectedSubblockHeaderCache::Clear()
+void CSubblockHeaderCache::Clear()
 {
+    LOCK(cs_headersCache);
     entries.clear();
     peerCounts.clear();
     fallbackPeerCounts.clear();
@@ -244,11 +253,7 @@ void CUnconnectedSubblockHeaderCache::Clear()
     fallbackSize = 0;
 }
 
-void RemoveUnconnectedSubblockHeadersForPeer(NodeId nodeid)
-{
-    LOCK(csUnconnectedHeaders);
-    unconnectedSubblockHeaders.RemovePeer(nodeid);
-}
+void RemoveUnconnectedSubblockHeadersForPeer(NodeId nodeid) { subblockHeaders.RemovePeer(nodeid); }
 
 bool HandleHeaderPathMessage(CDataStream &vRecv, CNode *pfrom, uint32_t msgCookie);
 
@@ -2000,34 +2005,35 @@ bool ProcessMessage(CNode *pfrom,
                 GetDeferredSubblockWorkThreshold(tip, maximumSummaryTime, chainparams.GetConsensus());
         }
 
-        std::vector<CUnconnectedSubblockHeaderCache::Entry> vSameMessageDeferredSubblocks;
-        auto cacheDeferredSubblock = [&](const CUnconnectedSubblockHeaderCache::Entry &entry)
+        std::vector<CSubblockHeaderCache::Entry> vSameMessageDeferredSubblocks;
+        auto cacheDeferredSubblock = [&](const CSubblockHeaderCache::Entry &entry)
         {
             const auto tier = GetWorkForDifficultyBits(entry.header.nBits) >= deferredWorkThreshold ?
-                                  CUnconnectedSubblockHeaderCache::Tier::PRIMARY :
-                                  CUnconnectedSubblockHeaderCache::Tier::FALLBACK;
-            auto result = unconnectedSubblockHeaders.Add(entry.header, entry.source, entry.nTime, tier);
-            if (result == CUnconnectedSubblockHeaderCache::AddResult::ADDED_FALLBACK)
+                                  CSubblockHeaderCache::Tier::PRIMARY :
+                                  CSubblockHeaderCache::Tier::FALLBACK;
+            auto result = subblockHeaders.Add(entry.header, entry.source, entry.nTime, tier);
+
+            if (result == CSubblockHeaderCache::AddResult::ADDED_FALLBACK)
             {
                 LOG(NET, "Retaining deferred subblock header %s in the low-work fallback cache.\n",
                     entry.header.GetHash().ToString());
             }
-            if (result == CUnconnectedSubblockHeaderCache::AddResult::PEER_LIMIT)
+            else if (result == CSubblockHeaderCache::AddResult::PEER_LIMIT)
             {
                 LOG(NET, "Ignoring deferred subblock header %s -- peer cache limit reached.\n",
                     entry.header.GetHash().ToString());
             }
-            else if (result == CUnconnectedSubblockHeaderCache::AddResult::GLOBAL_LIMIT)
+            else if (result == CSubblockHeaderCache::AddResult::GLOBAL_LIMIT)
             {
                 LOG(NET, "Ignoring deferred subblock header %s -- global cache limit reached.\n",
                     entry.header.GetHash().ToString());
             }
-            else if (result == CUnconnectedSubblockHeaderCache::AddResult::FALLBACK_PEER_LIMIT)
+            else if (result == CSubblockHeaderCache::AddResult::FALLBACK_PEER_LIMIT)
             {
                 LOG(NET, "Ignoring low-work deferred subblock header %s -- peer fallback limit reached.\n",
                     entry.header.GetHash().ToString());
             }
-            else if (result == CUnconnectedSubblockHeaderCache::AddResult::FALLBACK_GLOBAL_LIMIT)
+            else if (result == CSubblockHeaderCache::AddResult::FALLBACK_GLOBAL_LIMIT)
             {
                 LOG(NET, "Ignoring low-work deferred subblock header %s -- global fallback limit reached.\n",
                     entry.header.GetHash().ToString());
@@ -2043,8 +2049,8 @@ bool ProcessMessage(CNode *pfrom,
                 // Serialize the subblock accept/defer decision with summary-header acceptance below. Otherwise a
                 // summary thread can scan the deferred map after AcceptBlockHeader() reports missing context but
                 // before this thread stores the header, leaving the subblock stranded with no later replay event.
-                LOCK(csUnconnectedHeaders);
-                unconnectedSubblockHeaders.Expire(receiptTime, UNCONNECTED_HEADERS_TIMEOUT);
+                LOCK(subblockHeaders.cs_headersCache);
+                subblockHeaders.Expire(receiptTime, UNCONNECTED_HEADERS_TIMEOUT);
                 for (auto &header : headers)
                 {
                     // Save any summary block headers to a temporary vector to be
@@ -2110,7 +2116,7 @@ bool ProcessMessage(CNode *pfrom,
         CBlockIndex *pindexLast = nullptr;
         // Retained subblock headers whose base summary just became known; collected under
         // csUnconnectedHeaders below, then accepted+fetched off the lock.
-        std::vector<CUnconnectedSubblockHeaderCache::Entry> vReadySubblocks;
+        std::vector<CSubblockHeaderCache::Entry> vReadySubblocks;
         {
             // We need to handle appending the header and analyzing the unconnected ones sequentially, or
             // 2 simultaneously processed header messages may cause an out of order header to not be reconnected
@@ -2285,7 +2291,7 @@ bool ProcessMessage(CNode *pfrom,
 
             // A summary we just accepted may be the base of subblock headers we retained earlier.
             // Collect the now-connectable ones here; accept + fetch them below, off the lock.
-            auto cachedReady = unconnectedSubblockHeaders.ExtractReady(
+            auto cachedReady = subblockHeaders.ExtractReady(
                 [](const CBlockHeader &header) { return LookupBlockIndex(header.hashPrevBlock) != nullptr; });
             vReadySubblocks.insert(vReadySubblocks.end(), cachedReady.begin(), cachedReady.end());
 
