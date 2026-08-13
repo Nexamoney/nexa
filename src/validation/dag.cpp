@@ -1459,31 +1459,6 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
     std::set<uint256> setAllLinked;
     while (true)
     {
-        // Make sure to remove any blocks from the summary block orphan map that are already connected before
-        // we process the subblock orphans since the connecting subblock orphans depends on whether there
-        // exists a connected summary block.
-        for (auto iter = mapSummaryBlocksUnlinked.begin(); iter != mapSummaryBlocksUnlinked.end();)
-        {
-            const ConstCBlockRef &pblock = iter->second;
-            CBlockIndex *pindex = LookupBlockIndex(pblock->GetHash());
-            bool fBlockAlreadyConnected = false;
-            if (pindex)
-            {
-                // A next-epoch subblock can create a grove rooted at this hash before the summary validates.
-                // Script validity is only raised after ConnectBlock() succeeds.
-                READLOCK(cs_mapBlockIndex);
-                fBlockAlreadyConnected = pindex->IsValid(BLOCK_VALID_SCRIPTS);
-            }
-            if (fBlockAlreadyConnected)
-            {
-                iter = mapSummaryBlocksUnlinked.erase(iter);
-            }
-            else
-            {
-                iter++;
-            }
-        }
-
         // Process subblock orphans
         std::set<uint256> setLinked;
 
@@ -1576,10 +1551,24 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
         // NOTE: we don't add the summary block to setLinked because block processing doesn't
         // finish in this thread so we can't be sure it's linked.  It will instead get announced
         // once the block successfully connects to the blockchain.
-        bool fLinkedASummaryBlock = false;
+        bool fResolvedSummaryOrphan = false;
+        auto summaryBlockValidated = [](const uint256 &hash)
+        {
+            CBlockIndex *pindex = LookupBlockIndex(hash);
+            if (!pindex)
+                return false;
+            READLOCK(cs_mapBlockIndex);
+            return pindex->IsValid(BLOCK_VALID_SCRIPTS);
+        };
         for (auto iter2 = mapSummaryBlocksUnlinked.begin(); iter2 != mapSummaryBlocksUnlinked.end();)
         {
+            const uint256 hash = iter2->first;
             const ConstCBlockRef pblock = iter2->second;
+            if (summaryBlockValidated(hash))
+            {
+                iter2 = mapSummaryBlocksUnlinked.erase(iter2);
+                continue;
+            }
             {
                 // Get all mining hashes from the "full" dag that exists on top of
                 // the prevhash of this Summary Block.  Then Check if all
@@ -1619,9 +1608,10 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
                 LOG(DAG, "%s(): Processing Summary block orphan %s", __func__, iter2->first.ToString());
                 if (fHaveSubblocks)
                 {
-                    mapSummaryBlocksUnlinked.erase(iter2);
                     LEAVE_CRITICAL_SECTION(cs_forest);
 
+                    bool fProcessed = false;
+                    CValidationState state;
                     // locking cs_main here prevents any other thread from starting a block validation.
                     {
                         // maintain locking order with cs_forest.
@@ -1638,19 +1628,27 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
                         LOCK(cs_forest);
 
                         bool forceProcessing = true;
-                        CValidationState state;
-                        ProcessSummaryBlock(
+                        fProcessed = ProcessSummaryBlock(
                             state, Params(), nullptr, pblock, forceProcessing, nullptr, SINGLE_THREADED);
-                        LOG(DAG, "%s(): Done processing new block and connected an orphaned summary block", __func__);
+                        LOG(DAG, "%s(): Done processing orphaned summary block %s with result %s", __func__,
+                            hash.ToString(), fProcessed ? "success" : "failure");
                     }
                     ENTER_CRITICAL_SECTION(cs_forest);
 
-                    // Because we dropped the lock and took it again the iteration may now
-                    // have been invalidated by some other thread so set the iterator to the
-                    // beginning again. While theoretically it could be a very small performance
-                    // hit, in reality it's unlikely there will even be any other entries in the map
-                    // to process anyway.
-                    fLinkedASummaryBlock = true;
+                    // The map may have changed while cs_forest was released, so erase by hash rather than using
+                    // the stale iterator. Definitively invalid entries cannot become valid by retrying, while a
+                    // non-invalid failure may only be deferred and must stay queued for a later ProcessOrphans()
+                    // call. ClearByHeight() eventually bounds entries that never complete.
+                    if (fProcessed || state.IsInvalid() || summaryBlockValidated(hash))
+                    {
+                        mapSummaryBlocksUnlinked.erase(hash);
+                        fResolvedSummaryOrphan = true;
+                    }
+                    else
+                    {
+                        LOG(DAG, "%s(): Retaining summary block orphan %s for another validation attempt", __func__,
+                            hash.ToString());
+                    }
                     break;
                 }
                 else
@@ -1673,7 +1671,7 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
         {
             setAllLinked.insert(setLinked.begin(), setLinked.end());
         }
-        else if (!fLinkedASummaryBlock)
+        else if (!fResolvedSummaryOrphan)
         {
             break;
         }

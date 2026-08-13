@@ -2124,6 +2124,9 @@ BOOST_AUTO_TEST_CASE(summary_orphan_survives_descendant_grove)
         GenerateMinerData(tailstormK, summarySubblockNodes, chain.olderHash);
     CBlockHeader currentHeader =
         MakeTestSummaryHeader(chain.previousHash, 2, chain.previousSummary.chainWork(), 100, minerData);
+    // Make the eventual processing attempt fail CheckBlockHeader() without violating
+    // the preconditions of GetHash(), which is needed to register the test block.
+    currentHeader.nonce.resize(CBlockHeader::MAX_NONCE_SIZE + 1);
     CBlockIndex currentSummary(currentHeader);
     currentSummary.pprev = &chain.previousSummary;
     currentSummary.nStatus |= BLOCK_PROCESSED | BLOCK_HAVE_DATA | BLOCK_LINKED;
@@ -2154,6 +2157,47 @@ BOOST_AUTO_TEST_CASE(summary_orphan_survives_descendant_grove)
     }
 
     BOOST_CHECK_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 1);
+
+    // Once all committed subblocks arrive, processing is attempted. A
+    // definitively invalid summary is removed instead of being retried.
+    for (size_t i = 1; i < summarySubblocks.size(); ++i)
+        BOOST_REQUIRE(tailstormForest.Insert(summarySubblocks[i]));
+    {
+        LOCK(tailstormForest.cs_forest);
+        tailstormForest.ProcessOrphans();
+    }
+    BOOST_CHECK_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 0);
+
+    // Independent validation makes the retry entry unnecessary even if this
+    // ProcessOrphans() call was not the one that validated the summary.
+    CBlockHeader validatedHeader =
+        MakeTestSummaryHeader(chain.previousHash, 2, chain.previousSummary.chainWork(), 101, minerData);
+    CBlockIndex validatedSummary(validatedHeader);
+    validatedSummary.pprev = &chain.previousSummary;
+    validatedSummary.nStatus |= BLOCK_PROCESSED | BLOCK_HAVE_DATA | BLOCK_LINKED;
+    {
+        WRITELOCK(cs_mapBlockIndex);
+        BOOST_REQUIRE(validatedSummary.RaiseValidity(BLOCK_VALID_SCRIPTS));
+    }
+    const uint256 validatedHash = validatedHeader.GetHash();
+    ScopedBlockIndexEntry validatedEntry(validatedHash, &validatedSummary);
+    ConstCBlockRef validatedBlock = std::make_shared<const CBlock>(validatedHeader);
+    tailstormForest.AddSummaryBlockOrphan(validatedBlock);
+    BOOST_REQUIRE_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 1);
+    {
+        LOCK(tailstormForest.cs_forest);
+        tailstormForest.ProcessOrphans();
+    }
+    BOOST_CHECK_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 0);
+
+    // Age-based cleanup remains a backstop for retained entries.
+    tailstormForest.AddSummaryBlockOrphan(currentBlock);
+    BOOST_REQUIRE_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 1);
+    {
+        LOCK(tailstormForest.cs_forest);
+        tailstormForest.ClearByHeight(currentBlock->height);
+    }
+    BOOST_CHECK_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 0);
 }
 
 BOOST_AUTO_TEST_CASE(unprocessed_ancestor_parks_child_during_reorg_gap)
