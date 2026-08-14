@@ -11,7 +11,7 @@
     * [testnet and regtest modes](#testnet-and-regtest-modes)
     * [DEBUG_LOCKORDER](#debug_lockorder)
     * [Memory Profiling](#memory-profiling)
-  * [Locking/mutex usage notes](#locking/mutex-usage-notes)
+  * [Locking/mutex usage notes](#lockingmutex-usage-notes)
     * [Lockorders](#lockorders-within-the-nexa-full-node)
   * [Threads](#threads)
   * [Ignoring IDE/editor files](#ignoring-ide/editor-files)
@@ -295,6 +295,12 @@ read from left to right.
 NOTE: the TX_ADMISSION_PAUSE is actually a CORRAL but it behaves very much like a lock
 so the ordering must also be maintained along with traditional locks.
 
+NOTE: cs_reorg is only ever taken with TRY_LOCK, by CTailstormForest::CheckForReorg(), and it is
+taken before cs_main. Do not call CheckForReorg() while holding cs_forest: the pass it runs takes cs_main
+and then cs_forest, so a caller that already holds cs_forest ends up taking those two in the order
+cs_forest -> cs_main, the reverse of the cs_main -> cs_forest ordering listed below, and will deadlock
+against any thread holding cs_main and waiting on cs_forest. CheckForReorg() enforces this
+with AssertLockNotHeld(cs_forest).
 
 - cs_vrecv -> csmain -> cs_vsend -> cs_orphanpool -> cs_xval -> cs_txmempool
 - csMiningCandidate -> cs_main
@@ -323,6 +329,7 @@ so the ordering must also be maintained along with traditional locks.
 - cs_forest-> cs_txmempool
 - cs_main-> cs_forest -> cs_blockvalidationthread-> TX_ADMISSION_PAUSE -> cs_vNodes
 - cs_blockcache -> cs_chainLock
+- cs_reorg -> cs_main -> cs_forest
 
 
 ## Threads
