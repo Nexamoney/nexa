@@ -838,11 +838,13 @@ bool LoadBlockIndexDB()
         {
             pindex->nStatus |= BLOCK_FAILED_VALID; // block doesn't match checkpoints so invalid
             pindex->nStatus &= ~BLOCK_VALID_CHAIN;
+            setDirtyBlockIndex.insert(pindex);
         }
         if ((pindex->pprev) && (pindex->pprev->nStatus & BLOCK_FAILED_MASK))
         {
             // if the parent is invalid I am too
             pindex->nStatus |= BLOCK_FAILED_CHILD;
+            setDirtyBlockIndex.insert(pindex);
         }
         CBlockIndex *pBestHeader = pindexBestHeader.load();
         if ((pBestHeader == nullptr || pindex->chainWork() >= pBestHeader->chainWork()) &&
@@ -1933,6 +1935,7 @@ CBlockIndex *FindMostWorkChain()
                 if (fFailedChain)
                 {
                     pindexFailed->nStatus |= BLOCK_FAILED_CHILD;
+                    setDirtyBlockIndex.insert(pindexFailed);
                 }
                 else if (fMissingData)
                 {

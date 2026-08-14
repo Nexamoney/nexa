@@ -1807,7 +1807,7 @@ void MarkAllContainingChainsInvalid(CBlockIndex *invalidBlock)
 {
     bool dirty = false;
     {
-        READLOCK(cs_mapBlockIndex);
+        WRITELOCK(cs_mapBlockIndex);
         DbgAssert(invalidBlock->nStatus & BLOCK_FAILED_MASK, return);
 
         // Find all the chain tips:
@@ -1841,11 +1841,12 @@ void MarkAllContainingChainsInvalid(CBlockIndex *invalidBlock)
             {
                 for (CBlockIndex *blk = tip; blk != invalidBlock; blk = blk->pprev)
                 {
+                    auto oldStatus = blk->nStatus;
                     blk->nStatus |= BLOCK_FAILED_VALID;
+                    blk->nStatus |= BLOCK_FAILED_CHILD;
 
-                    if ((blk->nStatus & BLOCK_FAILED_CHILD) == 0)
+                    if (blk->nStatus != oldStatus)
                     {
-                        blk->nStatus |= BLOCK_FAILED_CHILD;
                         setDirtyBlockIndex.insert(blk);
                         dirty = true;
                     }
