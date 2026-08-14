@@ -875,7 +875,11 @@ std::string trimmed(const std::string &s)
 #include <sys/syscall.h>
 #include <sys/types.h>
 #endif
-bool pauseOnDbgAssert = true;
+// Pausing the failing thread lets a developer attach gdb to it, which is what you want at a
+// workstation. Where nobody can attach the paused thread just holds its locks until something times
+// out, and the abort that would have produced a core never runs, so setting NEXA_DBG_NO_PAUSE (the
+// CI does, see .gitlab-ci.yml) skips the pause and lets the assert abort.
+bool pauseOnDbgAssert = (getenv("NEXA_DBG_NO_PAUSE") == nullptr);
 std::mutex dbgPauseMutex;
 std::condition_variable dbgPauseCond;
 void DbgPause()

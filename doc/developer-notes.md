@@ -232,6 +232,25 @@ can be very difficult to track down. Compiling with -DDEBUG_LOCKORDER (configure
 CXXFLAGS="-DDEBUG_LOCKORDER -g") inserts run-time checks to keep track of which locks
 are held, and adds warnings to the debug.log file if inconsistencies are detected.
 
+A failed AssertLockHeld() or AssertLockNotHeld() prints the locks that the thread is actually
+holding, and then throws.  An `--enable-debug` build turns on DEBUG_ASSERTION and DEBUG_PAUSE as
+well, and there the failing thread is first parked in DbgPause() with its locks still held, so that
+a debugger can be attached to the stopped process:
+
+```
+!!! Process 1060734, Thread 1060754 (7fa095ffb700) paused !!!
+```
+```bash
+gdb -p 1060734
+(gdb) thread apply all bt
+(gdb) call DbgResume()
+```
+
+Nothing releases that thread on its own, so a run with nobody at the keyboard hangs instead of
+failing.  Set NEXA_DBG_NO_PAUSE to skip the pause and let the assertion abort: the CI sets it for
+every job (see .gitlab-ci.yml) so that a failure is reported straight away and leaves a core file
+behind.
+
 ### Memory Profiling
 
 *Currently only available on Linux*

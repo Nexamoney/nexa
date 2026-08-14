@@ -32,6 +32,12 @@ workflow:
 default:
     interruptible: true
 
+# A failed DbgAssert in an --enable-debug build parks the failing thread in DbgPause() so that a
+# developer can attach gdb to it. No one can attach here, so the job would hang until it times out
+# and the core dump collected below would never be written. Let the assert abort instead.
+variables:
+    NEXA_DBG_NO_PAUSE: "1"
+
 # nice overview of tasks dependency in gitalb CI
 # https://www.reddit.com/r/gitlab/comments/1bqzxba/comment/kx61xuc/
 # (archived: https://archive.is/NYGlN)

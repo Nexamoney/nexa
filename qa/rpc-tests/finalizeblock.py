@@ -11,6 +11,11 @@ import logging
 logging.getLogger().setLevel(logging.INFO)
 
 # Give more time in slow CI machines than for developer's machines.
+# $CI env variable is available for all jobs executed in CI/CD.
+# Is set to true when available.
+# see https://docs.gitlab.com/ci/variables/predefined_variables/
+# TODO: evaluate tif it would be better to use NEXA_DBG_NO_PAUSE
+# which is something we control directly.
 waitTime = 60 if os.getenv("CI") == "true" else 10
 
 class MaxReorgTest(BitcoinTestFramework):
