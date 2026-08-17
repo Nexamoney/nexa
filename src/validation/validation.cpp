@@ -1904,7 +1904,12 @@ CBlockIndex *FindMostWorkChain()
         // follow the chain all the way back to where it joins the current active chain.
         while (pindexTest && !chainActive.Contains(pindexTest) && pindexTest->height() > 0)
         {
-            assert(pindexTest->IsLinked());
+            if (!pindexTest->IsLinked())
+            {
+                DbgAssert(false, );
+                fFailedChain = true;
+                break;
+            }
 
             // Pruned nodes may have entries in setBlockIndexCandidates for
             // which block files have been deleted.  Remove those as candidates
@@ -1929,7 +1934,7 @@ CBlockIndex *FindMostWorkChain()
             if (fFailedChain && (pBestInvalid == nullptr || pindexNew->chainWork() > pBestInvalid->chainWork()))
                 pindexBestInvalid = pindexNew;
             CBlockIndex *pindexFailed = pindexNew;
-            // Remove the entire chain from the set.
+            // Remove the chain from the tip to the problem block from the set.
             while (pindexTest != pindexFailed)
             {
                 if (fFailedChain)
@@ -1939,8 +1944,23 @@ CBlockIndex *FindMostWorkChain()
                 }
                 else if (fMissingData)
                 {
-                    pindexFailed->nStatus &= ~BLOCK_LINKED;
+                    // Note: do NOT clear the BLOCK_LINKED on pindexFailed here,
+                    // or you will hit the assertion in the above while on subsequent runs.
+                    // And we should not clear truths about the block (like its linked state) just because some other
+                    // issue happened.
+
+                    // Block can't have been processed or its tx be checked because there's a problem with an ancestor
+                    DbgAssert(!pindexFailed->processed(), );
+                    DbgAssert(!pindexFailed->IsValid(BLOCK_VALID_TRANSACTIONS), );
+                    // Correct improperly set processed bit, and validity enum
+                    // The processed bit and the validity state must be consistent or we will hit an assertion
+                    // elsewhere in the code.
                     pindexFailed->nStatus &= ~BLOCK_PROCESSED;
+                    if (pindexFailed->IsValid(BLOCK_VALID_TRANSACTIONS))
+                    {
+                        pindexFailed->nStatus &= ~BLOCK_VALID_MASK;
+                        pindexFailed->nStatus |= BLOCK_VALID_TREE;
+                    }
                     setDirtyBlockIndex.insert(pindexFailed);
                 }
                 setBlockIndexCandidates.erase(pindexFailed);

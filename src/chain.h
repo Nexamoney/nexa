@@ -225,7 +225,7 @@ public:
     //! Access the nonce as committed in the block header
     const std::vector<unsigned char> nonce() const { return GetBlockHeader().nonce; }
 
-    //! Return true if this block has been processed */
+    /** Return true if this block has been processed */
     bool processed() const { return ((nStatus & BLOCK_PROCESSED) != 0); }
 
     //! Return true if this block was linked to the previous one in the chain and therefore
