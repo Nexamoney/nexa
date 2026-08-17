@@ -1330,13 +1330,15 @@ def mine_large_block(node, utxos=None):
     # generate a 66k transaction,
     # and 14 of them is close to the 1MB block limit
     num = 14
+    # imported here rather than at module scope because blocktools imports this module
+    from .blocktools import gen_return_txouts, create_lots_of_big_transactions
     txouts = gen_return_txouts()
     utxos = utxos if utxos is not None else []
     if len(utxos) < num:
         utxos.clear()
         utxos.extend(node.listunspent())
     fee = 100 * node.getnetworkinfo()["relayfee"]
-    create_lots_of_big_transactions(node, txouts, utxos, num, fee=fee)
+    create_lots_of_big_transactions(node, txouts, utxos, num, feePerKb=fee)
     node.generate(1)
 
 def get_bip9_status(node, key):
