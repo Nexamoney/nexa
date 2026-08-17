@@ -540,11 +540,9 @@ void CParallelValidation::HandleBlockMessage(CNode *pfrom, const string &strComm
             }
         }
 
-        // If we couldn't get a validation thread and this is a tailstorm subblock
-        // then we have to save it to dag map so it can be processed later as an
-        // orphan and if it's a summary block then just add it directly to the summary
+        // If we couldn't get a validation thread and this is a tailstorm
+        // tailstorm summary block then just add it directly to the summary
         // block orphan map.
-
         if (IsTailstormSummaryBlock(pblock))
         {
             LOG(DAG, "%s(): Did not get validation thread for %s - storing summary block orphan", __func__,
@@ -558,25 +556,7 @@ void CParallelValidation::HandleBlockMessage(CNode *pfrom, const string &strComm
         // processing will complete.
         //
         // Check for any orphaned blocks or summary blocks and connected them if possible.
-        std::set<uint256> setToAnnounce;
-        {
-            LOCK(tailstormForest.cs_forest);
-            setToAnnounce = tailstormForest.ProcessOrphans();
-            // Check for subblocks to prune
-            PruneSubblocks(pblock);
-        }
-
-        // Check that we're on the best dag and if not then
-        // initiate a re-org over to the summary block that has
-        // the best dag connected to it.
-        //
-        // NOTE: you can not put this call to CheckForReorg() in the above
-        // code block where the cs_forest lock is taken. This will cause
-        // a lockorder issue with cs_main.
-        {
-            tailstormForest.CheckForReorg();
-            tailstormForest.Check();
-        }
+        TailstormPostBlockProcessing(pblock);
     }
 }
 
@@ -779,25 +759,8 @@ void HandleBlockMessageThread(CNodeRef noderef, const string strCommand, ConstCB
         // Perform tailstorm related function for connecting orphans and initiating
         // potential re-orgs.
         //
-        // Check for any orphaned blocks or summary blocks and connected them if possible.
-        {
-            LOCK(tailstormForest.cs_forest);
-            tailstormForest.ProcessOrphans();
-            // Check for subblocks to prune
-            PruneSubblocks(pblock);
-        }
-
-        // Check that we're on the best dag and if not then
-        // initiate a re-org over to the summary block that has
-        // the best dag connected to it.
-        //
-        // NOTE: you can not put this call to CheckForReorg() in the above
-        // code block where the cs_forest lock is taken. This will cause
-        // a lockorder issue with cs_main.
-        {
-            tailstormForest.CheckForReorg();
-            tailstormForest.Check();
-        }
+        // Check for any orphaned blocks or summary blocks and connect them if possible.
+        TailstormPostBlockProcessing(pblock);
     }
     catch (const std::exception &e)
     {

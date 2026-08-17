@@ -12,6 +12,7 @@
 extern CChain chainActive;
 extern CBlockIndex *pindexBestHeader;
 extern std::atomic<bool> forceTemplateRecalc;
+extern CTailstormForest tailstormForest;
 
 /**
    Subblocks are not stored persistently.  They are just stored here in RAM.
@@ -303,4 +304,28 @@ std::set<uint256> GetSubblockHashes(const CBlockHeader &header)
         }
     }
     return setPrevHashes;
+}
+
+void TailstormPostBlockProcessing(ConstCBlockRef pblock)
+{
+    // Check for any orphaned blocks or summary blocks and connected them if possible.
+    {
+        LOCK(tailstormForest.cs_forest);
+        tailstormForest.ProcessOrphans();
+
+        // Check for subblocks to prune
+        PruneSubblocks(pblock);
+    }
+
+    // Check that we're on the best dag and if not then
+    // initiate a re-org over to the summary block that has
+    // the best dag connected to it.
+    //
+    // NOTE: you can not put this call to CheckForReorg() in the above
+    // code block where the cs_forest lock is taken. This will cause
+    // a lockorder issue with cs_main.
+    {
+        tailstormForest.CheckForReorg();
+        tailstormForest.Check();
+    }
 }

@@ -205,7 +205,8 @@ bool ActivateBestChainSummaryBlocks(CValidationState &state,
     const CChainParams &chainparams,
     CBlockIndex *pindexMostWork,
     ConstCBlockRef pblock,
-    bool fParallel);
+    bool fParallel,
+    bool fDag);
 
 /**
  * Process an incoming block. This only returns after the best known valid

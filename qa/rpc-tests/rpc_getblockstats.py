@@ -17,7 +17,11 @@ import os
 import logging
 import decimal
 
+from test_framework.util import *
 TESTSDIR = os.path.dirname(os.path.realpath(__file__))
+
+# Give more time in slow CI machines than for developer's machines.
+waitTime = 60 if os.getenv("CI") == "true" else 10
 
 def EncodeDecimal(o):
     if isinstance(o, decimal.Decimal):
@@ -57,22 +61,22 @@ class GetblockstatsTest(BitcoinTestFramework):
         return stats
 
     def generate_test_data(self, filename):
-        mocktime = 1627137636
+        mocktime = 1776765080
         self.nodes[0].setmocktime(mocktime)
         self.nodes[0].generate(101)
 
         subtractfeefromamount = True
-        self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), 100, "", "", subtractfeefromamount)
+        self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), 100000, "", "", subtractfeefromamount)
+        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 1)
         self.nodes[0].generate(1)
-        self.sync_all()
 
-        self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), 100, "", "", subtractfeefromamount)
+        self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), 100000, "", "", subtractfeefromamount)
         subtractfeefromamount = False
-        self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), 100, "", "", subtractfeefromamount)
-        self.nodes[0].settxfee(300)
+        self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), 100000, "", "", subtractfeefromamount)
+        self.nodes[0].set("wallet.payTxFee=3000")
         subtractfeefromamount = True
-        self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), 100.1, "", "", subtractfeefromamount)
-        self.sync_all()
+        self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), 100000.1, "", "", subtractfeefromamount)
+        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 3)
         self.nodes[0].generate(1)
 
         self.expected_stats = self.get_stats()
@@ -106,9 +110,14 @@ class GetblockstatsTest(BitcoinTestFramework):
         self.nodes[0].setmocktime(mocktime)
         self.sync_all()
 
+        it = 0
         for b in blocks:
-            self.nodes[0].submitblock(b)
-
+            ret = self.nodes[0].submitblock(b)
+            if it == 0: # trying to submit the genesis block
+                assert(ret == "duplicate")
+            else:
+                assert(ret["result"] == None)
+            it = it + 1
 
     def run_test(self):
         test_data = os.path.join(TESTSDIR, self.options.test_data)
