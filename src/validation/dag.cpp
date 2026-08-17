@@ -351,6 +351,9 @@ std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &setBestDag,
     return setTxnExclusions;
 }
 
+bool IsTailstormDagActivated() { return fTailstormEnabled && IsInitialSyncComplete(); }
+
+
 // Tailstorm Tree
 
 CTailstormTree::~CTailstormTree()
@@ -2168,7 +2171,7 @@ void CTailstormForest::CheckForReorg()
 
             CValidationState state;
             const CChainParams &chainparams = Params();
-            if (!ActivateBestChainSummaryBlocks(state, chainparams, pindexMostWork, nullptr, SINGLE_THREADED))
+            if (!ActivateBestChainSummaryBlocks(state, chainparams, pindexMostWork, nullptr, SINGLE_THREADED, true))
             {
                 if (startingChainTip == chainActive.Tip())
                     LOG(DAG, "%s():  failed to reorg to %s", __func__, pindexMostWork->phashBlock->ToString());

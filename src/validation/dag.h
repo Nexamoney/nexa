@@ -52,6 +52,9 @@ void FindDagConflicts(const std::vector<CTreeNodeRef> &vOtherSubblocks,
     std::vector<std::map<uint256, CTreeNodeRef> > &vDoubleSpendTxns,
     std::set<CTreeNodeRef> *setConflictingSubblocks = nullptr);
 
+// Is the tailstorm dag activated and ready to receive subblocks
+bool IsTailstormDagActivated();
+
 class CTreeNode
 {
 public:
@@ -400,7 +403,7 @@ public:
 
 extern CTailstormForest tailstormForest;
 
-// Helper Function: Get the current best dag tip for mining on top of
+//! Helper Function: Get the current best dag tip for mining on top of
 uint256 GetActiveDagTip(std::set<CTreeNodeRef> &dag);
 
 #endif

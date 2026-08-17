@@ -4116,7 +4116,8 @@ bool ActivateBestChainSummaryBlocks(CValidationState &state,
     const CChainParams &chainparams,
     CBlockIndex *pindexMostWork,
     ConstCBlockRef pblock,
-    bool fParallel)
+    bool fParallel,
+    bool fDag)
 {
     if (!pindexMostWork)
         return false;
@@ -4138,6 +4139,12 @@ bool ActivateBestChainSummaryBlocks(CValidationState &state,
 
     while (chainActive.Tip() && chainActive.Tip() != pindexFork)
     {
+        // When NOT calling from withing the tailstorm dag we MUST NOT initiate a reorg
+        // after the initial sync is complete otherwise we could end up trying to reorg
+        // to a chain that doesn't necessarily have all the expected subblocks.
+        if (IsTailstormDagActivated() && !fDag)
+            return false;
+
         // Indicate that this thread has now initiated a re-org
         LOCK(tailstormForest.cs_forest); // maintain locking order
         LOCK(PV->cs_blockvalidationthread);
@@ -4444,7 +4451,7 @@ bool _ActivateBestChain(CValidationState &state,
                 // this block has enough work to advance the tip.
                 if (pindexMostWork->chainWork() <= pindexOldTip->chainWork())
                 {
-                    state.Error("Not enough work to advance tip");
+                    LOG(BLK, "Not enough work to advance tip");
                     return false;
                 }
             }
@@ -4472,7 +4479,7 @@ bool _ActivateBestChain(CValidationState &state,
         }
 
         if (!ActivateBestChainSummaryBlocks(state, chainparams, pindexMostWork,
-                ((pblock) && pblock->GetHash() == pindexMostWork->GetBlockHash() ? pblock : nullptr), fParallel))
+                ((pblock) && pblock->GetHash() == pindexMostWork->GetBlockHash() ? pblock : nullptr), fParallel, false))
         {
             // If we fail to activate a chain because it is bad, send a reject message
             // but keep iterating to reactivate the best known chain.
@@ -4510,7 +4517,7 @@ bool _ActivateBestChain(CValidationState &state,
         pindexMostWork = FindMostWorkChain();
         if (!pindexMostWork)
         {
-            state.Error("Best chain changed while processing this block");
+            LOG(PARALLEL, "Best chain changed while processing this block");
             return false;
         }
         pblock.reset();

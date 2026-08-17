@@ -54,4 +54,7 @@ std::set<uint256> GetPrevHashes(const CBlockHeader &header);
  */
 std::set<uint256> GetSubblockHashes(const CBlockHeader &header);
 
+/** process the dag orphans and check for reorgs after a block is mined or received */
+void TailstormPostBlockProcessing(ConstCBlockRef pblock);
+
 #endif

@@ -126,6 +126,11 @@ UniValue generateBlocks(boost::shared_ptr<CReserveScript> coinbaseScript,
     auto p = Params().GetConsensus();
     while (nCount < nGenerate)
     {
+        if (shutdown_threads.load() == true)
+        {
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Mining stopped because node is shutting down");
+        }
+
         std::unique_ptr<CBlockTemplate> pblocktemplate;
         {
             LOCK(cs_main); // cs_main is taken here because it is taken again later in CreateNewBlock()
@@ -168,9 +173,16 @@ UniValue generateBlocks(boost::shared_ptr<CReserveScript> coinbaseScript,
             PV->StopAllSummaryBlockValidationThreads(pblock->GetBlockHeader().nBits);
 
             CValidationState state;
-            if (!ProcessSummaryBlock(state, Params(), nullptr, pblock, true, nullptr, SINGLE_THREADED))
-                throw JSONRPCError(RPC_INTERNAL_ERROR, "ProcessSummaryBlock, block not accepted");
+            bool fAccepted = ProcessSummaryBlock(state, Params(), nullptr, pblock, true, nullptr, SINGLE_THREADED);
+            if (state.IsInvalid() || state.IsError())
+            {
+                throw JSONRPCError(RPC_INTERNAL_ERROR,
+                    strprintf("ProcessSummaryBlock failed: %s at height %ld reason: %s", pblock->GetHash().GetHex(),
+                        pblock->height, state.GetRejectReason().c_str()));
+            }
 
+            // Check for any orphaned blocks or summary blocks and connect them if possible.
+            TailstormPostBlockProcessing(pblock);
 
             // mark script as important because it was used at least for one coinbase output if the script came from the
             // wallet
@@ -959,6 +971,13 @@ UniValue SubmitBlock(ConstCBlockRef pblock, CValidationState &state)
         {
             PV->StopAllSummaryBlockValidationThreads(pblock->nBits);
             fAccepted = ProcessSummaryBlock(state, Params(), nullptr, pblock, true, nullptr, SINGLE_THREADED);
+
+            // Check for any orphaned blocks or summary blocks and connect them if possible.
+            //
+            // We don't do any checking for IsError() or IsInvalid() here becuase that's handled and the end
+            // in Bip22ValidationResult().
+            if (state.IsValid())
+                TailstormPostBlockProcessing(pblock);
         }
     }
 
