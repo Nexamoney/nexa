@@ -1983,13 +1983,35 @@ void CTailstormForest::CheckForReorg()
     if (!fTailstormEnabled)
         return;
 
+    // Record this request before trying the lock. An in-flight pass consumes requests that arrive
+    // before its state snapshot. Requests arriving later remain pending after that iteration
+    // releases cs_reorg and cause another caller, or the same thread, to run a fresh pass.
+    fRecheckReorg = true;
+
     // Only allow one thread to run re-org at a time.
-    TRY_LOCK(cs_reorg, lock);
-    if (!lock)
-        return;
+    while (fRecheckReorg)
+    {
+        TRY_LOCK(cs_reorg, lock);
+        if (!lock)
+        {
+            // Another pass owns cs_reorg. This request remains pending until that pass reaches its
+            // state snapshot or a thread acquires cs_reorg for a subsequent iteration.
+            return;
+        }
+        _CheckForReorg();
+    }
+}
+
+void CTailstormForest::_CheckForReorg()
+{
+    AssertLockHeld(cs_reorg);
 
     LOCK(cs_main);
     LOCK(cs_forest);
+
+    // Requests received before this point are covered by the state snapshot below.
+    // A later request leaves the flag set and causes another serialized pass.
+    fRecheckReorg = false;
 
     CTailstormGroveRef grovetip = nullptr;
     CBlockIndex *startingChainTip = chainActive.Tip();

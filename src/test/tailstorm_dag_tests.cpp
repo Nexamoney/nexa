@@ -13,6 +13,9 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <chrono>
+#include <thread>
+
 using namespace std;
 
 class CTailstormForestTest
@@ -24,6 +27,10 @@ public:
         LOCK(forest.cs_forest);
         forest.mapAllGrovesByNode.emplace(hash, grove);
     }
+
+    static bool RecheckPending(CTailstormForest &forest) { return forest.fRecheckReorg; }
+
+    static void SetRecheckPending(CTailstormForest &forest, bool fPending) { forest.fRecheckReorg = fPending; }
 
     static size_t SummaryOrphanCount(CTailstormForest &forest)
     {
@@ -2233,6 +2240,57 @@ BOOST_AUTO_TEST_CASE(unprocessed_ancestor_parks_child_during_reorg_gap)
     BOOST_CHECK_EQUAL(child->nSequenceId, 2);
     BOOST_CHECK(!child->fProcessed);
     BOOST_CHECK(!parent->fProcessed);
+}
+
+// Requests received while a pass is waiting for the protected state are covered by that pass. The
+// request flag must remain pending until the pass acquires the state locks and takes its snapshot.
+BOOST_AUTO_TEST_CASE(checkforreorg_consumes_request_at_state_snapshot)
+{
+    fTailstormEnabled.store(true);
+
+    bool fHolderOwnsReorgLock = false;
+    std::thread holder;
+    {
+        // Hold cs_main so the holder thread blocks inside its first pass while owning cs_reorg.
+        LOCK(cs_main);
+
+        CTailstormForestTest::SetRecheckPending(tailstormForest, true);
+        holder = std::thread([] { tailstormForest.CheckForReorg(); });
+
+        // Probe cs_reorg without holding cs_main in the probing thread. Once the probe fails, the
+        // holder owns cs_reorg and is blocked waiting for the state lock held above.
+        std::thread probe([&fHolderOwnsReorgLock] {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                {
+                    TRY_LOCK(tailstormForest.cs_reorg, probeLock);
+                    if (!probeLock)
+                    {
+                        fHolderOwnsReorgLock = true;
+                        return;
+                    }
+                }
+                MilliSleep(1);
+            }
+        });
+        probe.join();
+
+        // The pass has not observed the protected state yet, so neither the original nor this
+        // concurrent request should have been consumed.
+        BOOST_CHECK(fHolderOwnsReorgLock);
+        BOOST_CHECK(CTailstormForestTest::RecheckPending(tailstormForest));
+        if (fHolderOwnsReorgLock)
+        {
+            tailstormForest.CheckForReorg();
+            BOOST_CHECK(CTailstormForestTest::RecheckPending(tailstormForest));
+        }
+    }
+    holder.join();
+
+    // The pass consumed the coalesced requests immediately before taking its state snapshot.
+    BOOST_CHECK(!CTailstormForestTest::RecheckPending(tailstormForest));
+    fTailstormEnabled.store(false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
