@@ -2173,13 +2173,6 @@ void CTailstormForest::_CheckForReorg()
             pindexMostWork->phashBlock->ToString(), pindexMostWork->height());
 
         {
-            // If there is a reorg currently happening within PV, then we must terminate it by
-            // killing all currently running validation threads
-            if (PV && PV->IsReorgInProgress())
-            {
-                PV->StopAllValidationThreads();
-            }
-
             TxAdmissionPause txlock;
 
             if (startingChainTip != chainActive.Tip())
