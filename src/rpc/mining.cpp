@@ -173,7 +173,7 @@ UniValue generateBlocks(boost::shared_ptr<CReserveScript> coinbaseScript,
             PV->StopAllSummaryBlockValidationThreads(pblock->GetBlockHeader().nBits);
 
             CValidationState state;
-            bool fAccepted = ProcessSummaryBlock(state, Params(), nullptr, pblock, true, nullptr, SINGLE_THREADED);
+            ProcessSummaryBlock(state, Params(), nullptr, pblock, true, nullptr, SINGLE_THREADED);
             if (state.IsInvalid() || state.IsError())
             {
                 throw JSONRPCError(RPC_INTERNAL_ERROR,

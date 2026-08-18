@@ -77,7 +77,7 @@ class MaxReorgTest(BitcoinTestFramework):
         self.nodes = []
         self.is_network_split = False
         for i in range(0, self.NUM_NODES):
-            self.nodes.append(start_node(i, self.options.tmpdir, []))
+            self.nodes.append(start_node(i, self.options.tmpdir, ["-debug=dag"]))
         interconnect_nodes(self.nodes)
         self.sync_all()
         self.nodes[1].set("test.maxReorgDepth=3")
