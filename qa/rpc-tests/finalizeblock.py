@@ -150,6 +150,10 @@ class MaxReorgTest(BitcoinTestFramework):
         self.sync_blocks()
         self.activate_tailstorm()
 
+        # reset the reorg depth to 3 so we can check that the reorg will NOT get initiated
+        # with a fork depth of 4 blocks.
+        self.nodes[1].set("test.maxReorgDepth=3")
+
         # Build equal-work forks whose common ancestor is four summary blocks
         # behind their tips. Node 1 permits reorgs of at most three blocks.
         for peer in self.nodes:
@@ -170,6 +174,11 @@ class MaxReorgTest(BitcoinTestFramework):
         # active grove. It must not bypass the summary-chain reorg-depth limit.
         competing_subblock = self.nodes[0].generate(1)[0]
         waitFor(waitTime, lambda: self.nodes[1].getsubblock(competing_subblock))
+
+        # give some time for a reorg to potentially intiate.
+        time.sleep(2)
+
+        # reorg did not initiate because reorg depth limit was exceeded.
         assert_equal(self.nodes[1].getbestblockhash(), protected_tip)
 
 if __name__ == '__main__':
