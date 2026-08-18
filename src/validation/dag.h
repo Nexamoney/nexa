@@ -11,6 +11,7 @@
 #include "primitives/block.h"
 #include "sync.h"
 
+#include <atomic>
 #include <deque>
 #include <queue>
 #include <set>
@@ -208,6 +209,10 @@ public:
     CCriticalSection cs_reorg;
 
 protected:
+    // Pending reorg-check marker. A pass clears it only when ready to inspect the protected state.
+    // Each pass releases cs_reorg before the loop checks whether another iteration is required.
+    std::atomic<bool> fRecheckReorg{false};
+
     // key is subblock hash for the node in value
     // mapAllNodes contains all nodes in the entire forest including orphans. The grove contains two
     // maps that are a subsets of this map. They are only used to speed up grove
@@ -347,6 +352,12 @@ public:
     //! Detemine if we need to re-org the chainActive tip to one that has a better dag.
     void CheckForReorg();
 
+protected:
+    //! Run one reorg-check pass while holding cs_reorg. Go through CheckForReorg(), which serializes
+    //! each pass and preserves requests that are not covered by its protected state snapshot.
+    void _CheckForReorg();
+
+public:
     /** Regenerate coincache and mapDagTxn data for a tree. */
     void ReGenerateDagData(CTailstormGroveRef grove);
     /** Returns nullptr if it worked, and the bad subblock that should be removed if it did not */
