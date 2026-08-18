@@ -1852,7 +1852,7 @@ int32_t UnlimitedComputeBlockVersion(const CBlockIndex *pindexPrev, const Consen
 }
 
 /** Return whether switching from tip to a chain branching at fork is within the configured reorg depth. */
-static bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork)
+bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork)
 {
     if (!tip || !fork)
         return true;
@@ -1867,7 +1867,7 @@ static bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork)
     if (forkDepth <= (uint64_t)maxReorg)
         return true;
 
-    LOG(BLK, "Will NOT reorg, depth %d exceeds max %d\n", forkDepth, maxReorg);
+    LOG(BLK | DAG, "Will NOT reorg, depth %d exceeds max %d\n", forkDepth, maxReorg);
     return false;
 }
 
@@ -4148,15 +4148,16 @@ bool ActivateBestChainSummaryBlocks(CValidationState &state,
     const CBlockIndex *pindexFork = chainActive.FindFork(pindexMostWork);
     CBlockIndex *pindexNewMostWork;
 
+    bool fBlocksDisconnected = false;
+    boost::thread::id this_id(boost::this_thread::get_id()); // get this thread's id
+
     // Some callers, including Tailstorm grove selection, provide their target
     // directly instead of obtaining it from FindMostWorkChain(). Enforce the
     // reorg limit here as well, before any active blocks are disconnected.
     if (!IsReorgInRange(pindexOldTip, pindexFork))
-        return true;
+        return false;
 
-    bool fBlocksDisconnected = false;
-    boost::thread::id this_id(boost::this_thread::get_id()); // get this thread's id
-
+    // If a reorg is needed then roll back the chain to the fork point.
     while (chainActive.Tip() && chainActive.Tip() != pindexFork)
     {
         // When NOT calling from withing the tailstorm dag we MUST NOT initiate a reorg

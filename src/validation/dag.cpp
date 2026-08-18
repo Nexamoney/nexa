@@ -2160,10 +2160,13 @@ void CTailstormForest::_CheckForReorg()
     }
 
     const CBlockIndex *pindexFork = chainActive.FindFork(pindexMostWork);
+
     // Initiate reorg if there is a tree with greater work on another fork
-    if (((nMaxChainWork > nChainTipWork) && (startingChainTip != pindexFork)) ||
-        // Or just move forward if the next summary block on this chain is ready
-        ((startingChainTip == pindexFork) && (pindexMostWork->GetHeight() == startingChainTip->GetHeight() + 1)))
+    // AND that we haven't exceeded our reorg depth
+    if (IsReorgInRange(startingChainTip, pindexFork) &&
+        (((nMaxChainWork > nChainTipWork) && (startingChainTip != pindexFork)) ||
+            // Or just move forward if the next summary block on this chain is ready
+            ((startingChainTip == pindexFork) && (pindexMostWork->GetHeight() == startingChainTip->GetHeight() + 1))))
     {
         LOG(DAG, "%s(): Attempting to initiate a reorg from %s at height %d to %s at height %d", __func__,
             startingChainTip->phashBlock->ToString(), startingChainTip->height(),

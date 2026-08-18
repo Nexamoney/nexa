@@ -124,6 +124,9 @@ uint64_t GetCoinsMinted(int nHeight, const Consensus::Params &consensusParams);
  */
 int32_t ComputeBlockVersion(const CBlockIndex *pindexPrev, const Consensus::Params &params);
 
+/** Return whether switching from tip to a chain branching at fork is within the configured reorg depth. */
+bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork);
+
 CBlockIndex *FindMostWorkChain();
 
 /** Mark a block as invalid. */
