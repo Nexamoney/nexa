@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2025 The Bitcoin Unlimited developers
+// Copyright (c) 2020-2026 The Bitcoin Unlimited developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 

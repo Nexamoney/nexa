@@ -1,4 +1,4 @@
-// Copyright (c) 2025 The Bitcoin Unlimited developers
+// Copyright (c) 2025-2026 The Bitcoin Unlimited developers
 
 #include "validation/tailstorm.h"
 #include "chain.h"

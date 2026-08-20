@@ -1,4 +1,4 @@
-# Copyright (c) 2016-2017 The Bitcoin Unlimited developers
+# Copyright (c) 2016-2023 The Bitcoin Unlimited developers
 import gdb
 import gdb.types
 

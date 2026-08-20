@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2016 The Bitcoin Core developers
-# Copyright (c) 2016-2019 The Bitcoin Unlimited developers
+# Copyright (c) 2016-2026 The Bitcoin Unlimited developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -127,6 +127,8 @@ EXPECTED_HOLDER_NAMES = [
     "freetrader\n",
     "Pieter Wuille, Shammah Chancellor, Neil Booth\n",
     "The Zcash developers\n",
+    "Greg Griffith\n",
+    "The Bitcoin SV developers\n",
 ]
 
 DOMINANT_STYLE_COMPILED = {}
