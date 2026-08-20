@@ -19,9 +19,9 @@
 #include <assert.h>
 
 
-/** Next protocol upgrade will be activated once MTP >= Sunday, November 1, 2026 at 1:11:11 AM
+/** Next protocol upgrade will be activated once MTP >= Thu, January 1st, 2111 at 12:0 AM UTC
  */
-const uint64_t NEXT_FORK_ACTIVATION_TIME = 1793495471;
+const uint64_t NEXT_FORK_ACTIVATION_TIME = 4449510000;
 
 
 // Must be zero on startup. Do not set this to any other value.
