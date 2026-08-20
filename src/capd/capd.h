@@ -516,7 +516,7 @@ protected:
 public:
     enum
     {
-        DEFAULT_MSG_POOL_MAX_SIZE = 10 * 1024 * 1024
+        DEFAULT_MSG_POOL_MAX_SIZE = 100 * 1024 * 1024 // 100MB capd msg pool size
     };
 
     CapdMsgPool(CapdProtocol *protoHandler = nullptr) : maxSize(DEFAULT_MSG_POOL_MAX_SIZE) {}
