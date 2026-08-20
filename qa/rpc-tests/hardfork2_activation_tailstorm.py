@@ -997,6 +997,11 @@ class TailstormActivationTest(BitcoinTestFramework):
         # Both conflicting transactions entered the DAG at the same height, so
         # the transaction in the lower-hash subblock wins the tie.
         summary_block = self.nodes[0].getblock(summary_hash[0])
+        summary_block_node1 = self.nodes[1].getblock(summary_hash[0])
+
+        # The nodes received the conflicting subblocks in opposite orders. They
+        # must nevertheless derive the same transaction set for the summary.
+        assert_equal(summary_block['txidem'], summary_block_node1['txidem'])
         if node1_ds_hash < node0_ds_hash:
             assert(doublespend2_txidem in summary_block['txidem'])
 
