@@ -80,6 +80,30 @@ CTreeNodeRef MakeTestTreeNode(const unsigned char nonce)
     return MakeTreeNodeRef(ConstCBlockRef(block));
 }
 
+CTransactionRef MakeTestTransaction(const COutPoint &spentOutput, const unsigned char tag)
+{
+    CMutableTransaction tx;
+    tx.vin.emplace_back(spentOutput, 1);
+    tx.vout.emplace_back(1, CScript() << OP_RETURN << tag);
+    return MakeTransactionRef(tx);
+}
+
+CTreeNodeRef MakeTestTransactionNode(const CTransactionRef &tx, const unsigned char nonce)
+{
+    CBlockRef block = MakeBlockRef();
+    block->nonce = {nonce};
+    block->vtx.push_back(tx);
+    block->UpdateHeader();
+    return MakeTreeNodeRef(ConstCBlockRef(block));
+}
+
+void LinkTestTreeNodes(const CTreeNodeRef &parent, const CTreeNodeRef &child)
+{
+    child->setAncestors.insert(parent);
+    parent->setDescendants.insert(child);
+    child->dagHeight = parent->dagHeight + 1;
+}
+
 class LookupOnlyTailstormGrove : public CTailstormGrove
 {
 public:
@@ -225,6 +249,120 @@ CTreeNodeRef FindTestNode(const std::set<CTreeNodeRef> &dag, const uint256 &hash
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(tailstorm_dag_tests, TailstormForestTestingSetup)
+
+BOOST_AUTO_TEST_CASE(double_spend_prefers_dag_score)
+{
+    // Give the higher-hash subblock more DAG support to prove score takes
+    // precedence over the deterministic subblock-hash tie-breaker.
+    const COutPoint spentOutput(MakeTestTreeNode(20)->hash);
+    const CTransactionRef txA = MakeTestTransaction(spentOutput, 1);
+    const CTransactionRef txB = MakeTestTransaction(spentOutput, 2);
+    const CTreeNodeRef nodeA = MakeTestTransactionNode(txA, 1);
+    const CTreeNodeRef nodeB = MakeTestTransactionNode(txB, 2);
+    const CTreeNodeRef scoreWinner = nodeA->hash > nodeB->hash ? nodeA : nodeB;
+    const CTreeNodeRef scoreLoser = scoreWinner == nodeA ? nodeB : nodeA;
+    const CTransactionRef winnerTx = scoreWinner == nodeA ? txA : txB;
+    const CTransactionRef loserTx = scoreWinner == nodeA ? txB : txA;
+    const CTreeNodeRef child = MakeTestTreeNode(3);
+
+    scoreWinner->dagHeight = 1;
+    scoreLoser->dagHeight = 1;
+    LinkTestTreeNodes(scoreWinner, child);
+    const std::set<CTreeNodeRef> dag{scoreWinner, scoreLoser, child};
+    const auto scores = GetDagScores(dag);
+    BOOST_REQUIRE(scoreWinner->hash > scoreLoser->hash);
+    BOOST_REQUIRE(scores.at(scoreWinner) > scores.at(scoreLoser));
+
+    std::vector<std::map<uint256, CTreeNodeRef> > conflicts;
+    FindDagConflicts({scoreWinner}, scoreLoser, conflicts);
+    BOOST_REQUIRE_EQUAL(conflicts.size(), 1);
+    std::map<COutPoint, CTransactionRef> inputs;
+    const std::set<uint256> exclusions = GetTxnExclusionSet(dag, conflicts, inputs);
+
+    BOOST_CHECK_EQUAL(exclusions.count(winnerTx->GetId()), 0);
+    BOOST_CHECK_EQUAL(exclusions.count(loserTx->GetId()), 1);
+}
+
+BOOST_AUTO_TEST_CASE(double_spend_uses_hash_tiebreak)
+{
+    // With equal DAG scores, the transaction carried by the lower-hash
+    // subblock must win independently of transaction ordering.
+    const COutPoint spentOutput(MakeTestTreeNode(21)->hash);
+    const CTransactionRef txA = MakeTestTransaction(spentOutput, 4);
+    const CTransactionRef txB = MakeTestTransaction(spentOutput, 5);
+    const CTreeNodeRef nodeA = MakeTestTransactionNode(txA, 4);
+    const CTreeNodeRef nodeB = MakeTestTransactionNode(txB, 5);
+    nodeA->dagHeight = 1;
+    nodeB->dagHeight = 1;
+
+    const CTreeNodeRef winner = nodeA->hash < nodeB->hash ? nodeA : nodeB;
+    const CTreeNodeRef loser = winner == nodeA ? nodeB : nodeA;
+    const CTransactionRef winnerTx = winner == nodeA ? txA : txB;
+    const CTransactionRef loserTx = winner == nodeA ? txB : txA;
+    const std::set<CTreeNodeRef> dag{nodeA, nodeB};
+    const auto scores = GetDagScores(dag);
+    BOOST_REQUIRE_EQUAL(scores.at(nodeA), scores.at(nodeB));
+
+    std::vector<std::map<uint256, CTreeNodeRef> > conflicts;
+    FindDagConflicts({winner}, loser, conflicts);
+    BOOST_REQUIRE_EQUAL(conflicts.size(), 1);
+    std::map<COutPoint, CTransactionRef> inputs;
+    const std::set<uint256> exclusions = GetTxnExclusionSet(dag, conflicts, inputs);
+
+    BOOST_CHECK_EQUAL(exclusions.count(winnerTx->GetId()), 0);
+    BOOST_CHECK_EQUAL(exclusions.count(loserTx->GetId()), 1);
+}
+
+BOOST_AUTO_TEST_CASE(double_spend_uses_max_subblock_score)
+{
+    // A transaction may appear in multiple subblocks. Exercise both traversal
+    // orders and require its highest-scoring subblock to decide.
+    const COutPoint spentOutput(MakeTestTreeNode(22)->hash);
+    const CTransactionRef repeatedTx = MakeTestTransaction(spentOutput, 6);
+    const CTransactionRef competingTx = MakeTestTransaction(spentOutput, 7);
+    const CTreeNodeRef repeatedTxNodeA = MakeTestTransactionNode(repeatedTx, 6);
+    const CTreeNodeRef repeatedTxNodeB = MakeTestTransactionNode(repeatedTx, 7);
+    const CTreeNodeRef repeatedTxChild = MakeTestTreeNode(8);
+    const CTreeNodeRef repeatedTxGrandchild = MakeTestTreeNode(9);
+    const CTreeNodeRef competingTxNode = MakeTestTransactionNode(competingTx, 10);
+    const CTreeNodeRef competingTxChild = MakeTestTreeNode(11);
+    const std::set<CTreeNodeRef> dag{repeatedTxNodeA, repeatedTxNodeB, repeatedTxChild, repeatedTxGrandchild,
+        competingTxNode, competingTxChild};
+    const std::set<CTreeNodeRef> repeatedTxNodes{repeatedTxNodeA, repeatedTxNodeB};
+    const CTreeNodeRef firstRepeatedTxNode = *repeatedTxNodes.begin();
+    const CTreeNodeRef secondRepeatedTxNode = *std::next(repeatedTxNodes.begin());
+
+    const auto checkMaxSubblockScoreWins = [&](const CTreeNodeRef &highScoreRepeatedTxNode) {
+        for (const CTreeNodeRef &node : dag)
+        {
+            node->dagHeight = 1;
+            node->setAncestors.clear();
+            node->setDescendants.clear();
+        }
+
+        LinkTestTreeNodes(highScoreRepeatedTxNode, repeatedTxChild);
+        LinkTestTreeNodes(repeatedTxChild, repeatedTxGrandchild);
+        LinkTestTreeNodes(competingTxNode, competingTxChild);
+
+        const CTreeNodeRef lowScoreRepeatedTxNode =
+            highScoreRepeatedTxNode == repeatedTxNodeA ? repeatedTxNodeB : repeatedTxNodeA;
+        const auto scores = GetDagScores(dag);
+        BOOST_REQUIRE(scores.at(highScoreRepeatedTxNode) > scores.at(competingTxNode));
+        BOOST_REQUIRE(scores.at(competingTxNode) > scores.at(lowScoreRepeatedTxNode));
+
+        std::vector<std::map<uint256, CTreeNodeRef> > conflicts;
+        FindDagConflicts({repeatedTxNodeA}, competingTxNode, conflicts);
+        BOOST_REQUIRE_EQUAL(conflicts.size(), 1);
+        std::map<COutPoint, CTransactionRef> inputs;
+        const std::set<uint256> exclusions = GetTxnExclusionSet(dag, conflicts, inputs);
+
+        BOOST_CHECK_EQUAL(exclusions.count(repeatedTx->GetId()), 0);
+        BOOST_CHECK_EQUAL(exclusions.count(competingTx->GetId()), 1);
+    };
+
+    checkMaxSubblockScoreWins(secondRepeatedTxNode);
+    checkMaxSubblockScoreWins(firstRepeatedTxNode);
+}
 
 BOOST_AUTO_TEST_CASE(coinbase_rewards)
 {
