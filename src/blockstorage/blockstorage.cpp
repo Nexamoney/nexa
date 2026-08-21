@@ -276,13 +276,18 @@ bool FlushStateToDiskInternal(CValidationState &state,
                 setDirtyBlockIndex.clear();
             }
 
-            if (!pblocktree->WriteBatchSync(vFiles, tmpLastBlockFile, vBlocks))
-            {
-                return AbortNode(state, "Failed to write to block index database");
-            }
+            // Write the headers before the block index. These are separate sync batches, so an unclean
+            // shutdown can land between them, and the entries were already dropped from setDirtyBlockIndex
+            // above so a missed write is never retried. In this order a crash leaves a header with no index
+            // entry, which is inert. In the reverse order it leaves an index entry with no header, which
+            // LoadBlockIndexDB() treats as fatal: the node then aborts on every startup until it is reindexed.
             if (!pblockheaders->WriteBatchSync(vFiles, tmpLastBlockFile, vBlocks))
             {
                 return AbortNode(state, "Failed to write to block headers database");
+            }
+            if (!pblocktree->WriteBatchSync(vFiles, tmpLastBlockFile, vBlocks))
+            {
+                return AbortNode(state, "Failed to write to block index database");
             }
 
             // Trim headers from the in memory blockindex if there are any to trim.
