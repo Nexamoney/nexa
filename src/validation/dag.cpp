@@ -2323,6 +2323,11 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
             break; // It worked
         // If the regeneration did not work, delete the bad block from the dag, and loop trying the next best set
         RemoveFromGrove(grove, badSubblock);
+        // RemoveFromGrove leaves a nSequenceId hole, and ReGenerateDagDataForSubblocks renumbers only the
+        // tailstorm_k - 1 it selects, yet Check() aborts if a gap is found anywhere in the trees dag. So renumber here.
+        // A regeneration follows, which rebuilds mapDagTxns, mapInputs for anything unprocessed that RenumberDag
+        // pulls under the tailstorm_k-1 cutoff.
+        RenumberDag(*(grove->tree));
         grove->RecalcDagHeights();
     }
 
@@ -2352,6 +2357,8 @@ CTreeNodeRef CTailstormForest::ReGenerateDagDataForSubblocks(CTailstormTree *tre
         nSequenceId++;
         const CTreeNodeRef &treenode = *it;
 
+        // Numbers only the tailstorm_k - 1 subblocks passed in, never the rest of the dag.
+        // RenumberDag owns the full 1..N and Check() asserts;
         treenode->nSequenceId = nSequenceId;
 
         CAmount nFees = 0;
@@ -2398,6 +2405,41 @@ CTreeNodeRef CTailstormForest::ReGenerateDagDataForSubblocks(CTailstormTree *tre
         }
     }
     return CTreeNodeRef();
+}
+
+void CTailstormForest::RenumberDag(CTailstormTree &tree)
+{
+    AssertLockHeld(cs_forest);
+
+    std::vector<CTreeNodeRef> vSortedDag;
+    vSortedDag.reserve(tree.dag.size());
+    for (auto &mi : tree.dag)
+        vSortedDag.push_back(mi.second);
+
+    // Sort on the current ids, so relative order - the arrival order the id records - is kept.
+    // The ids are unique here: they are handed out as dag.size() + 1 over a dense dag, and this
+    // function is what keeps it dense, so no two nodes can hold the same value.
+    std::sort(vSortedDag.begin(), vSortedDag.end(),
+        [](const CTreeNodeRef &a, const CTreeNodeRef &b) { return a->nSequenceId < b->nSequenceId; });
+
+    uint32_t nSequenceId = 0;
+    uint32_t nPrevOldId = 0;
+    for (auto &node : vSortedDag)
+    {
+        const uint32_t nOldId = node->nSequenceId;
+        node->nSequenceId = ++nSequenceId;
+
+        // A hole moves every subblock above it down, and those ids arrive still one apart. Only
+        // the first id after a hole breaks that run, so it is the only one worth a line. That
+        // gives one line per hole rather than one per subblock, and a second line in the same
+        // pass means a second hole.
+        if ((nOldId != nSequenceId) && (nOldId != nPrevOldId + 1))
+        {
+            LOG(DAG, "%s: dag %d subblocks, nSequenceId %d -> %d at %s", __func__, (int)vSortedDag.size(), nOldId,
+                nSequenceId, node->hash.ToString());
+        }
+        nPrevOldId = nOldId;
+    }
 }
 
 void CTailstormForest::RemoveFromGrove(CTailstormGroveRef grove, CTreeNodeRef subblock)

@@ -2293,4 +2293,43 @@ BOOST_AUTO_TEST_CASE(checkforreorg_consumes_request_at_state_snapshot)
     fTailstormEnabled.store(false);
 }
 
+BOOST_AUTO_TEST_CASE(renumber_dag_closes_sequence_id_gaps)
+{
+    // RemoveFromGrove takes a subblock out of the dag but leaves its nSequenceId behind as a
+    // hole, and Check() asserts every dag is numbered 1..N with nothing missing. Fill a dag
+    // with gapped ids and check RenumberDag closes the holes without reordering the subblocks.
+    LOCK(tailstormForest.cs_forest);
+
+    TestTailstormTree tree;
+
+    // Two gaps: one where the subblocks numbered 3 and 4 were removed, one where 7 and 8 were.
+    const std::vector<uint32_t> vGappedIds = {1, 2, 5, 6, 9};
+    std::vector<CTreeNodeRef> vNodesInArrivalOrder;
+    unsigned char nonce = 1;
+    for (const uint32_t nSequenceId : vGappedIds)
+    {
+        CTreeNodeRef node = MakeTestTreeNode(nonce++);
+        node->nSequenceId = nSequenceId;
+        tree.AddNode(node);
+        vNodesInArrivalOrder.push_back(node);
+    }
+    BOOST_REQUIRE_EQUAL(tree.Size(), vGappedIds.size());
+
+    tailstormForest.RenumberDag(tree);
+
+    // The ids are contiguous again, and each subblock holds its place in the arrival order
+    // that the old ids recorded.
+    for (size_t i = 0; i < vNodesInArrivalOrder.size(); i++)
+    {
+        BOOST_CHECK_EQUAL(vNodesInArrivalOrder[i]->nSequenceId, static_cast<uint32_t>(i + 1));
+    }
+
+    // Renumbering a dag that has no gaps leaves every id where it is.
+    tailstormForest.RenumberDag(tree);
+    for (size_t i = 0; i < vNodesInArrivalOrder.size(); i++)
+    {
+        BOOST_CHECK_EQUAL(vNodesInArrivalOrder[i]->nSequenceId, static_cast<uint32_t>(i + 1));
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
