@@ -15,7 +15,7 @@ This is a Nexa minor release, for more information about Nexa see:
 - https://nexa.org
 
 This release also contains a substantial body of work for the next network upgrade (Hard Fork 2),
-including Tailstorm consensus, the retargetable-range sighash typesi and others.
+including Tailstorm consensus, the retargetable-range sighash types and others.
 None of it is active yet: every one of those changes is gated on the Hard Fork 2 activation and
 remains dormant until then. For that reason they are not listed individually in the Main Changes
 section below, which covers only the changes that take effect on this release.
@@ -24,17 +24,17 @@ The Hard Fork 2 features are described in doc/hf2.md.
 Main changes in 2.2.0.0
 -----------------------
 
-This is list of the main changes that have been merged in this release:
+This is the list of the main changes that have been merged:
 
 - Rostrum 14.0.1, see [release notes](https://gitlab.com/nexa/rostrum/-/blob/master/RELEASE-NOTES.md?ref_type=heads#release-notes)
 - Block finalization / rolling checkpoints (!875, !908, !881, !910)
 - Block index consistency fixes (!899, !902, !901, !814)
-- Increased robusteness of the networking layer (!841, !842, !864, !748, !828, !760, !788, !840, !849)
-- Improve thread and memory safety (!776, !784, !833, !772, !75)
+- Increased robustness of the networking layer (!841, !842, !864, !748, !828, !760, !788, !840, !849)
+- Improve thread and memory safety (!776, !784, !833, !772, !756)
 - LevelDB block storage mode removed (!749)
 - BIP70 and OpenSSL removed (!737)
 - Updated dependencies (!751, !758, !759, !823, !769, !796)
-- CI/CD improvementes (!872, !765, !857, !876, !884, !898, !903, !887)
+- CI/CD improvements (!872, !765, !857, !876, !884, !898, !903, !887)
 - Libnexa new features (!834, !752, !825, !763, !827)
 
 Commit details

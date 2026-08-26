@@ -5,6 +5,7 @@
 #include <chain.h>
 #include <chainparams.h>
 #include <config.h>
+#include <unlimited.h>
 #include <validation/forks.h>
 
 #include <test/test_nexa.h>
@@ -27,11 +28,10 @@ static void SetMTP(std::array<CBlockIndex, 12> &blocks, int64_t mtp)
 
 BOOST_AUTO_TEST_CASE(isfork2enabled)
 {
-    const CChainParams config = Params(CBaseChainParams::REGTEST);
     CBlockIndex prev;
 
-    // Enable when next activation decided
-    const auto activation = config.GetConsensus().nextForkActivationTime;
+    // Exercise the effective activation time consumed by IsUpgrade2Activated().
+    const auto activation = miningForkTime.Value();
 
     BOOST_CHECK(!IsUpgrade2Activated(nullptr));
     std::array<CBlockIndex, 12> blocks;
