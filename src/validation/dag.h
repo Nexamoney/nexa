@@ -369,6 +369,11 @@ public:
         Subblocks may need to be removed if they are invalid, for example. */
     void RemoveFromGrove(CTailstormGroveRef grove, CTreeNodeRef subblock);
 
+    /** Reassign nSequenceId as a dense 1..N over a tree's dag, keeping the current relative
+        order. Removing a subblock leaves a hole, and the numbering must stay dense: Check()
+        asserts it. Call after removing a subblock from a dag. */
+    void RenumberDag(CTailstormTree &tree);
+
     //! Set the main coins cache that we build our tailstorm tree views on top of.
     void SetBackend(CCoinsViewCache *coinsCache)
     {
