@@ -19,9 +19,9 @@
 #include <assert.h>
 
 
-/** Next protocol upgrade will be activated once MTP >= Thu, January 1st, 2111 at 12:0 AM UTC
+/** Next protocol upgrade will be activated once MTP >= 2100-01-01 12:00:00 UTC
  */
-const uint64_t NEXT_FORK_ACTIVATION_TIME = 4449510000;
+const uint64_t NEXT_FORK_ACTIVATION_TIME = 4102488000;
 
 
 // Must be zero on startup. Do not set this to any other value.
@@ -336,7 +336,7 @@ public:
         // Fork1 rules always active on regtest
         consensus.fork1Height = 0;
 
-        consensus.nextForkActivationTime = 1789948805; // 12noon, Sept 21, 2026 GMT
+        consensus.nextForkActivationTime = NEXT_FORK_ACTIVATION_TIME;
 
         pchMessageStart[0] = 0xea;
         pchMessageStart[1] = 0xe5;
