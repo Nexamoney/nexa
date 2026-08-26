@@ -96,7 +96,7 @@ public:
         QGraphicsPathItem *itemText = nullptr;
         QGraphicsProxyWidget *itemText1 = nullptr;
         QGraphicsProxyWidget *itemText2 = nullptr;
-        QGraphicsLineItem *litem = nullptr;
+        std::set<QGraphicsLineItem *> setLineItems;
     };
 
     // Defer a new block item. To be added to the viewer when
