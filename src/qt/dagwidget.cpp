@@ -465,7 +465,7 @@ void DagWidget::DeferItem(uint256 hash,
 
     ItemInfo temp{hash, mininghash, 0, nDagHeight, nSequenceId, nBlockHeight, nTransactions, nBlockSize, x, y,
         itemWidth, itemHeight, _vpointsto, true, fDoubleSpend, blockType, !fHeader, header, nullptr, nullptr, nullptr,
-        nullptr, nullptr};
+        nullptr, std::set<QGraphicsLineItem *>()};
     std::shared_ptr<ItemInfo> info = std::make_shared<ItemInfo>(temp);
 
     if (!mapDeferredInfo.count(hash))
@@ -545,12 +545,16 @@ void DagWidget::AddItem(uint256 hash,
                 it->item = nullptr;
             }
 
-            if (it->litem)
+            for (auto litem : it->setLineItems)
             {
-                scene->removeItem(it->litem);
-                delete it->litem;
-                it->litem = nullptr;
+                if (litem)
+                {
+                    scene->removeItem(litem);
+                    delete litem;
+                    litem = nullptr;
+                }
             }
+            it->setLineItems.clear();
 
             // now trim the block from the tracking maps
             mapInfo.erase(it->blockhash);
@@ -631,7 +635,7 @@ void DagWidget::AddItem(uint256 hash,
     // Create the new block item.
     ItemInfo temp{hash, mininghash, nDagViewerHeight, nDagHeight, nSequenceId, nBlockHeight, nTransactions, nBlockSize,
         x, y, itemWidth, itemHeight, _vpointsto, true, fDoubleSpend, blockType, !fHeader, header, nullptr, nullptr,
-        nullptr, nullptr, nullptr};
+        nullptr, nullptr, std::set<QGraphicsLineItem *>()};
     std::shared_ptr<ItemInfo> info = std::make_shared<ItemInfo>(temp);
 
     if (blockType == SUMMARY)
@@ -853,18 +857,16 @@ void DagWidget::AddItem(uint256 hash,
 
                 if (!mapOrphanInfo.count(hash))
                     continue;
-                if (!mapOrphanInfo[hash]->item)
-                {
-                    // create line with a zvalue less than the prev block. This way the line portions that
-                    // are withing the block rectangle won't be seen.
-                    QGraphicsLineItem *litem = new QGraphicsLineItem();
-                    litem->setLine(mapInfo[link.prevBlock]->x + (mapInfo[link.prevBlock]->itemWidth / 2),
-                        mapInfo[link.prevBlock]->y + (itemHeight / 2), x + (itemWidth / 2), y + (itemHeight / 2));
-                    litem->setPen(pen);
-                    litem->setZValue(-1);
-                    scene->addItem(litem);
-                    mapOrphanInfo[hash]->litem = litem;
-                }
+
+                // create line with a zvalue less than the prev block. This way the line portions that
+                // are withing the block rectangle won't be seen.
+                QGraphicsLineItem *litem = new QGraphicsLineItem();
+                litem->setLine(mapInfo[link.prevBlock]->x + (mapInfo[link.prevBlock]->itemWidth / 2),
+                    mapInfo[link.prevBlock]->y + (itemHeight / 2), x + (itemWidth / 2), y + (itemHeight / 2));
+                litem->setPen(pen);
+                litem->setZValue(-1);
+                scene->addItem(litem);
+                mapOrphanInfo[hash]->setLineItems.insert(litem);
             }
 
             // Add the new block
@@ -920,18 +922,16 @@ void DagWidget::AddItem(uint256 hash,
 
                 if (!mapInfo.count(hash))
                     continue;
-                if (!mapInfo[hash]->litem)
-                {
-                    // create line with a zvalue less than the prev block. This way the line portions that
-                    // are withing the block rectangle won't be seen.
-                    QGraphicsLineItem *litem = new QGraphicsLineItem();
-                    litem->setLine(mapInfo[link.prevBlock]->x + (mapInfo[link.prevBlock]->itemWidth / 2),
-                        mapInfo[link.prevBlock]->y + (itemHeight / 2), x + (itemWidth / 2), y + (itemHeight / 2));
-                    litem->setPen(pen);
-                    litem->setZValue(-1);
-                    scene->addItem(litem);
-                    mapInfo[hash]->litem = litem;
-                }
+
+                // create line with a zvalue less than the prev block. This way the line portions that
+                // are withing the block rectangle won't be seen.
+                QGraphicsLineItem *litem = new QGraphicsLineItem();
+                litem->setLine(mapInfo[link.prevBlock]->x + (mapInfo[link.prevBlock]->itemWidth / 2),
+                    mapInfo[link.prevBlock]->y + (itemHeight / 2), x + (itemWidth / 2), y + (itemHeight / 2));
+                litem->setPen(pen);
+                litem->setZValue(-1);
+                scene->addItem(litem);
+                mapInfo[hash]->setLineItems.insert(litem);
 
                 // Update the color of the preceding block.
                 QBrush prevBrush;
@@ -1035,19 +1035,17 @@ void DagWidget::AddItem(uint256 hash,
 
                 if (!mapInfo.count(hash))
                     continue;
-                if (!mapInfo[hash]->litem)
-                {
-                    // create line with a zvalue less than the prev block. This way the line portions that
-                    // are withing the block rectangle won't be seen.
-                    QGraphicsLineItem *litem = new QGraphicsLineItem();
-                    litem->setLine(mapInfo[link.prevBlock]->x + (mapInfo[link.prevBlock]->itemWidth / 2),
-                        mapInfo[link.prevBlock]->y + (subblockHeight / 2), x + (mapInfo[link.prevBlock]->itemWidth / 2),
-                        y + (subblockHeight / 2));
-                    litem->setPen(pen);
-                    litem->setZValue(-1);
-                    scene->addItem(litem);
-                    mapInfo[hash]->litem = litem;
-                }
+
+                // create line with a zvalue less than the prev block. This way the line portions that
+                // are withing the block rectangle won't be seen.
+                QGraphicsLineItem *litem = new QGraphicsLineItem();
+                litem->setLine(mapInfo[link.prevBlock]->x + (mapInfo[link.prevBlock]->itemWidth / 2),
+                    mapInfo[link.prevBlock]->y + (subblockHeight / 2), x + (mapInfo[link.prevBlock]->itemWidth / 2),
+                    y + (subblockHeight / 2));
+                litem->setPen(pen);
+                litem->setZValue(-1);
+                scene->addItem(litem);
+                mapInfo[hash]->setLineItems.insert(litem);
 
                 // Update the color of the preceding block.
                 QBrush prevBrush;
@@ -1152,19 +1150,16 @@ void DagWidget::AddItem(uint256 hash,
                 if (!mapInfo.count(link.prevBlock) || !mapInfo.count(hash))
                     continue;
 
-                if (!mapInfo[hash]->litem)
-                {
-                    // create line with a zvalue less than the prev block. This way the line portions that
-                    // are withing the block rectangle won't be seen.
-                    QGraphicsLineItem *litem = new QGraphicsLineItem();
-                    litem->setLine(mapInfo[link.prevBlock]->x + (mapInfo[link.prevBlock]->itemWidth / 2),
-                        mapInfo[link.prevBlock]->y + (subblockHeight / 2), x + (mapInfo[link.prevBlock]->itemWidth / 2),
-                        y + (subblockHeight / 2));
-                    litem->setPen(pen);
-                    litem->setZValue(-1);
-                    scene->addItem(litem);
-                    mapInfo[hash]->litem = litem;
-                }
+                // create line with a zvalue less than the prev block. This way the line portions that
+                // are withing the block rectangle won't be seen.
+                QGraphicsLineItem *litem = new QGraphicsLineItem();
+                litem->setLine(mapInfo[link.prevBlock]->x + (mapInfo[link.prevBlock]->itemWidth / 2),
+                    mapInfo[link.prevBlock]->y + (subblockHeight / 2), x + (mapInfo[link.prevBlock]->itemWidth / 2),
+                    y + (subblockHeight / 2));
+                litem->setPen(pen);
+                litem->setZValue(-1);
+                scene->addItem(litem);
+                mapInfo[hash]->setLineItems.insert(litem);
 
                 // Update the color of the preceding block.
                 QBrush prevBrush;
