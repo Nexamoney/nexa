@@ -141,7 +141,7 @@ tar xf signature-macos-arm64.tar.gz
 tar xf signature-macos-x86_64.tar.gz
 git add -A
 git commit -m "point to ${VERSION}"
-git tag -s v${VERSION} HEAD
+git tag -s nexa${VERSION} HEAD
 git push the current branch and new tag
 ```
 
@@ -155,6 +155,8 @@ cd ./gitian-builder
 cp releases/${VERSION}/macos_x86/nexa-${VERSION}-macos-x86-unsigned.tar.gz inputs/
 cp releases/${VERSION}/macos_arm/nexa-${VERSION}-macos-arm64-unsigned.tar.gz inputs/
 
+cd ./inputs
+
 # if present remove or rename folders signx86 and signarm
 rm -rf signx86 signarm
 
@@ -163,7 +165,8 @@ mv nexa-${VERSION}-macos-x86-unsigned.tar.gz nexa-macos-x86-unsigned.tar.gz
 mv nexa-${VERSION}-macos-arm64-unsigned.tar.gz nexa-macos-arm64-unsigned.tar.gz
 
 # reproducing the singned dmg for macos arm64 (NB adjust the path to gitian descriptor)
-./bin/gbuild -i --commit signature=v${VERSION} ../nexa/contrib/gitian-descriptors/gitian-macos-arm-signer.yml
+cd ..
+./bin/gbuild -i --commit signature=nexa${VERSION} ../nexa/contrib/gitian-descriptors/gitian-macos-arm-signer.yml
 
 # move the signed dmg to the release folder
 mv build/out/nexa-macos-arm64-signed.dmg ../nexa-${VERSION}-macos-arm64.dmg
