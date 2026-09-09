@@ -2498,39 +2498,20 @@ void CTailstormForest::SetBestGroveForSummaryTip()
         txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("Do not have corral pause during activate best tree"));
 
     auto summaryTip = chainActive.Tip();
-    auto originalBestGrove = bestGrove;
     if (!summaryTip)
         return;
 
-    // Cycle through all the trees of each grove and find the chainWork
-    arith_uint256 nMaxChainWork = summaryTip->chainWork();
-    bestGrove = nullptr;
-
-    // Find all groves
-    std::set<CTailstormGroveRef> setAllGroves;
-    for (auto &mi : mapAllGrovesByNode)
-        setAllGroves.insert(mi.second);
-
-    for (auto &grove : setAllGroves)
+    CTailstormGroveRef grove = nullptr;
+    if (!GetGrove(*summaryTip->phashBlock, grove))
     {
-        // Do not include any groves that would cause the chain to switch
-        if (grove->roothash == summaryTip->GetHash())
-        {
-            arith_uint256 nTreeChainWork = grove->tree->pindexSummaryRoot->chainWork();
-            std::set<CTreeNodeRef> dag;
-            GetBestDagFor(grove->roothash, dag);
-            for (auto node : dag)
-            {
-                nTreeChainWork += GetWorkForDifficultyBits(node->subblock->nBits);
-            }
-            if (nTreeChainWork > nMaxChainWork)
-            {
-                nMaxChainWork = nTreeChainWork;
-                DbgAssert(grove->view, );
-                bestGrove = grove;
-            }
-        }
+        _ClearBestGrove();
     }
+    else
+    {
+        bestGrove = grove;
+    }
+
+    return;
 }
 
 void CTailstormForest::SetDagActiveTip(CTreeNodeRef treenode)
@@ -2719,6 +2700,17 @@ void CTailstormForest::Check()
     for (auto &mi : mapAllGrovesByNode)
     {
         setGroves.insert(mi.second);
+    }
+
+    // Make sure no two groves share the same summary root
+    auto setGrovesCopy = setGroves;
+    for (auto &grove : setGroves)
+    {
+        setGrovesCopy.erase(grove);
+        for (auto &groveCopy : setGrovesCopy)
+        {
+            assert(grove->roothash != groveCopy->roothash);
+        }
     }
 
     // Count up nodes (within each grove) and check that all forest nodes equal grove nodes plus unlinked.
