@@ -470,7 +470,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
 
         // if we already have a full dag then don't process anymore but
         // we can add it to the dag as uprocessed so it can be used as an uncle.
-        if (dag.size() >= Params().GetConsensus().tailstorm_k - 1)
+        if ((dag.size() + mapUncles.size()) >= Params().GetConsensus().tailstorm_k - 1)
         {
             newNode->nSequenceId = dag.size() + 1;
             DbgAssert(newNode->nSequenceId > 0, );
@@ -614,7 +614,7 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
 
             // Only process txns and flush coins for subblocks that fit into the best dag. Overflow subblocks
             // are excluded.
-            if (newNode->nSequenceId <= Params().GetConsensus().tailstorm_k - 1)
+            if (newNode->nSequenceId + mapUncles.size() <= Params().GetConsensus().tailstorm_k - 1)
             {
                 // Update the map of all current dag transactions. This must be done before
                 // we continue processing, especially is we have a double spend block and
@@ -2239,7 +2239,7 @@ void CTailstormForest::_CheckForReorg()
             // Only act while the epoch is genuinely short of a mineable summary. Once tailstorm_k - 1
             // subblocks are processed the dag is full and any further unprocessed subblocks are
             // overflow/uncle candidates, which a regeneration would not adopt in any case.
-            if (fHasUnprocessed && nProcessed < tailstorm_k - 1)
+            if (fHasUnprocessed && (nProcessed + grove->tree->mapUncles.size() < tailstorm_k - 1))
             {
                 // Stop txadmission so the subblocks are layered against the tip's coins view, matching how
                 // ReGenerateDagData is invoked on the reorg path above.
@@ -2295,11 +2295,13 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
         // does not get created until the block has succesfully finished connecting.
         std::map<COutPoint, CTransactionRef> mapInputs;
         auto tailstorm_k = chainparams.GetConsensus().tailstorm_k;
-        // Put the first received tailstorm_k - 1 blocks in setDag
-        std::set<CTreeNodeRef> setDag;
-        std::vector<CTreeNodeRef> kSortedDag; // the exact subblocks we will use
+
+        // Put the first received tailstorm_k - 1 blocks in setDag and kSortedDag
+        std::set<CTreeNodeRef> setDag; // the exact subblocks we will use
+        std::vector<CTreeNodeRef> kSortedDag; // the exact subblocks we will use sorted by sequence id
         kSortedDag.reserve(tailstorm_k - 1);
-        for (auto it = vSortedDag.begin(); (it != vSortedDag.end()) && (setDag.size() < tailstorm_k - 1); it++)
+        for (auto it = vSortedDag.begin();
+             (it != vSortedDag.end()) && ((setDag.size() + tree->mapUncles.size()) < tailstorm_k - 1); it++)
         {
             setDag.insert(it->second);
             kSortedDag.push_back(it->second);
