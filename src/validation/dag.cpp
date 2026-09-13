@@ -15,6 +15,8 @@
 #include "validation/tailstorm.h"
 #include "validation/validation.h"
 
+#include <algorithm>
+
 extern bool IsInitialBlockDownload();
 extern CCriticalSection cs_main;
 extern std::atomic<bool> forceTemplateRecalc;
@@ -24,8 +26,6 @@ class CValidationState;
 CBlockIndex *LookupBlockIndex(const uint256 &hash);
 
 std::set<uint256> GetPrevHashes(const CBlockHeader &header);
-
-void logDoublespendTxns(const std::vector<std::map<uint256, CTreeNodeRef> > &dst);
 
 // Find the hash of the tip of the dag which has the best dag height
 static CTreeNodeRef FindDagTipNode(std::set<CTreeNodeRef> &dag)
@@ -74,9 +74,11 @@ static uint256 FindDagTip(std::set<CTreeNodeRef> &dag)
 }
 
 // Find all the ancestor nodes for this node
-static std::set<CTreeNodeRef> CalculateAncestors(CTreeNodeRef &node)
+static std::set<CTreeNodeRef> CalculateAncestors(const CTreeNodeRef &node)
 {
     std::set<CTreeNodeRef> setAncestors;
+    if (!node)
+        return setAncestors;
     setAncestors.insert(node->setAncestors.begin(), node->setAncestors.end());
 
     std::set<CTreeNodeRef> setLastAncestors = node->setAncestors;
@@ -95,27 +97,545 @@ static std::set<CTreeNodeRef> CalculateAncestors(CTreeNodeRef &node)
     return setAncestors;
 }
 
-std::map<CTreeNodeRef, uint32_t> GetDagScores(const std::set<CTreeNodeRef> &setBestDag)
+// Create or extend the conflict group for this outpoint with two competing spends.
+void CDagConflictRegistry::AddGroup(const COutPoint &outpoint,
+    const uint256 &txidA,
+    const CTreeNodeRef &subblockA,
+    const uint256 &txidB,
+    const CTreeNodeRef &subblockB)
+{
+    auto &group = groups[outpoint];
+    if (group.id == 0)
+    {
+        group.id = nextId++;
+        group.outpoint = outpoint;
+    }
+    group.spenders.emplace(txidA, subblockA);
+    group.spenders.emplace(txidB, subblockB);
+}
+
+// Rebuild the group from spendIndex after Unlink removes the spends that one
+// subblock contributed. Drop it if fewer than two distinct txids remain.
+void CDagConflictRegistry::UpdateGroup(const COutPoint &outpoint)
+{
+    auto itSpends = spendIndex.find(outpoint);
+    std::map<uint256, CTreeNodeRef> spenders;
+    if (itSpends != spendIndex.end())
+    {
+        for (const auto &entry : itSpends->second)
+            spenders.emplace(entry.txid, entry.subblock);
+    }
+
+    if (spenders.size() < 2)
+    {
+        groups.erase(outpoint);
+        return;
+    }
+
+    auto &group = groups[outpoint];
+    if (group.id == 0)
+    {
+        group.id = nextId++;
+        group.outpoint = outpoint;
+    }
+    group.spenders = std::move(spenders);
+}
+
+// Compare newNode's inputs to the spend index. True if any spend hits this
+// subblock's ancestry. commit writes the index and records conflict groups.
+bool CDagConflictRegistry::ScanSpends(const CTreeNodeRef &newNode, bool commit)
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+    if (!newNode || !newNode->subblock)
+        return false;
+    if (commit && indexed.count(newNode->hash))
+        return false;
+
+    const auto setAncestors = CalculateAncestors(newNode);
+    bool hasConflict = false;
+
+    // Spends already visited in this subblock, so a later transaction sees an earlier
+    // one even on a lookup-only scan that does not write the index.
+    std::map<COutPoint, std::vector<CDagSpend> > localSpends;
+
+    for (const CTransactionRef &ptx : newNode->subblock->vtx)
+    {
+        if (ptx->IsCoinBase())
+            continue;
+
+        const uint256 txid = ptx->GetId();
+        for (const auto &input : ptx->vin)
+        {
+            if (input.IsReadOnly())
+                continue;
+            std::vector<CDagSpend> existing;
+            auto itIdx = spendIndex.find(input.prevout);
+            if (itIdx != spendIndex.end())
+                existing.insert(existing.end(), itIdx->second.begin(), itIdx->second.end());
+            auto itLocal = localSpends.find(input.prevout);
+            if (itLocal != localSpends.end())
+                existing.insert(existing.end(), itLocal->second.begin(), itLocal->second.end());
+
+            for (const auto &prior : existing)
+            {
+                // The same txid recorded against another subblock is one transaction
+                // carried by both of them, not a competing spend.
+                if (prior.txid == txid)
+                    continue;
+
+                const bool ownAncestry = (prior.subblock == newNode) || (setAncestors.count(prior.subblock) != 0);
+                if (ownAncestry)
+                    hasConflict = true;
+                else if (commit)
+                {
+                    AddGroup(input.prevout, prior.txid, prior.subblock, txid, newNode);
+                    LOG(DAG, "%s: recorded conflict %s vs %s outpoint %s", __func__, txid.ToString(),
+                        prior.txid.ToString(), input.prevout.ToString());
+                }
+            }
+        }
+
+        for (const auto &input : ptx->vin)
+        {
+            if (!input.IsReadOnly())
+                localSpends[input.prevout].push_back({txid, newNode});
+        }
+    }
+
+    if (commit)
+    {
+        for (const auto &kv : localSpends)
+        {
+            auto &vec = spendIndex[kv.first];
+            vec.insert(vec.end(), kv.second.begin(), kv.second.end());
+            for (size_t i = 0; i < kv.second.size(); i++)
+                spendsBySubblock[newNode->hash].push_back(kv.first);
+        }
+        indexed.insert(newNode->hash);
+    }
+
+    return hasConflict;
+}
+
+// Remove this subblock's spends from the index and update the groups they touched.
+void CDagConflictRegistry::Unlink(const CTreeNodeRef &node)
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+    if (!node)
+        return;
+    if (!indexed.count(node->hash))
+        return;
+
+    auto itOuts = spendsBySubblock.find(node->hash);
+    if (itOuts != spendsBySubblock.end())
+    {
+        std::set<COutPoint> touched(itOuts->second.begin(), itOuts->second.end());
+        for (const auto &outpoint : touched)
+        {
+            auto it = spendIndex.find(outpoint);
+            if (it == spendIndex.end())
+                continue;
+            auto &vec = it->second;
+            vec.erase(std::remove_if(vec.begin(), vec.end(),
+                          [&](const CDagSpend &e) { return e.subblock && e.subblock->hash == node->hash; }),
+                vec.end());
+            if (vec.empty())
+                spendIndex.erase(it);
+            UpdateGroup(outpoint);
+        }
+        spendsBySubblock.erase(itOuts);
+    }
+    indexed.erase(node->hash);
+}
+
+void CDagConflictRegistry::SetLastWinner(uint64_t id, const uint256 &txid)
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+    lastWinner[id] = txid;
+}
+
+void CDagConflictRegistry::clear()
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+    nextId = 1;
+    spendIndex.clear();
+    spendsBySubblock.clear();
+    indexed.clear();
+    groups.clear();
+    lastWinner.clear();
+}
+
+bool CTailstormTree::HasAncestryDoubleSpend(const CTreeNodeRef &newNode)
+{
+    if (!newNode)
+        return false;
+    return conflictRegistry.ScanSpends(newNode, false);
+}
+
+void CTailstormTree::IndexSpends(const CTreeNodeRef &newNode)
+{
+    if (newNode)
+        conflictRegistry.ScanSpends(newNode, true);
+}
+
+// Admit a subblock to the dag: ancestry check, insert, index its spends, then recompute
+// what the dag must omit and queue this subblock's unsourced transactions for retry.
+bool CTailstormTree::checkUpdateAncestryInsertIntoDag(const CTreeNodeRef &newNode,
+    std::set<uint256> &excluded,
+    std::set<uint256> &losers)
+{
+    if (HasAncestryDoubleSpend(newNode))
+    {
+        LOG(DAG, "%s: Rejected - subblock %s has a double spend in its ancestor tree", __func__,
+            newNode->hash.ToString());
+        return false;
+    }
+
+    newNode->nSequenceId = dag.size() + 1;
+    DbgAssert(newNode->nSequenceId > 0, );
+    newNode->fProcessed = false;
+    dag.emplace(newNode->hash, newNode);
+
+    // Record spends and conflict groups before any omit: a new double spend must open a
+    // group even if this connect goes on to omit it.
+    IndexSpends(newNode);
+
+    // GetTxnExclusionSet treats the subblocks it is given as the dag: their transactions are the
+    // double spend candidates and their outputs the available sources. Give it the processed
+    // subblocks plus this one, not yet marked processed - the set a summary commits - so a parked
+    // or overflow subblock neither wins a group nor sources a transaction here.
+    std::vector<CTreeNodeRef> viewDag;
+    viewDag.reserve(dag.size());
+    for (const auto &mi : dag)
+    {
+        if (mi.second->fProcessed || mi.second == newNode)
+            viewDag.push_back(mi.second);
+    }
+    excluded = GetTxnExclusionSet(std::move(viewDag), conflictRegistry, _pcoinsSummaryRoot, &losers);
+    missingInputs.Add(newNode, excluded, losers);
+    return true;
+}
+
+// Index this excluded tx against the outpoints it spends. subblock is the hash of
+// a subblock containing ptx.
+void CDagMissingInputIndex::Add(const CTransactionRef &ptx, const uint256 &subblock)
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+    if (!ptx || ptx->IsCoinBase())
+        return;
+    const uint256 txid = ptx->GetId();
+    subblockByTx[txid].insert(subblock);
+    if (txById.count(txid))
+        return; // already indexed by another subblock; the watches are per transaction
+    txById[txid] = ptx;
+    for (const auto &input : ptx->vin)
+    {
+        waiting[input.prevout].insert(txid);
+        watchedByTx[txid].push_back(input.prevout);
+    }
+}
+
+// Drop one subblock of txid; the transaction leaves the index only when no subblock remains.
+void CDagMissingInputIndex::Remove(const uint256 &txid, const uint256 &subblock)
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+    auto it = subblockByTx.find(txid);
+    if (it == subblockByTx.end())
+        return;
+    it->second.erase(subblock);
+    if (it->second.empty())
+        Remove(txid);
+}
+
+// Drop one tx from the missing-input index.
+void CDagMissingInputIndex::Remove(const uint256 &txid)
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+    auto it = watchedByTx.find(txid);
+    if (it != watchedByTx.end())
+    {
+        for (const auto &op : it->second)
+        {
+            auto wit = waiting.find(op);
+            if (wit == waiting.end())
+                continue;
+            wit->second.erase(txid);
+            if (wit->second.empty())
+                waiting.erase(wit);
+        }
+        watchedByTx.erase(it);
+    }
+    txById.erase(txid);
+    subblockByTx.erase(txid);
+}
+
+void CDagMissingInputIndex::clear()
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+    waiting.clear();
+    watchedByTx.clear();
+    txById.clear();
+    subblockByTx.clear();
+}
+
+// Take every tx waiting on this outpoint off the index and return them, each paired
+// with the hashes of the subblocks containing it.
+std::vector<std::pair<CTransactionRef, std::set<uint256> > > CDagMissingInputIndex::RemoveFor(const COutPoint &outpoint)
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+    std::vector<std::pair<CTransactionRef, std::set<uint256> > > out;
+    auto it = waiting.find(outpoint);
+    if (it == waiting.end())
+        return out;
+    std::set<uint256> ids = it->second;
+    for (const auto &txid : ids)
+    {
+        CTransactionRef ptx;
+        std::set<uint256> subblocks;
+        auto txit = txById.find(txid);
+        if (txit != txById.end())
+            ptx = txit->second;
+        auto cit = subblockByTx.find(txid);
+        if (cit != subblockByTx.end())
+            subblocks = cit->second;
+        Remove(txid);
+        if (ptx)
+            out.emplace_back(ptx, std::move(subblocks));
+    }
+    return out;
+}
+
+// Index this node's excluded non-loser txs: they spend an input that is not included.
+void CDagMissingInputIndex::Add(const CTreeNodeRef &node,
+    const std::set<uint256> &excluded,
+    const std::set<uint256> &dsLosers)
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+    if (!node || !node->subblock)
+        return;
+    for (const auto &ptx : node->subblock->vtx)
+    {
+        if (ptx->IsCoinBase())
+            continue;
+        const uint256 txid = ptx->GetId();
+        // Losers stay out: a later winner flip rebuilds coins via regen.
+        if (!excluded.count(txid) || dsLosers.count(txid))
+            continue;
+        Add(ptx, node->hash);
+    }
+}
+
+// ptx is now in the coins cache. Include missing-input txs that spend its
+// outputs when every input is present and they are not current losers.
+void CTailstormTree::ConnectDependentTxs(const CTransactionRef &ptx,
+    CCoinsViewCache &coins,
+    int height,
+    const std::set<uint256> &losers)
+{
+    if (!ptx)
+        return;
+    for (size_t j = 0; j < ptx->vout.size(); j++)
+    {
+        auto deps = missingInputs.RemoveFor(ptx->OutpointAt(j));
+        for (const auto &item : deps)
+        {
+            const CTransactionRef &wtx = item.first;
+            // The subblocks containing wtx, carried so wtx can be put back on the
+            // missing-input index unchanged if it still cannot be applied.
+            const std::set<uint256> &subblocks = item.second;
+            if (!wtx || losers.count(wtx->GetId()))
+            {
+                if (wtx)
+                {
+                    for (const auto &subblock : subblocks)
+                        missingInputs.Add(wtx, subblock);
+                }
+                continue;
+            }
+            bool ready = true;
+            for (const auto &input : wtx->vin)
+            {
+                if (input.IsReadOnly())
+                    continue;
+                CoinAccessor coin(coins, input.prevout);
+                if (!coin || coin->IsSpent())
+                {
+                    ready = false;
+                    break;
+                }
+            }
+            if (!ready)
+            {
+                for (const auto &subblock : subblocks)
+                    missingInputs.Add(wtx, subblock);
+                continue;
+            }
+            // ConnectBlock skips mapDagTxns, so admit uses the same checks
+            // connect uses for a tx that was omitted as unsourced.
+            if (!pindexSummaryRoot || !_pcoinsSummaryRoot)
+            {
+                LOG(DAG, "%s: dependent tx %s failed validation, not including it: missing index or coins", __func__,
+                    wtx->GetId().ToString());
+                continue;
+            }
+            {
+                CValidationState depState;
+                if (!CheckTxFinalAndInputs(
+                        wtx, depState, coins, *_pcoinsSummaryRoot, *pindexSummaryRoot, Params(), true, true, false))
+                {
+                    LOG(DAG, "%s: dependent tx %s failed validation, not including it: %s", __func__,
+                        wtx->GetId().ToString(), depState.GetLogString());
+                    if (depState.GetRejectCode() == REJECT_CONFLICT)
+                    {
+                        // An input went missing or was spent since the readiness check. That is not
+                        // a verdict on the transaction, so keep it waiting.
+                        for (const auto &subblock : subblocks)
+                            missingInputs.Add(wtx, subblock);
+                        continue;
+                    }
+                    // Connect rejects a subblock carrying an invalid transaction at insert. This
+                    // transaction escaped that check only because its input was missing then, so
+                    // apply the same verdict now, for consistency with nodes that held the input at
+                    // insert: mark every subblock carrying it for removal at the next regeneration.
+                    //
+                    // TODO: the preferred fix is to exclude the invalid transaction and keep the
+                    // subblock, at insert, at regeneration and here alike, so a subblock is never
+                    // rejected for its contents.
+                    setBadSubblocks.insert(subblocks.begin(), subblocks.end());
+                    continue;
+                }
+            }
+            try
+            {
+                UpdateCoins(*wtx, coins, height);
+            }
+            catch (const std::logic_error &)
+            {
+                continue;
+            }
+            mapDagTxns.emplace(wtx->GetId(), wtx);
+            {
+                std::list<CTransactionRef> txConflicted;
+                WRITELOCK(mempool.cs_txmempool);
+                mempool._removeConflicts(*wtx, txConflicted);
+            }
+            LOG(DAG, "%s: included dependent tx %s", __func__, wtx->GetId().ToString());
+            ConnectDependentTxs(wtx, coins, height, losers);
+        }
+    }
+}
+
+void CTailstormTree::OmitUnapplyableTxs(const CTreeNodeRef &node, const CCoinsViewCache &coins, std::set<uint256> &omit)
+{
+    DbgAssert(node && node->subblock, return);
+
+    // Transactions are in canonical (id) order, not dependency order, so a child can precede its
+    // parent in vtx. Accept transactions until no more can be sourced, then classify the rest.
+    std::set<COutPoint> appliedOutputs;
+    std::set<uint256> accepted;
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (const auto &ptx : node->subblock->vtx)
+        {
+            if (ptx->IsCoinBase())
+                continue;
+            const uint256 txid = ptx->GetId();
+            if (omit.count(txid) || accepted.count(txid))
+                continue;
+            // This txid was already applied from another subblock containing it.
+            // Connect skips via mapDagTxns; the inputs look spent because this
+            // transaction is what spent them.
+            if (mapDagTxns.count(txid))
+                continue;
+
+            bool sourced = true;
+            for (const auto &input : ptx->vin)
+            {
+                if (appliedOutputs.count(input.prevout))
+                    continue;
+                Coin coin;
+                if (!coins.GetCoin(input.prevout, coin) || coin.IsSpent())
+                {
+                    sourced = false;
+                    break;
+                }
+            }
+            if (!sourced)
+                continue;
+            accepted.insert(txid);
+            for (size_t j = 0; j < ptx->vout.size(); j++)
+                appliedOutputs.insert(ptx->OutpointAt(j));
+            changed = true;
+        }
+    }
+
+    // Whatever remains cannot source from the view. An input that is absent may arrive later, so
+    // the transaction is filed for retry; an input already spent will not.
+    for (const auto &ptx : node->subblock->vtx)
+    {
+        if (ptx->IsCoinBase())
+            continue;
+        const uint256 txid = ptx->GetId();
+        if (omit.count(txid) || accepted.count(txid) || mapDagTxns.count(txid))
+            continue;
+
+        bool missing = false;
+        bool spent = false;
+        for (const auto &input : ptx->vin)
+        {
+            if (appliedOutputs.count(input.prevout))
+                continue;
+            Coin coin;
+            if (coins.GetCoin(input.prevout, coin))
+            {
+                if (coin.IsSpent())
+                    spent = true;
+            }
+            else
+                missing = true;
+        }
+        if (missing)
+        {
+            omit.insert(txid);
+            missingInputs.Add(ptx, node->hash);
+            LOG(DAG, "%s: omitting %s of %s: input not in view", __func__, txid.ToString(), node->hash.ToString());
+        }
+        else if (spent)
+        {
+            omit.insert(txid);
+            LOG(DAG, "%s: omitting %s of %s: input already spent", __func__, txid.ToString(), node->hash.ToString());
+        }
+    }
+}
+
+std::map<CTreeNodeRef, uint32_t> GetDagScores(const std::set<CTreeNodeRef> &dagNodes)
+{
+    return GetDagScores(std::vector<CTreeNodeRef>(dagNodes.begin(), dagNodes.end()));
+}
+
+std::map<CTreeNodeRef, uint32_t> GetDagScores(const std::vector<CTreeNodeRef> &dagNodes)
 {
     // Set the uncle score to a contant which is slightly less that the maximum
     // dag score possible. The idea here is that we want to punish uncles enough
     // to disourage miners from continuing to mine on the previous epoch, but
     // not reduce it so much that it would be beneficial for potential selfish miners.
     uint32_t nUncleScore = 1;
-    if (setBestDag.size() > DEFAULT_UNCLE_SCORE_ADJUSTMENT)
-        nUncleScore = setBestDag.size() - DEFAULT_UNCLE_SCORE_ADJUSTMENT;
+    if (dagNodes.size() > DEFAULT_UNCLE_SCORE_ADJUSTMENT)
+        nUncleScore = dagNodes.size() - DEFAULT_UNCLE_SCORE_ADJUSTMENT;
 
     // Count up how many uncles there are in the dag. We'll need this to initialize
     // the scoring below.
     uint32_t nUncles = 0;
-    for (auto node : setBestDag)
+    for (const auto &node : dagNodes)
     {
         if (node->fUncle)
             nUncles++;
     }
 
     std::map<CTreeNodeRef, uint32_t> mapBestDagScores;
-    for (auto node : setBestDag)
+    for (const auto &node : dagNodes)
     {
         // Initialize the map entry if it doesn't already exist.
         if (node->fUncle)
@@ -136,7 +656,7 @@ std::map<CTreeNodeRef, uint32_t> GetDagScores(const std::set<CTreeNodeRef> &setB
 
         // Now search through all the ancestors and add "1" to the score
         // of any valid ancestor.
-        for (auto ancestor : setAllAncestors)
+        for (const auto &ancestor : setAllAncestors)
         {
             // Initialize the map entry if it doesn't already exist.
             mapBestDagScores.emplace(ancestor, nUncles);
@@ -161,49 +681,216 @@ uint256 GetActiveDagTip(std::set<CTreeNodeRef> &dag)
     return activetip;
 }
 
-std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &setBestDag,
-    std::vector<std::map<uint256, CTreeNodeRef> > &_vDoubleSpendTxns,
-    std::map<COutPoint, CTransactionRef> &mapInputs)
+// Transactions in dag that must be omitted: conflict losers and txs that
+// cannot source from the chain, an included dag tx, or an included earlier
+// tx in the same subblock.
+std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &dagNodes,
+    const CDagConflictRegistry &registry,
+    const CCoinsViewCache *pcoins,
+    std::set<uint256> *pLosers)
 {
-    // Since we'll be modifying values make a local copy.
-    std::vector<std::map<uint256, CTreeNodeRef> > vDoubleSpendTxns = _vDoubleSpendTxns;
-    // coming in, these maps need to have at least 2 elements or where is the conflict?
-    for (auto m : _vDoubleSpendTxns)
-    {
-        DbgAssert(m.size() > 1, );
-    }
-    for (auto m : vDoubleSpendTxns)
-    {
-        DbgAssert(m.size() > 1, );
-    }
+    return GetTxnExclusionSet(std::vector<CTreeNodeRef>(dagNodes.begin(), dagNodes.end()), registry, pcoins, pLosers);
+}
 
-    // Get the set of invalid double spends which we "DO NOT" want to include in the final summary block.
-    //
-    // Of each group of conflicting transactions we keep the one the dag has built over most and
-    // exclude the rest, along with anything descended from them.
-    std::set<uint256> setTxnExclusions;
+std::set<uint256> GetTxnExclusionSet(std::vector<CTreeNodeRef> nodes,
+    const CDagConflictRegistry &registry,
+    const CCoinsViewCache *pcoins,
+    std::set<uint256> *pLosers)
+{
+    std::set<uint256> excluded;
+    if (nodes.empty())
+        return excluded;
 
-    // A transaction is routinely carried by more than one subblock, so take the max() score of
-    // any subblock carrying it, and the lowest hash among those tied on score to break a tie below.
-    // Both are resolved by comparison, so the result does not depend on iteration order.
-    auto mapScores = GetDagScores(setBestDag);
+    auto mapScores = GetDagScores(nodes);
     std::map<uint256, std::pair<uint32_t, uint256> > mapScoresByTxId;
-    for (const auto &node : setBestDag)
-    {
-        if (!node->subblock || node->fUncle)
-            continue;
+    std::map<uint256, CTransactionRef> mapTx;
+    std::map<COutPoint, uint256> createdBy;
 
+    // Upper bound on the distinct transactions: every subblock's vtx, minus coinbases.
+    std::vector<uint256> order;
+    size_t nMaxTxns = 0;
+    for (const auto &node : nodes)
+    {
+        if (node && node->subblock && !node->subblock->vtx.empty())
+            nMaxTxns += node->subblock->vtx.size() - 1;
+    }
+    order.reserve(nMaxTxns);
+
+    std::sort(nodes.begin(), nodes.end(),
+        [](const CTreeNodeRef &a, const CTreeNodeRef &b)
+        {
+            if (a->nSequenceId != b->nSequenceId)
+                return a->nSequenceId < b->nSequenceId;
+            return a->hash < b->hash;
+        });
+
+    for (const auto &node : nodes)
+    {
+        // Uncles keep the parent-epoch hash; they are not in this grove's index.
+        if (!node || !node->subblock || node->fUncle)
+            continue;
         auto itScore = mapScores.find(node);
         if (itScore == mapScores.end())
             continue;
         const uint32_t nNodeScore = itScore->second;
+        for (size_t i = 0; i < node->subblock->vtx.size(); i++)
+        {
+            const CTransactionRef &ptx = node->subblock->vtx[i];
+            if (ptx->IsCoinBase())
+                continue;
+            const uint256 txid = ptx->GetId();
+            auto res = mapScoresByTxId.emplace(txid, std::make_pair(nNodeScore, node->hash));
+            if (!res.second)
+            {
+                if (nNodeScore > res.first->second.first)
+                    res.first->second = std::make_pair(nNodeScore, node->hash);
+                else if ((nNodeScore == res.first->second.first) && (node->hash < res.first->second.second))
+                    res.first->second.second = node->hash;
+            }
+            if (mapTx.emplace(txid, ptx).second)
+            {
+                order.push_back(txid);
+                for (size_t j = 0; j < ptx->vout.size(); j++)
+                    createdBy.emplace(ptx->OutpointAt(j), txid);
+            }
+        }
+    }
 
+    std::set<uint256> losers;
+    for (const auto &kv : registry.Groups())
+    {
+        const auto &group = kv.second;
+        uint256 hashWinner;
+        uint256 subblockHashWinner;
+        uint32_t nWinnerScore = 0;
+        uint32_t nCandidates = 0;
+        for (const auto &sp : group.spenders)
+        {
+            auto it = mapScoresByTxId.find(sp.first);
+            if (it == mapScoresByTxId.end())
+                continue;
+            nCandidates++;
+            const uint32_t nScore = it->second.first;
+            const uint256 &subblockHash = it->second.second;
+            if (nScore > nWinnerScore)
+            {
+                nWinnerScore = nScore;
+                hashWinner = sp.first;
+                subblockHashWinner = subblockHash;
+            }
+            else if ((nScore == nWinnerScore) && (subblockHash < subblockHashWinner))
+            {
+                hashWinner = sp.first;
+                subblockHashWinner = subblockHash;
+            }
+        }
+        // Only one side of the group is in this dag set: no doublespend conflict here.
+        if (nCandidates < 2 || hashWinner.IsNull())
+            continue;
+
+        for (const auto &sp : group.spenders)
+        {
+            if ((sp.first != hashWinner) && mapScoresByTxId.count(sp.first))
+                losers.insert(sp.first);
+        }
+    }
+
+    /*
+      Why do we need to loop every time there is a change?
+
+      At the subblock level, consider committing a tx B that spends an output before you commit its creation tx A.
+      That is tx B appears in a lower score subblock than A.  The fundamental simplification here
+      (which has many ramifications) is using score (which depends on subsequent events) rather than using dag
+      ancestors only when the coins view is constructed.
+
+      If we set B to be invalid because it is missing inputs (since they arrive later), then we will create a
+      coins cache view that does not have B's outputs (and didn't spend its inputs).
+
+      Newly arrived subblocks layer on top of this coins cache.  However, if a node recalculates the entire DAG
+      including these newly arrived subblocks, it may end up with a different subblock ordering due to changing score,
+      and if A's subblock scores before B's,  B becomes valid.
+
+      The answer is to make transaction processing order independent of subblock order, since that is how the
+      transactions will be evaluated in the final summary block anyway.
+
+      The only effect subblock order therefore has is the resolution of doublespends and their descendants (DS), and we
+      recognise that the DS that is considered valid may theoretically change so hold them provisionally.
+    */
+    std::set<uint256> included;
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (const uint256 &txid : order)
+        {
+            if (losers.count(txid) || included.count(txid))
+                continue;
+            bool sourced = true;
+            const CTransactionRef &ptx = mapTx[txid];
+            for (const auto &input : ptx->vin)
+            {
+                auto it = createdBy.find(input.prevout);
+                if (it == createdBy.end())
+                {
+                    // Not created in this dag: sourced only if the grove's base
+                    // coins (chain at the root) still hold the outpoint.
+                    if (pcoins)
+                    {
+                        CoinAccessor coin(*pcoins, input.prevout);
+                        if (!coin || coin->IsSpent())
+                            sourced = false;
+                    }
+                    continue;
+                }
+                if (!included.count(it->second))
+                {
+                    sourced = false;
+                    break;
+                }
+            }
+            if (sourced)
+            {
+                included.insert(txid);
+                changed = true;
+            }
+        }
+    }
+
+    for (const uint256 &txid : order)
+    {
+        if (!included.count(txid))
+            excluded.insert(txid);
+    }
+    if (pLosers)
+        *pLosers = std::move(losers);
+    return excluded;
+}
+
+// Winner per registry group over this dag: max GetDagScores, and on a tie the lowest
+// hash among the subblocks containing the transaction.
+static std::map<uint64_t, uint256> ComputeGroupWinners(const std::vector<CTreeNodeRef> &dagNodes,
+    const CDagConflictRegistry &registry)
+{
+    std::map<uint64_t, uint256> winners;
+    if (dagNodes.empty())
+        return winners;
+
+    auto mapScores = GetDagScores(dagNodes);
+    std::map<uint256, std::pair<uint32_t, uint256> > mapScoresByTxId;
+    for (const auto &node : dagNodes)
+    {
+        if (!node || !node->subblock || node->fUncle)
+            continue;
+        auto itScore = mapScores.find(node);
+        if (itScore == mapScores.end())
+            continue;
+        const uint32_t nNodeScore = itScore->second;
         for (const auto &ptx : node->subblock->vtx)
         {
             if (ptx->IsCoinBase())
                 continue;
-
-            auto res = mapScoresByTxId.emplace(ptx->GetId(), std::make_pair(nNodeScore, node->hash));
+            const uint256 txid = ptx->GetId();
+            auto res = mapScoresByTxId.emplace(txid, std::make_pair(nNodeScore, node->hash));
             if (!res.second)
             {
                 if (nNodeScore > res.first->second.first)
@@ -214,136 +901,52 @@ std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &setBestDag,
         }
     }
 
-    // Discard candidates this summary does not carry, and any group left with fewer than two.
-    //
-    // The groups arrive as a copy of tree->vDoubleSpendTxns, which accumulates every conflict
-    // recorded against the tree. The tree holds more subblocks than a summary commits, so a group
-    // can name transactions that are in none of the subblocks this summary requires. Those cannot
-    // be demanded of the block, so there is no conflict here to resolve and no winner to find.
-    for (auto iter = vDoubleSpendTxns.begin(); iter != vDoubleSpendTxns.end();)
+    for (const auto &kv : registry.Groups())
     {
-        for (auto mi = iter->begin(); mi != iter->end();)
-        {
-            if (!mapScoresByTxId.count(mi->first))
-                mi = iter->erase(mi);
-            else
-                mi++;
-        }
-
-        if (iter->size() < 2)
-        {
-            LOG(DAG, "Ignoring double spend not carried by this summary, %d candidate(s) remain", (int)iter->size());
-            iter = vDoubleSpendTxns.erase(iter);
-        }
-        else
-        {
-            iter++;
-        }
-    }
-
-    // Resolve each double spend in favour of the transaction with max() subblock score, so the
-    // side the dag has built over wins. Score counts uncles, ancestors and descendants, so a
-    // subblock cannot raise its standing by choosing what it references.
-    for (auto &mapDoubleSpends : vDoubleSpendTxns)
-    {
-        // Iterate through each map to find the highest scoring txn, then remove it from the map
-        // and insert the remaining map values into the exclusion set.
+        const auto &group = kv.second;
         uint256 hashWinner;
         uint256 subblockHashWinner;
         uint32_t nWinnerScore = 0;
-        for (auto &mi : mapDoubleSpends)
+        uint32_t nCandidates = 0;
+        for (const auto &sp : group.spenders)
         {
-            uint32_t nScore = 0;
-            uint256 subblockHash;
-            auto it = mapScoresByTxId.find(mi.first);
-            if (it != mapScoresByTxId.end())
-            {
-                nScore = it->second.first;
-                subblockHash = it->second.second;
-            }
-
+            auto it = mapScoresByTxId.find(sp.first);
+            if (it == mapScoresByTxId.end())
+                continue;
+            nCandidates++;
+            const uint32_t nScore = it->second.first;
+            const uint256 &subblockHash = it->second.second;
             if (nScore > nWinnerScore)
             {
                 nWinnerScore = nScore;
-                hashWinner = mi.first;
+                hashWinner = sp.first;
                 subblockHashWinner = subblockHash;
             }
-            // Equal scores means neither is a clear winner. Keep the lowest subblock hash.
             else if ((nScore == nWinnerScore) && (subblockHash < subblockHashWinner))
             {
-                hashWinner = mi.first;
+                hashWinner = sp.first;
                 subblockHashWinner = subblockHash;
             }
         }
-
-        // Log how many candidates sat at the winning score, so it is clear whether the score or
-        // the hash decided it when two nodes pick different sides.
-        uint32_t nAtWinnerScore = 0;
-        for (auto &mi : mapDoubleSpends)
-        {
-            auto it = mapScoresByTxId.find(mi.first);
-            if ((it != mapScoresByTxId.end()) && (it->second.first == nWinnerScore))
-                nAtWinnerScore++;
-        }
-        LOG(DAG, "Double spend winner %s score %u subblock %s, %d candidate(s), %u at that score",
-            hashWinner.ToString(), nWinnerScore, subblockHashWinner.ToString(), (int)mapDoubleSpends.size(),
-            nAtWinnerScore);
-
-        mapDoubleSpends.erase(hashWinner);
-
-        // Add any descendant txns to the exclusion set regardless of what
-        // subblock they're in.
-        std::map<uint256, CTransactionRef> mapDagTxns;
-        tailstormForest.GetDagTxns(setBestDag, mapDagTxns);
-        for (auto &mi : mapDoubleSpends)
-        {
-            setTxnExclusions.insert(mi.first);
-            LOG(DAG, "Excluding double spend loser %s", mi.first.ToString());
-
-            // Anything left in the map needs to have all it's descendants chains also removed.
-            // Find all the descendants and add them to the exclusion set.
-            if (mapDagTxns.count(mi.first))
-            {
-                const auto pDoubleSpend = mapDagTxns[mi.first];
-                std::set<CTransactionRef> descendants;
-                descendants.insert(pDoubleSpend);
-
-                uint32_t nDescendants = 0;
-                while (!descendants.empty())
-                {
-                    auto ptx = *descendants.begin();
-                    descendants.erase(ptx);
-                    for (unsigned int j = 0; j < ptx->vout.size(); j++)
-                    {
-                        const auto &outpoint = ptx->OutpointAt(j);
-                        if (mapInputs.count(outpoint))
-                        {
-                            auto pNewDescendant = mapInputs[outpoint];
-                            descendants.insert(pNewDescendant);
-                            setTxnExclusions.insert(pNewDescendant->GetId());
-                            nDescendants++;
-                            LOG(DAG, "Excluding txn %s, it descends from double spend %s",
-                                pNewDescendant->GetId().ToString(), mi.first.ToString());
-                        }
-                    }
-                }
-                if (nDescendants > 0)
-                {
-                    LOG(DAG, "Excluded %d descendant txn(s) of double spend %s", (int)nDescendants,
-                        mi.first.ToString());
-                }
-            }
-        }
+        if (nCandidates >= 2 && !hashWinner.IsNull())
+            winners[group.id] = hashWinner;
     }
+    return winners;
+}
 
-    // make sure we didn't break this input parameter
-    for (const auto &m : _vDoubleSpendTxns)
-    {
-        DbgAssert(m.size() > 1, );
-    }
+// Same omit set, taking the tree that produced the dag rather than searching for it.
+std::set<uint256> GetTxnExclusionSet(std::vector<CTreeNodeRef> dagNodes,
+    const CTailstormTree &tree,
+    std::set<uint256> *losers)
+{
+    return GetTxnExclusionSet(std::move(dagNodes), tree.conflictRegistry, tree._pcoinsSummaryRoot, losers);
+}
 
-
-    return setTxnExclusions;
+std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &dagNodes,
+    const CTailstormTree &tree,
+    std::set<uint256> *losers)
+{
+    return GetTxnExclusionSet(std::vector<CTreeNodeRef>(dagNodes.begin(), dagNodes.end()), tree, losers);
 }
 
 bool IsTailstormDagActivated() { return fTailstormEnabled && IsInitialSyncComplete(); }
@@ -357,76 +960,6 @@ CTailstormTree::~CTailstormTree()
     {
         delete view;
         view = nullptr;
-    }
-}
-
-void FindDagConflicts(const std::vector<CTreeNodeRef> &vOtherSubblocks,
-    const CTreeNodeRef &newNode,
-    std::vector<std::map<uint256, CTreeNodeRef> > &vDoubleSpendTxns,
-    std::set<CTreeNodeRef> *setConflictingSubblocks)
-{
-    if (!newNode->subblock)
-        return;
-
-    // Create the outpoint map, and alongside it the set of this subblock's own txids.
-    std::map<COutPoint, CTransactionRef> newNodeOutpoints;
-    std::set<uint256> newNodeTxns;
-    for (CTransactionRef ptx : newNode->subblock->vtx)
-    {
-        if (ptx->IsCoinBase())
-            continue;
-
-        newNodeTxns.insert(ptx->GetId());
-        for (size_t j = 0; j < ptx->vin.size(); j++)
-        {
-            newNodeOutpoints[ptx->vin[j].prevout] = ptx;
-        }
-    }
-
-    // Cycle through the dag from highest sequence id to lowest looking for a conflicting subblock.
-    std::vector<CTreeNodeRef> vSortedDag(vOtherSubblocks);
-    std::sort(vSortedDag.begin(), vSortedDag.end(),
-        [](const CTreeNodeRef &a, const CTreeNodeRef &b) { return a->nSequenceId < b->nSequenceId; });
-    for (auto it = vSortedDag.rbegin(); it != vSortedDag.rend(); it++)
-    {
-        const auto &existingSubblock = *it;
-        if (!existingSubblock->subblock)
-            continue;
-        if (existingSubblock->hash == newNode->hash)
-            continue; // Its the same block so ignore
-        for (CTransactionRef ptx : existingSubblock->subblock->vtx)
-        {
-            if (ptx->IsCoinBase())
-                continue;
-
-            // Subblocks sharing a transaction is normal, it is what the summary consolidates, and
-            // is not a conflict. Skip it before scanning inputs. This replaces a per-input test
-            // that reached the same conclusion but logged a TX self-conflict line for every
-            // matching input of every shared transaction, on every rescan.
-            if (newNodeTxns.count(ptx->GetId()))
-                continue;
-
-            std::map<uint256, CTreeNodeRef> mapDoubleSpendTxns;
-            for (size_t j = 0; j < ptx->vin.size(); j++)
-            {
-                // This block/tx pulls in an input that newNode spends
-                if (newNodeOutpoints.count(ptx->vin[j].prevout))
-                {
-                    LOG(DAG, "%s: TX doublespend txid=%s in subblocks %s and %s", __func__, ptx->GetId().ToString(),
-                        existingSubblock->subblock->GetHash().ToString(), newNode->subblock->GetHash().ToString());
-
-                    if (setConflictingSubblocks)
-                        setConflictingSubblocks->insert(existingSubblock);
-                    mapDoubleSpendTxns.emplace(ptx->GetId(), existingSubblock);
-                    mapDoubleSpendTxns.emplace(newNodeOutpoints[ptx->vin[j].prevout]->GetId(), newNode);
-                }
-            }
-            if (!mapDoubleSpendTxns.empty())
-            {
-                DbgAssert(mapDoubleSpendTxns.size() > 1, );
-                vDoubleSpendTxns.push_back(mapDoubleSpendTxns);
-            }
-        }
     }
 }
 
@@ -458,7 +991,8 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             const int64_t gap = (int64_t)chainTip->height() - (int64_t)pindexSummaryRoot->height();
             if (gap <= 2)
             {
-                dag.emplace(newNode->hash, newNode);
+                if (!checkUpdateAncestryInsertIntoDag(newNode))
+                    return {};
                 return newNode;
             }
             else
@@ -472,10 +1006,8 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
         // we can add it to the dag as uprocessed so it can be used as an uncle.
         if ((dag.size() + mapUncles.size()) >= Params().GetConsensus().tailstorm_k - 1)
         {
-            newNode->nSequenceId = dag.size() + 1;
-            DbgAssert(newNode->nSequenceId > 0, );
-            newNode->fProcessed = false;
-            dag.emplace(newNode->hash, newNode);
+            if (!checkUpdateAncestryInsertIntoDag(newNode))
+                return {};
             return newNode;
         }
 
@@ -491,21 +1023,35 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
         {
             if (!ancestor->fProcessed)
             {
-                LOG(DAG, "%s(): parking subblock %s because ancestor %s is unprocessed\n", __func__,
+                if (!checkUpdateAncestryInsertIntoDag(newNode))
+                    return {};
+                LOG(DAG, "%s(): parked subblock %s because ancestor %s is unprocessed\n", __func__,
                     newNode->hash.ToString(), ancestor->hash.ToString());
-                newNode->nSequenceId = dag.size() + 1;
-                DbgAssert(newNode->nSequenceId > 0, );
-                newNode->fProcessed = false;
-                dag.emplace(newNode->hash, newNode);
                 return newNode;
             }
         }
 
-        bool fMissingOrSpent = false;
-        std::set<CTreeNodeRef> setConflictingSubblocks;
-        CValidationState state;
-        CCoinsViewCache upperview(view);
-        bool fOK = true;
+        TxAdmissionPause txlock;
+
+        std::set<uint256> losers;
+        std::set<uint256> viewExcl;
+        if (!checkUpdateAncestryInsertIntoDag(newNode, viewExcl, losers))
+            return {};
+
+        if (view)
+            OmitUnapplyableTxs(newNode, *view, viewExcl);
+        unsigned nOmitted = 0;
+        for (const auto &ptx : newNode->subblock->vtx)
+        {
+            if (!ptx->IsCoinBase() && viewExcl.count(ptx->GetId()))
+                nOmitted++;
+        }
+        if (nOmitted)
+        {
+            LOG(DAG, "%s: excluding %u transaction(s) of subblock %s", __func__, nOmitted, newNode->hash.ToString());
+        }
+
+        if (newNode->nSequenceId + mapUncles.size() <= Params().GetConsensus().tailstorm_k - 1)
         {
             const CChainParams &chainparams = Params();
             bool fJustCheck = false;
@@ -516,168 +1062,71 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             vPos.reserve(newNode->subblock->vtx.size());
             std::map<CGroupTokenID, CAmount> accumulatedMintages;
             std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
-
-            // Try connecting the block and updating the coins cache.  If successful then we can remove
-            // any conflicts from the txpool.
-            if (!ConnectBlockCanonicalOrdering(newNode->subblock, state, pindexSummaryRoot, upperview, chainparams,
-                    fJustCheck, SINGLE_THREADED, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages,
-                    accumulatedAuthorities, &mapDagTxns))
+            CValidationState state;
+            // Child cache: a failed connect must not dirty the tree view.
+            CCoinsViewCache upperview(view);
+            bool fOK = ConnectBlockCanonicalOrdering(newNode->subblock, state, pindexSummaryRoot, upperview,
+                chainparams, fJustCheck, SINGLE_THREADED, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages,
+                accumulatedAuthorities, &mapDagTxns, &viewExcl);
+            if (!fOK)
             {
-                fOK = false;
-                LOG(DAG, "%s(): subblock did not connect: %s", __func__, newNode->hash.ToString());
-                int nDos = 0;
-                if (state.IsInvalid(nDos))
+                LOG(DAG, "%s: subblock %s failed to validate: %s", __func__, newNode->hash.ToString(),
+                    state.GetLogString());
+                dag.erase(newNode->hash);
+                conflictRegistry.Unlink(newNode);
+                for (const auto &ptx : newNode->subblock->vtx)
                 {
-                    // Check if this subblock is double spending anything in the dag
-                    // and if so mark is as a possible TRUE double spend so we can check it
-                    // more fully.
-                    if (state.GetRejectCode() == REJECT_CONFLICT)
-                    {
-                        fMissingOrSpent = true;
-                    }
+                    if (!ptx->IsCoinBase())
+                        missingInputs.Remove(ptx->GetId(), newNode->hash);
                 }
+                return {};
             }
-        }
 
-        if (fMissingOrSpent)
-        {
-            // The following code verifies whether we actually have a true double spend of if the block has
-            // missing inputs. If it has missing inputs then we reject it completely. If it is a double spend
-            // then we process it further and add it to the tracking map.
-            LOG(DAG, "%s: subbblock %s is potentially a double spend block: %s", __func__, newNode->hash.ToString(),
-                state.GetLogString());
-
-
-            std::vector<CTreeNodeRef> vOtherSubblocks;
-            vOtherSubblocks.reserve(dag.size());
-            for (const auto &mi : dag)
+            for (CTransactionRef ptx : newNode->subblock->vtx)
             {
-                vOtherSubblocks.push_back(mi.second);
+                if (ptx->IsCoinBase() || viewExcl.count(ptx->GetId()))
+                    continue;
+                mapDagTxns.emplace(ptx->GetId(), ptx);
             }
-            FindDagConflicts(vOtherSubblocks, newNode, vDoubleSpendTxns, &setConflictingSubblocks);
 
-            if (!setConflictingSubblocks.empty())
+            bool result = upperview.Flush();
+            assert(result);
+
+            const int nHeight = pindexSummaryRoot ? pindexSummaryRoot->height() : 0;
+            for (CTransactionRef ptx : newNode->subblock->vtx)
             {
-                LOG(DAG, "%s: Found %ld Conflicting subblock(s)", __func__, setConflictingSubblocks.size());
-
-                // If this subblock has its double spent subblock in it's ancestor tree then we "must" reject it.
-                auto setAncestors = CalculateAncestors(newNode);
-                bool fHasDoubleSpentAncestor = false;
-                for (auto &node : setConflictingSubblocks)
-                {
-                    if (setAncestors.count(node))
-                    {
-                        fHasDoubleSpentAncestor = true;
-                        break;
-                    }
-                }
-                if (fHasDoubleSpentAncestor)
-                {
-                    LOG(DAG, "%s: Rejected - subbblock %s has a double spend in its ancestor tree: %s", __func__,
-                        newNode->hash.ToString(), state.GetLogString());
-                    return {};
-                }
-                else
-                {
-                    // If it's a true and acceptable conflicting subblock then we will accept it.
-                    LOG(DAG, "%s: Accepted - subbblock %s double spend not in ancestor tree: %s", __func__,
-                        newNode->hash.ToString(), state.GetLogString());
-                    logDoublespendTxns(vDoubleSpendTxns);
-                    fOK = true;
-                }
+                if (ptx->IsCoinBase() || viewExcl.count(ptx->GetId()))
+                    continue;
+                ConnectDependentTxs(ptx, *view, nHeight, losers);
             }
-            else
+
+            std::list<CTransactionRef> txConflicted;
             {
-                fOK = false;
-                LOG(DAG, "%s: not adding subbblock %s because some inputs are missing: %s", __func__,
-                    newNode->hash.ToString(), state.GetLogString());
-            }
-        }
-
-        if (!fOK)
-        {
-            LOG(DAG, "%s: subbblock %s failed to validate: %s", __func__, newNode->hash.ToString(),
-                state.GetLogString());
-
-            return {};
-        }
-        else
-        {
-            // Stop txadmission, and flush the commitQ, before we flush coin state, remove txn conflicts and
-            // set the active tree as well as bestGrove.
-            TxAdmissionPause txlock;
-
-            // Update the sequence id
-            newNode->nSequenceId = dag.size() + 1;
-            DbgAssert(newNode->nSequenceId > 0, );
-            dag.emplace(newNode->hash, newNode);
-
-            // Only process txns and flush coins for subblocks that fit into the best dag. Overflow subblocks
-            // are excluded.
-            if (newNode->nSequenceId + mapUncles.size() <= Params().GetConsensus().tailstorm_k - 1)
-            {
-                // Update the map of all current dag transactions. This must be done before
-                // we continue processing, especially is we have a double spend block and
-                // we need to re-generate the dag data.
-                for (CTransactionRef ptx : newNode->subblock->vtx)
+                WRITELOCK(mempool.cs_txmempool);
+                for (const auto &tx : newNode->subblock->vtx)
                 {
-                    if (ptx->IsCoinBase())
+                    if (tx->IsCoinBase())
                         continue;
-
-                    mapDagTxns.emplace(ptx->GetId(), ptx);
-
-                    for (auto &input : ptx->vin)
+                    // An excluded tx is not in the ledger, so its pool conflicts
+                    // stay. They are evicted at summary connect.
+                    if (viewExcl.count(tx->GetId()))
                     {
-                        mapInputs.emplace(input.prevout, ptx);
+                        LOG(DAG, "%s: keeping txpool conflicts of excluded tx %s of subblock %s", __func__,
+                            tx->GetId().ToString(), newNode->hash.ToString());
+                        continue;
                     }
-                }
-
-                // After the subblock is validated without error we can flush coin state
-                bool result = upperview.Flush();
-                assert(result);
-
-                std::list<CTransactionRef> txConflicted;
-                // TODO: leave this commented code block as it will be useful in the future.
-                // mempool.removeForBlock(pblock->vtx, pblock->height, txConflicted, true);
-                // Process orphan pool for transactions in block but do deferr it to be done
-                // in another thread.
-                // LOCK(orphanpool.cs_blockprocessing);
-                // orphanpool.vPostBlockProcessing.push_back(pblock);
-
-                // Remove conflicting txns from the txpool
-                {
-                    WRITELOCK(mempool.cs_txmempool);
-                    for (const auto &tx : newNode->subblock->vtx)
-                    {
-                        mempool._removeConflicts(*tx, txConflicted);
-                    }
+                    mempool._removeConflicts(*tx, txConflicted);
                 }
             }
-
-            // Although in the case of a double spend subblock, the dag data will have to
-            // be regnerated to determine the state of the bestGrove view which depends on which
-            // double spends are to be included/excluded, set the processed flag indicating
-            // the subblock is valid and added to the dag
-            newNode->fProcessed = true;
-
-            CTailstormGroveRef grove = nullptr;
-            if (tailstormForest.GetGrove(*(pindexSummaryRoot->phashBlock), grove))
-            {
-                // If we had a double spend then regenerate all the dag data, excluding all
-                // the low score double spends.
-                if (!setConflictingSubblocks.empty())
-                {
-                    tailstormForest.ReGenerateDagData(grove);
-                }
-                else
-                {
-                    // Set "bestGrove" to the best dag in the Forest.
-                    tailstormForest.SetBestGroveForSummaryTip();
-                }
-            }
-
-            cvCommitQ.notify_all();
         }
+
+        newNode->fProcessed = true;
+
+        CTailstormGroveRef grove = nullptr;
+        if (tailstormForest.GetGrove(*(pindexSummaryRoot->phashBlock), grove))
+            tailstormForest.SetBestGroveForSummaryTip();
+
+        cvCommitQ.notify_all();
 
         DbgAssert(newNode->nSequenceId > 0 && newNode->fProcessed, );
         if (newNode->fProcessed)
@@ -729,7 +1178,7 @@ bool CTailstormGrove::InitializeTree(CTreeNodeRef newNode, CCoinsViewCache *coin
 
     roothash = newNode->subblock->hashPrevBlock;
 
-    tree->_pcoinsTip = coinsCache;
+    tree->_pcoinsSummaryRoot = coinsCache;
     tree->view = view;
     tree->pindexSummaryRoot = LookupBlockIndex(roothash);
     assert(tree->pindexSummaryRoot);
@@ -995,23 +1444,7 @@ CTreeNodeRef CTailstormGrove::Insert(CTreeNodeRef newNode)
     return InsertIntoTree(newNode);
 }
 
-void logDoublespendTxns(const std::vector<std::map<uint256, CTreeNodeRef> > &dst)
-{
-    std::string result = "Doublespends txid->[subblocks]";
-    for (const auto &e : dst)
-    {
-        result += "\n";
-        for (const auto &m : e)
-        {
-            result += "\n  " + m.first.ToString() + " -> " + m.second->hash.ToString();
-        }
-    }
-    LOG(DAG, result);
-}
-
-bool CTailstormGrove::GetBestDag(std::set<CTreeNodeRef> &dag,
-    std::vector<std::map<uint256, CTreeNodeRef> > *vDoubleSpendTxns,
-    std::map<COutPoint, CTransactionRef> *mapInputs)
+bool CTailstormGrove::GetBestDag(std::set<CTreeNodeRef> &dag)
 {
     AssertLockHeld(tailstormForest.cs_forest);
 
@@ -1055,14 +1488,6 @@ bool CTailstormGrove::GetBestDag(std::set<CTreeNodeRef> &dag,
                     break;
             }
         }
-    }
-
-    if (!dag.empty())
-    {
-        if (vDoubleSpendTxns != nullptr)
-            *vDoubleSpendTxns = tree->vDoubleSpendTxns;
-        if (mapInputs != nullptr)
-            *mapInputs = tree->mapInputs;
     }
 
     return true;
@@ -1134,9 +1559,10 @@ void CTailstormForest::ClearByHeight(const uint32_t nPruneHeight)
                 // Clear out the tree
                 grove->tree->dag.clear();
                 grove->tree->mapUncles.clear();
-                grove->tree->vDoubleSpendTxns.clear();
+                grove->tree->conflictRegistry.clear();
+                grove->tree->missingInputs.clear();
+                grove->tree->setBadSubblocks.clear();
                 grove->tree->mapDagTxns.clear();
-                grove->tree->mapInputs.clear();
 
                 // Clear out the grove
                 grove->mapGroveNodes.clear();
@@ -1196,6 +1622,78 @@ bool CTailstormForest::Insert(const ConstCBlockRef &subblock)
     return fOK;
 }
 
+// After a successful subblock insertion: include dependent txs, then rebuild the coins
+// cache if lastWinner is first set or changes on the tip grove.
+void CTailstormForest::RefreshTransactionsAfterSubblockInsertion(CTailstormGroveRef grove, const CTreeNodeRef &newNode)
+{
+    AssertLockHeld(cs_forest);
+    if (!grove || !grove->tree || !newNode)
+        return;
+    CTailstormTree &tree = *grove->tree;
+
+    // Only processed nodes have coins to offer dependents. Winner rescore
+    // below still runs for parked links (they change scores).
+    if (tree.view && newNode->fProcessed && newNode->subblock)
+    {
+        std::set<CTreeNodeRef> viewDag;
+        grove->GetBestDag(viewDag);
+        std::set<uint256> losers;
+        auto excl = GetTxnExclusionSet(viewDag, tree.conflictRegistry, tree._pcoinsSummaryRoot, &losers);
+        const int nHeight = tree.pindexSummaryRoot ? tree.pindexSummaryRoot->height() : 0;
+        for (const auto &ptx : newNode->subblock->vtx)
+        {
+            if (ptx->IsCoinBase() || excl.count(ptx->GetId()))
+                continue;
+            tree.ConnectDependentTxs(ptx, *tree.view, nHeight, losers);
+        }
+    }
+
+    if (tree.conflictRegistry.Empty() && tree.setBadSubblocks.empty())
+        return;
+
+    // Score the processed subblocks only: that is the set the coins cache embodies and the set a
+    // summary commits, so a parked subblock must not move a winner until regeneration lays it in.
+    std::set<CTreeNodeRef> bestDag;
+    grove->GetBestDag(bestDag);
+    const auto winnersNow =
+        ComputeGroupWinners(std::vector<CTreeNodeRef>(bestDag.begin(), bestDag.end()), tree.conflictRegistry);
+
+    // The recorded winner of a group is the one the coins cache was last built against.
+    // A group with no recorded winner counts as changed: the first of the two competing
+    // spends is already applied to the cache, and the winner may turn out to be the other.
+    bool winnersChanged = false;
+    for (const auto &kv : winnersNow)
+    {
+        uint256 oldWinner;
+        const bool hadWinner = tree.conflictRegistry.GetLastWinner(kv.first, oldWinner);
+        if (!hadWinner || oldWinner != kv.second)
+        {
+            winnersChanged = true;
+            LOG(DAG, "%s: winner group=%llu %s -> %s", __func__, (unsigned long long)kv.first,
+                hadWinner ? oldWinner.ToString() : "none", kv.second.ToString());
+        }
+    }
+    // A bad subblock also needs the rebuild, which is what removes it.
+    if (!winnersChanged && tree.setBadSubblocks.empty())
+        return;
+
+    CBlockIndex *chainTip = chainActive.Tip();
+    if (!chainTip || grove->roothash != chainTip->GetHash())
+    {
+        // Only the tip grove can regenerate, so the cache still holds the old winner.
+        // Leave the recorded winners stale on purpose: recording them here would claim a
+        // rebuild that never happened, and the next link able to regenerate would then see
+        // no change and skip it, leaving the cache on the losing side indefinitely.
+        LOG(DAG, "%s: winner changed, skip regen (grove is not the tip)", __func__);
+        return;
+    }
+
+    {
+        TxAdmissionPause txlock;
+        ReGenerateDagData(grove);
+    }
+}
+
 bool CTailstormForest::_Insert(const ConstCBlockRef &subblock)
 {
     AssertLockHeld(cs_forest);
@@ -1216,6 +1714,7 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
     // so we can be sure to set the dag active tip after we've
     // had a successful insert of a treenode.
     bool fOK = false;
+    CTailstormGroveRef grove = nullptr;
 
     auto subblock = newNode->subblock;
     LOG(DAG, "%s: Starting Tailstorm Forest insert %s", newNode->hash.ToString());
@@ -1259,7 +1758,6 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
         if (pindex && (pindex->height() == chainActive.Height()))
             shouldCreateOrHasPrevGrove = true;
 
-        CTailstormGroveRef grove = nullptr;
         if (pindex && GetGrove(*(pindex->phashBlock), grove))
             shouldCreateOrHasPrevGrove = true;
 
@@ -1380,6 +1878,7 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
                 checkSummaryBlockOrphans++;
             }
         }
+        RefreshTransactionsAfterSubblockInsertion(grove, newNode);
     }
     else
     {
@@ -1739,10 +2238,7 @@ std::map<uint256, CTreeNode> CTailstormForest::GetAllNodes()
     return allNodes;
 }
 
-bool CTailstormForest::GetBestDagFor(const uint256 &hash,
-    std::set<CTreeNodeRef> &dag,
-    std::vector<std::map<uint256, CTreeNodeRef> > *vDoubleSpendTxns,
-    std::map<COutPoint, CTransactionRef> *mapInputs)
+bool CTailstormForest::GetBestDagFor(const uint256 &hash, std::set<CTreeNodeRef> &dag, CTailstormTreeRef *ptree)
 {
     LOCK(cs_forest);
     // LOG(DAG, "%s(): Start getbestdagfor", __func__);
@@ -1750,11 +2246,13 @@ bool CTailstormForest::GetBestDagFor(const uint256 &hash,
     CTailstormGroveRef grove = nullptr;
     if (GetGrove(hash, grove))
     {
-        if (!grove->GetBestDag(dag, vDoubleSpendTxns, mapInputs))
+        if (!grove->GetBestDag(dag))
         {
             LOG(DAG, "%s(): get best dag returned false", __func__);
             return false;
         }
+        if (ptree)
+            *ptree = grove->tree;
         // LOG(DAG, "%s(): got grove and returning best dag", __func__);
         //  for (auto item : dag)
         //      LOG(DAG, "%s():     best dag item: %s nSequenceId: %d fProcessed: %d", __func__, item->hash.ToString(),
@@ -1790,10 +2288,7 @@ bool CTailstormForest::GetFullDagFor(const uint256 &hash, std::set<CTreeNodeRef>
     return false;
 }
 
-bool CTailstormForest::GetDagForBlock(ConstCBlockRef &pblock,
-    std::set<CTreeNodeRef> &dag,
-    std::vector<std::map<uint256, CTreeNodeRef> > *vDoubleSpendTxns,
-    std::map<COutPoint, CTransactionRef> *mapInputs)
+bool CTailstormForest::GetDagForBlock(ConstCBlockRef &pblock, std::set<CTreeNodeRef> &dag, CTailstormTreeRef *ptree)
 {
     LOCK(cs_forest);
     DbgAssert(IsSummaryBlock(*pblock), );
@@ -1861,10 +2356,8 @@ bool CTailstormForest::GetDagForBlock(ConstCBlockRef &pblock,
         if (fMatch)
         {
             assert(ret.vSubblockProofs.size() == dag.size());
-            if (vDoubleSpendTxns)
-                *vDoubleSpendTxns = tree->vDoubleSpendTxns;
-            if (mapInputs)
-                *mapInputs = tree->mapInputs;
+            if (ptree)
+                *ptree = tree;
         }
         else
         {
@@ -2281,32 +2774,61 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
     auto treenode = tree->dag.begin()->second;
     DbgAssert(treenode->subblock->hashPrevBlock == chainTip->GetHash(), return);
 
+    // The transactions applied before this rebuild; what the pool must drop is found by comparing
+    // them with the applied set the rebuild leaves behind.
+    const std::map<uint256, CTransactionRef> currentAppliedTxns = tree->mapDagTxns;
     while (true)
     {
+        // Subblocks found to carry an invalid transaction, either before this rebuild was called or
+        // by the previous pass, go first: removing them changes the selection below.
+        bool fRemovedBad = false;
+        while (!tree->setBadSubblocks.empty())
+        {
+            const uint256 hash = *tree->setBadSubblocks.begin();
+            tree->setBadSubblocks.erase(tree->setBadSubblocks.begin());
+            auto it = tree->dag.find(hash);
+            if (it != tree->dag.end())
+            {
+                RemoveFromGrove(grove, it->second);
+                fRemovedBad = true;
+            }
+        }
+        if (fRemovedBad)
+            grove->RecalcDagHeights();
+
         // Sort the dag from lowest to highest sequence id
         std::vector<std::pair<uint256, CTreeNodeRef> > vSortedDag(tree->dag.begin(), tree->dag.end());
         std::sort(vSortedDag.begin(), vSortedDag.end(),
             [](const auto &a, const auto &b) { return a.second->nSequenceId < b.second->nSequenceId; });
-
+        // A removal above leaves a gap in the sequence. Number every remaining node densely,
+        // so the nodes past the prefix selected below stay contiguous with it; Check() requires it.
+        uint32_t nNextSequenceId = 0;
+        for (auto &entry : vSortedDag)
+            entry.second->nSequenceId = ++nNextSequenceId;
 
         // Get the exclusion set for this dag which is used to pass to connect block and allow
         // processing to continue without a missing inputs error begin returned. This exlusion set is needed
         // because mapDagTxns, which is also used to skip processing a transaction twice,
         // does not get created until the block has succesfully finished connecting.
-        std::map<COutPoint, CTransactionRef> mapInputs;
         auto tailstorm_k = chainparams.GetConsensus().tailstorm_k;
-
-        // Put the first received tailstorm_k - 1 blocks in setDag and kSortedDag
-        std::set<CTreeNodeRef> setDag; // the exact subblocks we will use
-        std::vector<CTreeNodeRef> kSortedDag; // the exact subblocks we will use sorted by sequence id
+        // Select what the summary will commit, as GetBestDag does: the uncles first, then the
+        // first received subblocks up to tailstorm_k - 1 in total.
+        std::set<CTreeNodeRef> setDag;
+        for (const auto &mi : tree->mapUncles)
+        {
+            if (setDag.size() >= tailstorm_k - 1)
+                break;
+            setDag.insert(mi.second);
+        }
+        std::vector<CTreeNodeRef> kSortedDag; // the exact subblocks we will use
         kSortedDag.reserve(tailstorm_k - 1);
-        for (auto it = vSortedDag.begin();
-             (it != vSortedDag.end()) && ((setDag.size() + tree->mapUncles.size()) < tailstorm_k - 1); it++)
+        for (auto it = vSortedDag.begin(); (it != vSortedDag.end()) && (setDag.size() < tailstorm_k - 1); it++)
         {
             setDag.insert(it->second);
             kSortedDag.push_back(it->second);
         }
-        std::set<uint256> setTxnExclusions = GetTxnExclusionSet(setDag, tree->vDoubleSpendTxns, tree->mapInputs);
+        std::set<uint256> losers;
+        std::set<uint256> setTxnExclusions = GetTxnExclusionSet(setDag, *tree, &losers);
         if (setTxnExclusions.size() > 0)
         {
             std::string logExcl = "Excluding DS transactions: ";
@@ -2320,9 +2842,15 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
         else
             LOG(DAG, "%s: No conflicts to exclude\n", __func__);
 
-        auto badSubblock = ReGenerateDagDataForSubblocks(&(*tree), kSortedDag, setTxnExclusions);
+        auto badSubblock = ReGenerateDagDataForSubblocks(&(*tree), kSortedDag, setTxnExclusions, losers);
         if (!badSubblock)
-            break; // It worked
+        {
+            // The re-file at the end of a pass retries transactions and can find one invalid; the
+            // next pass removes its subblocks.
+            if (tree->setBadSubblocks.empty())
+                break; // It worked
+            continue;
+        }
         // If the regeneration did not work, delete the bad block from the dag, and loop trying the next best set
         RemoveFromGrove(grove, badSubblock);
         // RemoveFromGrove leaves a nSequenceId hole, and ReGenerateDagDataForSubblocks renumbers only the
@@ -2333,12 +2861,98 @@ void CTailstormForest::ReGenerateDagData(CTailstormGroveRef grove)
         grove->RecalcDagHeights();
     }
 
+    // Drop from the pool everything that depended on a transaction the rebuilt view contradicts:
+    // one that was applied before, is not applied now, and whose input is now spent by another
+    // applied transaction. That is a double spend loser under its winner, or a displaced
+    // transaction whose rival is now applied; neither can be applied again while the rival
+    // stands. Their previously applied descendants went with them, so walk those too. A
+    // transaction that left the view with no rival is left alone: it may be applied again.
+    std::vector<CTransactionRef> dropped;
+    {
+        // Which previously applied transaction spent each output.
+        std::map<COutPoint, CTransactionRef> spentBy;
+        for (const auto &kv : currentAppliedTxns)
+        {
+            for (const CTxIn &txin : kv.second->vin)
+                spentBy.emplace(txin.prevout, kv.second);
+        }
+        // Which applied transaction spends each output now.
+        std::map<COutPoint, uint256> spentNow;
+        for (const auto &kv : tree->mapDagTxns)
+        {
+            for (const CTxIn &txin : kv.second->vin)
+                spentNow.emplace(txin.prevout, kv.first);
+        }
+        // Seed with every previously applied transaction that is no longer applied and has an
+        // input now spent by another applied transaction.
+        std::set<uint256> seen;
+        for (const auto &kv : currentAppliedTxns)
+        {
+            if (tree->mapDagTxns.count(kv.first))
+                continue;
+            bool fConflicted = false;
+            for (const CTxIn &txin : kv.second->vin)
+            {
+                const auto it = spentNow.find(txin.prevout);
+                if (it != spentNow.end() && it->second != kv.first)
+                {
+                    fConflicted = true;
+                    break;
+                }
+            }
+            if (fConflicted && seen.insert(kv.first).second)
+                dropped.push_back(kv.second);
+        }
+        // Breadth-first over the vector: each entry's outputs add their spender to the back, and the
+        // walk reaches that spender in turn. Only previously applied spenders are in the index.
+        for (size_t i = 0; i < dropped.size(); i++)
+        {
+            const CTransactionRef ptx = dropped[i];
+            for (size_t j = 0; j < ptx->vout.size(); j++)
+            {
+                const auto it = spentBy.find(ptx->OutpointAt(j));
+                if (it != spentBy.end() && seen.insert(it->second->GetId()).second)
+                    dropped.push_back(it->second);
+            }
+        }
+    }
+    if (!dropped.empty())
+    {
+        std::list<CTransactionRef> txConflicted;
+        WRITELOCK(mempool.cs_txmempool);
+        std::string logDropped;
+        for (const auto &ptx : dropped)
+        {
+            mempool._removeRecursive(*ptx, txConflicted);
+            logDropped += ptx->GetId().ToString() + " ";
+        }
+        std::string logRemoved;
+        for (const auto &ptx : txConflicted)
+            logRemoved += ptx->GetId().ToString() + " ";
+        LOG(DAG,
+            "%s: dropped %u applied transaction(s) conflicted by the rebuilt view: %sremoved %u txpool entries: %s",
+            __func__, (unsigned)dropped.size(), logDropped, (unsigned)txConflicted.size(), logRemoved);
+    }
+
+    // Record the winner each group settled on; the insert path regenerates when a later
+    // subblock moves one.
+    if (!tree->conflictRegistry.Empty())
+    {
+        std::set<CTreeNodeRef> rebuiltDag;
+        grove->GetBestDag(rebuiltDag);
+        const auto winners = ComputeGroupWinners(
+            std::vector<CTreeNodeRef>(rebuiltDag.begin(), rebuiltDag.end()), tree->conflictRegistry);
+        for (const auto &kv : winners)
+            tree->conflictRegistry.SetLastWinner(kv.first, kv.second);
+    }
+
     SetBestGroveForSummaryTip();
 }
 
 CTreeNodeRef CTailstormForest::ReGenerateDagDataForSubblocks(CTailstormTree *tree,
     std::vector<CTreeNodeRef> &sortedDag,
-    const std::set<uint256> &setTxnExclusions)
+    const std::set<uint256> &setTxnExclusions,
+    const std::set<uint256> &losers)
 {
     AssertLockHeld(cs_forest);
     DbgAssert(txProcessingCorral.region() == CORRAL_TX_PAUSE, LOGA("must have corral paused during DAG regenerate"));
@@ -2350,9 +2964,18 @@ CTreeNodeRef CTailstormForest::ReGenerateDagDataForSubblocks(CTailstormTree *tre
     bool fScriptChecks = true;
 
     tree->mapDagTxns.clear();
-    tree->mapInputs.clear();
     tree->view->Clear();
+    tree->missingInputs.clear();
+    // Only the nodes this rebuild connects are in the view. A node outside the
+    // selected prefix may have been processed by an earlier rebuild.
+    for (auto &mi : tree->dag)
+        mi.second->fProcessed = false;
 
+    // Sequence order can layer a child before its parent. Omit txs that
+    // cannot spend against the cache so far; heal them after every node
+    // is layered. A failed connect uses a child cache so the tree view
+    // stays clean.
+    std::set<uint256> omit = setTxnExclusions;
     uint32_t nSequenceId = 0;
     for (auto it = sortedDag.begin(); it != sortedDag.end(); it++)
     {
@@ -2370,26 +2993,24 @@ CTreeNodeRef CTailstormForest::ReGenerateDagDataForSubblocks(CTailstormTree *tre
         std::map<CGroupTokenID, CAmount> accumulatedMintages;
         std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
 
+        tree->OmitUnapplyableTxs(treenode, *tree->view, omit);
+
         LOG(DAG, "%s: Layering subblock %s into DAG view.  Block details: %s", __func__,
             treenode->subblock->GetHash().ToString(), treenode->subblock->ToString());
-        // Try connecting the subblock and updating the coins cache.
         CValidationState state;
-        if (ConnectBlockCanonicalOrdering(treenode->subblock, state, tree->pindexSummaryRoot, *tree->view, chainparams,
-                fJustCheck, fParallel, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages,
-                accumulatedAuthorities, &tree->mapDagTxns, &setTxnExclusions))
+        CCoinsViewCache layer(tree->view);
+        bool fOK = ConnectBlockCanonicalOrdering(treenode->subblock, state, tree->pindexSummaryRoot, layer, chainparams,
+            fJustCheck, fParallel, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages, accumulatedAuthorities,
+            &tree->mapDagTxns, &omit);
+        if (fOK)
         {
-            // Rebuild the mapDagTxns as subblocks are connected.
+            bool flushed = layer.Flush();
+            assert(flushed);
             for (CTransactionRef ptx : treenode->subblock->vtx)
             {
-                if (ptx->IsCoinBase())
+                if (ptx->IsCoinBase() || omit.count(ptx->GetId()))
                     continue;
-
                 tree->mapDagTxns.emplace(ptx->GetId(), ptx);
-
-                for (auto &input : ptx->vin)
-                {
-                    tree->mapInputs.emplace(input.prevout, ptx);
-                }
             }
 
             treenode->fProcessed = true;
@@ -2397,13 +3018,25 @@ CTreeNodeRef CTailstormForest::ReGenerateDagDataForSubblocks(CTailstormTree *tre
         }
         else
         {
-            // The subblock is BAD!
             nSequenceId--;
             treenode->fProcessed = false;
-            // We previously set up to ignore all dag-caused doublespend transactions, so a failure here is
-            // really a bad block.
             LOG(DAG, "%s(): While regenerating dag, subblock is bad: %s", __func__, treenode->hash.ToString());
             return treenode;
+        }
+    }
+
+    // Re-index omitted non-losers, then include any that can now source.
+    const int nHeight = tree->pindexSummaryRoot ? tree->pindexSummaryRoot->height() : 0;
+    for (const auto &treenode : sortedDag)
+    {
+        if (!treenode || !treenode->subblock)
+            continue;
+        tree->missingInputs.Add(treenode, omit, losers);
+        for (const auto &ptx : treenode->subblock->vtx)
+        {
+            if (ptx->IsCoinBase() || omit.count(ptx->GetId()))
+                continue;
+            tree->ConnectDependentTxs(ptx, *tree->view, nHeight, losers);
         }
     }
     return CTreeNodeRef();
@@ -2456,22 +3089,14 @@ void CTailstormForest::RemoveFromGrove(CTailstormGroveRef grove, CTreeNodeRef su
     mapAllNodes.erase(subblock->hash);
     RemoveSubblockOrphan(subblock->hash);
 
-    // Find the double spend map which contains this failed subblock and remove it.
-    for (auto iter = tree.vDoubleSpendTxns.begin(); iter != tree.vDoubleSpendTxns.end();)
+    tree.conflictRegistry.Unlink(subblock);
+    if (subblock->subblock)
     {
-        bool fRemoveMap = false;
-        for (auto mi : *iter)
+        for (const auto &ptx : subblock->subblock->vtx)
         {
-            if (mi.second->hash == subblock->hash)
-            {
-                fRemoveMap = true;
-                break;
-            }
+            if (!ptx->IsCoinBase())
+                tree.missingInputs.Remove(ptx->GetId(), subblock->hash);
         }
-        if (fRemoveMap)
-            iter = tree.vDoubleSpendTxns.erase(iter);
-        else
-            iter++;
     }
 
     std::set<CTreeNodeRef> descendantCopy = subblock->setDescendants;
@@ -2645,10 +3270,8 @@ void CTailstormForest::Check()
         CTailstormGroveRef grove = nullptr;
         if (GetGrove(mi.first, grove))
         {
-            std::vector<std::map<uint256, CTreeNodeRef> > vDoubleSpendTxns;
-            std::map<COutPoint, CTransactionRef> mapInputs;
             std::set<CTreeNodeRef> setDag;
-            if (tailstormForest.GetDagForBlock(mi.second, setDag, &vDoubleSpendTxns, &mapInputs))
+            if (tailstormForest.GetDagForBlock(mi.second, setDag))
             {
                 assert("summary block in unlinked when it should not be");
             }

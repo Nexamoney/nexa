@@ -271,14 +271,11 @@ CCriticalSection cs_requestNextBlocks;
 void BlockReceivedPostProcessing(CNode *pfrom, ConstCBlockRef pblock)
 {
     SendExpeditedBlock(*pblock, pfrom);
-    // If this summary block is ready to be connected to our tip (its previous block is the active tip)
-    // but we are missing some of the subblocks it references, request those subblocks from this peer so
-    // the block can connect.
-    if (IsChainNearlySyncd() && IsTailstormSummaryBlock(pblock) &&
-        (pblock->hashPrevBlock == chainActive.Tip()->GetBlockHash()))
-    {
+    // A Tailstorm summary names its subblocks by mining commitment. Request any
+    // we do not hold from the peer that sent the summary, whether or not it
+    // extends the current tip (a competing-tip summary still needs them to reorg).
+    if (IsChainNearlySyncd() && IsTailstormSummaryBlock(pblock))
         requester.RequestMissingSubblocks(pblock, pfrom);
-    }
 }
 
 bool CanDirectFetch(const Consensus::Params &consensusParams)

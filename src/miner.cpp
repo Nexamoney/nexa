@@ -404,6 +404,93 @@ public:
     bool operator()(const CTransactionRef a, const CTransactionRef b) const { return a->GetId() < b->GetId(); }
 };
 
+static bool SpendsBlockedOutpoint(const CTransactionRef &ptx, const std::set<COutPoint> &blocked)
+{
+    if (blocked.empty())
+        return false;
+    for (const auto &input : ptx->vin)
+    {
+        if (blocked.count(input.prevout))
+            return true;
+    }
+    return false;
+}
+
+// Outpoints a pool tx must not spend: every coin the dag already spends
+// (winner or loser — a competing spend of an ancestral coin is rejected at
+// insert), plus outputs of excluded txs (those coins are not in the view).
+// A read-only input does not consume its coin, so it blocks nothing.
+static void CollectDagBlockedOutpoints(const std::set<CTreeNodeRef> &setBestDag,
+    const std::set<CTreeNodeRef> &setFullDag,
+    const std::set<uint256> &setTxnExclusions,
+    std::set<COutPoint> &blocked)
+{
+    for (const auto &treenode : setBestDag)
+    {
+        if (!treenode || !treenode->subblock || treenode->fUncle)
+            continue;
+        for (size_t i = 1; i < treenode->subblock->vtx.size(); i++)
+        {
+            const CTransactionRef &ptx = treenode->subblock->vtx[i];
+            for (const auto &input : ptx->vin)
+            {
+                if (input.IsReadOnly())
+                    continue;
+                blocked.insert(input.prevout);
+            }
+            if (setTxnExclusions.count(ptx->GetId()))
+            {
+                for (size_t j = 0; j < ptx->vout.size(); j++)
+                    blocked.insert(ptx->OutpointAt(j));
+            }
+        }
+    }
+    // Members outside setBestDag, parked or overflow, are not in the coins view;
+    // do not let a pool tx spend their outputs or their inputs.
+    for (const auto &treenode : setFullDag)
+    {
+        if (!treenode || !treenode->subblock || treenode->fUncle)
+            continue;
+        if (setBestDag.count(treenode))
+            continue;
+        for (size_t i = 1; i < treenode->subblock->vtx.size(); i++)
+        {
+            const CTransactionRef &ptx = treenode->subblock->vtx[i];
+            for (const auto &input : ptx->vin)
+            {
+                if (input.IsReadOnly())
+                    continue;
+                blocked.insert(input.prevout);
+            }
+            for (size_t j = 0; j < ptx->vout.size(); j++)
+                blocked.insert(ptx->OutpointAt(j));
+        }
+    }
+}
+
+// Unique included dag transactions. Duplicates and excluded txs are dropped.
+// vtx order is applied later: ConnectBlockCanonicalOrdering requires hash order.
+static std::vector<CTransactionRef> IncludedDagTxs(const std::set<CTreeNodeRef> &setBestDag,
+    const std::set<uint256> &setTxnExclusions)
+{
+    std::vector<CTransactionRef> dagTxs;
+    std::set<uint256> seen;
+    for (const auto &node : setBestDag)
+    {
+        if (!node || !node->subblock || node->fUncle)
+            continue;
+        const auto &vtx = node->subblock->vtx;
+        for (size_t i = 1; i < vtx.size(); i++)
+        {
+            const uint256 txid = vtx[i]->GetId();
+            if (setTxnExclusions.count(txid) || !seen.insert(txid).second)
+                continue;
+            dagTxs.push_back(vtx[i]);
+        }
+    }
+    return dagTxs;
+}
+
 std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn, int64_t coinbaseSize)
 {
     const auto &conparams = chainparams.GetConsensus();
@@ -423,19 +510,22 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript &sc
     CBlockIndex *pindexPrev = chainActive.Tip();
     assert(pindexPrev); // can't make a new block if we don't even have the genesis block
 
-    // Get the current best tailstorm dag and associated double spends, and for the purpose of syncronization
-    // we'll use this same dataset throughout summary block construction.
-    //
-    // If there are less than tailstorm_k - 1 subblocks in the dag then the assumption is that we're creating a
-    // subblock and so the data sets returned will be empty.
+    // Best dag for this tip. Fewer than tailstorm_k - 1 nodes means a subblock template.
+    // Take cs_forest once for the dag, the exclusions and the blocked outpoints: the tree's
+    // conflict registry is read under it, and holding it across all three keeps them consistent.
     std::set<CTreeNodeRef> setBestDag;
-    std::vector<std::map<uint256, CTreeNodeRef> > vDoubleSpendTxns;
-    std::map<COutPoint, CTransactionRef> mapInputs;
-    tailstormForest.GetBestDagFor(pindexPrev->GetBlockHash(), setBestDag, &vDoubleSpendTxns, &mapInputs);
+    std::set<CTreeNodeRef> setFullDag;
+    std::set<uint256> setTxnExclusions;
+    {
+        LOCK(tailstormForest.cs_forest);
+        CTailstormTreeRef dagTree = nullptr;
+        tailstormForest.GetBestDagFor(pindexPrev->GetBlockHash(), setBestDag, &dagTree);
+        // Transactions the summary must omit: conflict losers and unsourced txs.
+        if (dagTree)
+            setTxnExclusions = GetTxnExclusionSet(setBestDag, *dagTree);
+        tailstormForest.GetFullDagFor(pindexPrev->GetBlockHash(), setFullDag);
+    }
     assert(setBestDag.size() <= conparams.tailstorm_k - 1);
-
-    // Get the set of invalid double spends which we "DO NOT" want to include in the final summary block.
-    std::set<uint256> setTxnExclusions = GetTxnExclusionSet(setBestDag, vDoubleSpendTxns, mapInputs);
 
     // If tailstorm is enabled then gather all the txid's that are in the best dag so
     // we can filter those out when we add new transactions to a new subblock or summary
@@ -461,6 +551,12 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript &sc
         pblock->minerData = GenerateMinerData(conparams.tailstorm_k, setBestDag, prevOfprevhash);
     }
 
+    // Collect before setBestDag is cleared for a subblock coinbase. Same
+    // skip applies to subblocks and summaries.
+    std::set<COutPoint> blockedDagOuts;
+    if (fTailstormEnabled)
+        CollectDagBlockedOutpoints(setBestDag, setFullDag, setTxnExclusions, blockedDagOuts);
+
     // Init the block counters and size the coinbase accordingly.
     if (setBestDag.size() < (size_t)conparams.tailstorm_k - 1)
     {
@@ -474,11 +570,9 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript &sc
     }
     resetBlock(scriptPubKeyIn, coinbaseSize, &setBestDag);
 
-    // Largest block you're willing to create:
-    // TODO: in a future optimization we should be able to use up the any remaining space that the summary block
-    //       could offer by first adding the dag txns to the summary block template and filling the extra space after.
-    //       This would allow us to uncomment the nMaxBlockSize line below. However for now we just set the summary
-    //       block size to be the same as any subblock and fill it accordingly.
+    // Dag txs are required in a Tailstorm summary. They are added first, and the
+    // pool then fills a subblock-sized slice of the next max block on top of them,
+    // capped at the next max block size (see below, after the dag txs are added).
     // nBlockMaxSize = IsSummaryBlock(pblock) ? pindexPrev->GetNextMaxBlockSize() :
     //                                         pindexPrev->GetNextMaxBlockSize() / conparams.tailstorm_k;
     nBlockMaxSize = IsSummaryBlock(pblock) && !IsTailstormSummaryBlock(pblock) ?
@@ -514,6 +608,30 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript &sc
         nLockTimeCutoff =
             (STANDARD_LOCKTIME_VERIFY_FLAGS & LOCKTIME_MEDIAN_TIME_PAST) ? nMedianTimePast : pblock->GetBlockTime();
 
+        // Tailstorm summary: take included dag txs first so pool fill sizes and
+        // validates against that set (no dag duplicates, no blocked dag spends).
+        if (fTailstormEnabled && IsSummaryBlock(pblock) && !setBestDag.empty())
+        {
+            const uint64_t nSizeBeforeDag = nBlockSize;
+            for (const auto &ptx : IncludedDagTxs(setBestDag, setTxnExclusions))
+            {
+                pblock->vtx.push_back(ptx);
+                const CAmount txFee = ptx->GetValueIn() - ptx->GetValueOut();
+                pblocktemplate->vTxFees.push_back(txFee);
+                pblocktemplate->vTxSigOps.push_back(0);
+                nBlockSize += ::GetSerializeSize(ptx, SER_NETWORK, PROTOCOL_VERSION);
+                nFees += txFee;
+                nBlockTx++;
+            }
+            // The dag txs are mandatory, so they do not consume the pool fill
+            // budget: extend nBlockMaxSize by their size, but never past the
+            // consensus limit the summary is validated against.
+            const uint64_t nSummaryCap = miningBlockSize.Value() > 0 ? std::min<uint64_t>(miningBlockSize.Value(),
+                                                                           pindexPrev->GetNextMaxBlockSize()) :
+                                                                       pindexPrev->GetNextMaxBlockSize();
+            nBlockMaxSize = std::min(nSummaryCap, nBlockMaxSize + (nBlockSize - nSizeBeforeDag));
+        }
+
         std::vector<const CTxMemPoolEntry *> vtxe;
         bool fCreateFastTemplate = fastBlockTemplate.Value();
         // TODO: get fast block template to work with tailstorm summary blocks.  We need to make sure that not only
@@ -528,7 +646,8 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript &sc
                 // Dump all contents of txpool into the block
                 for (auto iter = mempool.mapTx.begin(); iter != mempool.mapTx.end(); iter++)
                 {
-                    if (!setBestDagTxids.empty() && setBestDagTxids.count(iter->GetSharedTx()->GetId()))
+                    if ((!setBestDagTxids.empty() && setBestDagTxids.count(iter->GetSharedTx()->GetId())) ||
+                        SpendsBlockedOutpoint(iter->GetSharedTx(), blockedDagOuts))
                         continue;
 
                     AddToBlock(&vtxe, iter);
@@ -544,7 +663,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript &sc
         // through to the slower method.
         if (!fCreateFastTemplate)
         {
-            addPriorityTxs(&vtxe, setBestDagTxids);
+            addPriorityTxs(&vtxe, setBestDagTxids, blockedDagOuts);
 
             // Mine by package (CPFP)
             // We make two passes through addPackageTxs(). The first pass is for
@@ -552,72 +671,35 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript &sc
             // of the block. Then a second quick pass is made to see if any dirty transactions
             // would be able to fill the rest of the block.
             int64_t nStartPackage = GetStopwatchMicros();
-            if (!addPackageTxs(&vtxe, false, setBestDagTxids))
+            if (!addPackageTxs(&vtxe, false, setBestDagTxids, blockedDagOuts))
             {
                 // Make another pass to add the dirty chains.
-                addPackageTxs(&vtxe, true, setBestDagTxids);
+                addPackageTxs(&vtxe, true, setBestDagTxids, blockedDagOuts);
             }
             nTotalPackage += GetStopwatchMicros() - nStartPackage;
         }
 
-        // For all block types generate the largest block possible for that block type.
-        std::set<uint256> setTxidsInBlock;
+        // Load pool txs after the dag prefix.
         {
-            // sort transactions
             if (!fTailstormEnabled || !IsSummaryBlock(pblock))
-            {
                 std::sort(vtxe.begin(), vtxe.end(), NumericallyLessTxHashComparator());
-            }
 
-            // Load the block template
-            pblocktemplate->block->vtx.reserve(vtxe.size());
-            pblocktemplate->vTxFees.reserve(vtxe.size());
-            pblocktemplate->vTxSigOps.reserve(vtxe.size());
+            pblocktemplate->block->vtx.reserve(pblock->vtx.size() + vtxe.size());
+            pblocktemplate->vTxFees.reserve(pblocktemplate->vTxFees.size() + vtxe.size());
+            pblocktemplate->vTxSigOps.reserve(pblocktemplate->vTxSigOps.size() + vtxe.size());
             for (auto &txe : vtxe)
             {
                 pblocktemplate->block->vtx.push_back(txe->GetSharedTx());
                 pblocktemplate->vTxFees.push_back(txe->GetFee());
                 pblocktemplate->vTxSigOps.push_back(txe->GetSigOpCount());
-
-                setTxidsInBlock.insert(txe->GetSharedTx()->GetId());
             }
         }
 
-        // If we're creating a tailstorm Summary Block then add in all the Subblock transactions
-        // and, avoiding any dupicates and double spends we don't want, update the blocksize and fees collected.
-        if (fTailstormEnabled && IsSummaryBlock(pblock))
+        // ConnectBlockCanonicalOrdering requires increasing txid after the
+        // coinbase. Outputs-then-Inputs makes a same-block child valid even
+        // when its parent sorts after it.
+        if (fTailstormEnabled && IsSummaryBlock(pblock) && pblock->vtx.size() > 2)
         {
-            uint64_t nBestDagVtxSize = 0;
-            CAmount nBestDagFees = 0;
-            uint64_t nBestDagTx = 0;
-
-            for (auto &treenode : setBestDag)
-            {
-                if (treenode->fUncle) // we don't include txns from uncles
-                    continue;
-
-                const auto &vtx = treenode->subblock->vtx;
-                for (size_t i = 1; i < vtx.size(); i++)
-                {
-                    // If txns are already in the summary block's "subblock" then don't add them again.
-                    if (setTxidsInBlock.count(vtx[i]->GetId()))
-                        continue;
-                    // If this is a double spend exclusion then don't add this to the block.
-                    if (setTxnExclusions.count(vtx[i]->GetId()))
-                        continue;
-
-                    pblocktemplate->block->vtx.push_back(vtx[i]);
-                    nBestDagTx++;
-                    nBestDagVtxSize += ::GetSerializeSize(vtx[i], SER_NETWORK, PROTOCOL_VERSION);
-                    nBestDagFees += vtx[i]->GetValueIn() - vtx[i]->GetValueOut();
-
-                    setTxidsInBlock.insert(vtx[i]->GetId());
-                }
-            }
-            nBlockSize += nBestDagVtxSize;
-            nFees += nBestDagFees;
-            nBlockTx += nBestDagTx;
-
             std::sort(pblocktemplate->block->vtx.begin() + 1, pblocktemplate->block->vtx.end(),
                 NumericallyLessVtxHashComparator());
         }
@@ -837,7 +919,8 @@ void BlockAssembler::SortForBlock(const CTxMemPool::setEntries &package,
 // entire descendant tree after each package was added to the block.
 bool BlockAssembler::addPackageTxs(std::vector<const CTxMemPoolEntry *> *vtxe,
     bool fAllowDirtyTxns,
-    std::set<uint256> &setBestDagTxids)
+    std::set<uint256> &setBestDagTxids,
+    const std::set<COutPoint> &blockedDagOuts)
 {
     AssertLockHeld(mempool.cs_txmempool);
 
@@ -852,7 +935,8 @@ bool BlockAssembler::addPackageTxs(std::vector<const CTxMemPoolEntry *> *vtxe,
 
         // Skip txns we know are in the block and also skip if it's dirty but we're not allowing dirty txns.
         if (inBlock.count(iter) || nonFinalChains.count(iter) || (!fAllowDirtyTxns && iter->IsDirty()) ||
-            (!setBestDagTxids.empty() && setBestDagTxids.count(iter->GetSharedTx()->GetId())))
+            (!setBestDagTxids.empty() && setBestDagTxids.count(iter->GetSharedTx()->GetId())) ||
+            SpendsBlockedOutpoint(iter->GetSharedTx(), blockedDagOuts))
         {
             continue;
         }
@@ -876,6 +960,18 @@ bool BlockAssembler::addPackageTxs(std::vector<const CTxMemPoolEntry *> *vtxe,
 
         // Include in the package the current txn we're working with
         ancestors.insert(iter);
+
+        bool fDagConflict = false;
+        for (auto &it : ancestors)
+        {
+            if (SpendsBlockedOutpoint(it->GetSharedTx(), blockedDagOuts))
+            {
+                fDagConflict = true;
+                break;
+            }
+        }
+        if (fDagConflict)
+            continue;
 
         // Recalculate sigops and package size, only if there were txns already in the block for
         // this set of ancestors
@@ -936,7 +1032,9 @@ bool BlockAssembler::addPackageTxs(std::vector<const CTxMemPoolEntry *> *vtxe,
     return !fHaveDirty;
 }
 
-void BlockAssembler::addPriorityTxs(std::vector<const CTxMemPoolEntry *> *vtxe, std::set<uint256> &setBestDagTxids)
+void BlockAssembler::addPriorityTxs(std::vector<const CTxMemPoolEntry *> *vtxe,
+    std::set<uint256> &setBestDagTxids,
+    const std::set<COutPoint> &blockedDagOuts)
 {
     // How much of the block should be dedicated to high-priority transactions,
     // included regardless of the fees they pay
@@ -976,7 +1074,8 @@ void BlockAssembler::addPriorityTxs(std::vector<const CTxMemPoolEntry *> *vtxe, 
         vecPriority.pop_back();
 
         // If tx already in block, skip
-        if (inBlock.count(iter) || (!setBestDagTxids.empty() && setBestDagTxids.count(iter->GetSharedTx()->GetId())))
+        if (inBlock.count(iter) || (!setBestDagTxids.empty() && setBestDagTxids.count(iter->GetSharedTx()->GetId())) ||
+            SpendsBlockedOutpoint(iter->GetSharedTx(), blockedDagOuts))
         {
             continue;
         }
