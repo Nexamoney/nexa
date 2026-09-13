@@ -948,30 +948,29 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
 
-        # check conflicts were removed.  We can't leave conflicts in the txpool othewise
-        # if we attemped to mine a new subblock those conflicts would most likely get added
-        # to the new subblock and cause it to fail validation.
-        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 0)
-        waitFor(waitTime, lambda: self.nodes[1].gettxpoolinfo()['size'] == 0)
-
-        # Try to re-enter the conflicting txs into the txpool. It should not be
-        # possible.
-        try:
-            self.nodes[0].sendrawtransaction(doublespend1["hex"])
-        except JSONRPCException as e:
-            assert("Missing inputs" in e.error['message'])
+        # Both subblocks have equal scores, so the lower hash wins. Regeneration
+        # evicts the previously applied loser and its pooled descendants; the
+        # winning side remains pooled until the summary connects.
+        node0_wins = int(node0_ds_hash, 16) < int(node1_ds_hash, 16)
+        if node0_wins:
+            expected_pools = [
+                {doublespend1_txidem, *txidem_array_node0}, set()]
+            winner_node = self.nodes[0]
+            winner_tx = doublespend1
+            winner_idem = doublespend1_txidem
         else:
-            assert(False)
+            expected_pools = [set(), {doublespend2_txidem}]
+            winner_node = self.nodes[1]
+            winner_tx = doublespend2
+            winner_idem = doublespend2_txidem
 
-        try:
-            self.nodes[1].sendrawtransaction(doublespend2["hex"])
-        except JSONRPCException as e:
-            assert("Missing inputs" in e.error['message'])
-        else:
-            assert(False)
+        for node, expected in zip(self.nodes, expected_pools):
+            waitFor(waitTime, lambda: set(node.getrawtxpool()) == expected)
 
-        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 0)
-        waitFor(waitTime, lambda: self.nodes[1].gettxpoolinfo()['size'] == 0)
+        # Only the retained winner is already pooled; the loser was evicted.
+        assert_equal(winner_node.sendrawtransaction(winner_tx["hex"]), winner_idem)
+        for node, expected in zip(self.nodes, expected_pools):
+            waitFor(waitTime, lambda: set(node.getrawtxpool()) == expected)
 
         # now mine the next subblock on one node causing the other to re-org their dag tree
         # and so both peers should end up on the same dagtip.
@@ -993,6 +992,12 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['chaintip'] == summary_hash[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['chaintip'] == summary_hash[0])
         self.sync_all()
+
+        # The retained conflicts drain when the summary block connects: the
+        # winning side is confirmed and removed from the txpool, and the losing
+        # side is evicted as a conflict of a confirmed transaction.
+        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 0)
+        waitFor(waitTime, lambda: self.nodes[1].gettxpoolinfo()['size'] == 0)
 
         # Both conflicting transactions entered the DAG at the same height, so
         # the transaction in the lower-hash subblock wins the tie.

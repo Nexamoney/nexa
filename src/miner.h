@@ -129,14 +129,17 @@ private:
 
     // Methods for how to add transactions to a block.
     /** Add transactions based on tx "priority" */
-    void addPriorityTxs(std::vector<const CTxMemPoolEntry *> *vtxe, std::set<uint256> &setBestDagTxids);
+    void addPriorityTxs(std::vector<const CTxMemPoolEntry *> *vtxe,
+        std::set<uint256> &setBestDagTxids,
+        const std::set<COutPoint> &blockedDagOuts);
 
     /** Add transactions based on feerate including unconfirmed ancestors. Return of "true" means
      *  the block is not full and there are still dirty transactions which could be added
      */
     bool addPackageTxs(std::vector<const CTxMemPoolEntry *> *vtxe,
         bool fAllowDirty,
-        std::set<uint256> &setBestDagTxids);
+        std::set<uint256> &setBestDagTxids,
+        const std::set<COutPoint> &blockedDagOuts);
 
     // helper function for addPriorityTxs
     bool IsIncrementallyGood(uint64_t nExtraSize, unsigned int nExtraSigOps);

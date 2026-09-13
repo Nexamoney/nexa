@@ -101,6 +101,24 @@ bool CheckInputs(const CTransactionRef &tx,
     unsigned char *sighashType = nullptr,
     CValidationDebugger *debugger = nullptr);
 
+// BIP68 sequence locks, input amount match, and CheckInputs. Does not modify
+// coins. ConnectBlock and dag admit both call this so those checks stay one path.
+// On an input failure, state.relevantInput / relevantTxid identify the input.
+// pnFees, if set, accumulates the value of every non-readonly input so the
+// caller sums fees without walking the inputs again.
+bool CheckTxFinalAndInputs(const CTransactionRef &tx,
+    CValidationState &state,
+    const CCoinsViewCache &view,
+    const CCoinsViewCache &readonlyCoins,
+    const CBlockIndex &pindex,
+    const CChainParams &chainparams,
+    bool fCheckInputs,
+    bool fScriptChecks,
+    bool cacheStore,
+    ValidationResourceTracker *resourceTracker = nullptr,
+    std::vector<CScriptCheck> *pvChecks = nullptr,
+    CAmount *pnFees = nullptr);
+
 /** Remove invalidity status from a block and its descendants. */
 bool ReconsiderBlock(CValidationState &state, CBlockIndex *pindex);
 

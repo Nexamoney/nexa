@@ -1696,6 +1696,58 @@ bool CheckInputs(const CTransactionRef &tx,
     return true;
 }
 
+// Input presence, amount match and BIP68 sequence locks against pindex, then
+// signatures. fCheckInputs gates signatures alone. Reads coins, never writes.
+bool CheckTxFinalAndInputs(const CTransactionRef &tx,
+    CValidationState &state,
+    const CCoinsViewCache &view,
+    const CCoinsViewCache &readonlyCoins,
+    const CBlockIndex &pindex,
+    const CChainParams &chainparams,
+    bool fCheckInputs,
+    bool fScriptChecks,
+    bool cacheStore,
+    ValidationResourceTracker *resourceTracker,
+    std::vector<CScriptCheck> *pvChecks,
+    CAmount *pnFees)
+{
+    if (tx->IsCoinBase())
+        return true;
+    if (!pindex.pprev)
+        return state.DoS(100, false, REJECT_NONFINAL, "bad-txns-nonfinal");
+
+    std::vector<int> prevheights(tx->vin.size());
+    for (size_t j = 0; j < tx->vin.size(); j++)
+    {
+        if (tx->vin[j].IsReadOnly())
+            continue;
+        CoinAccessor coin(view, tx->vin[j].prevout);
+        if (!coin || coin->IsSpent())
+        {
+            state.relevantInput = j;
+            state.relevantTxid = tx->GetId();
+            return state.DoS(100, false, REJECT_CONFLICT, "bad-txns-inputs-missingorspent");
+        }
+        if (coin->out.nValue != tx->vin[j].amount)
+        {
+            state.relevantInput = j;
+            state.relevantTxid = tx->GetId();
+            return state.DoS(100, false, REJECT_INVALID, "bad-txns-input-amount-mismatch");
+        }
+        prevheights[j] = coin->height();
+        if (pnFees)
+            *pnFees += coin->out.nValue;
+    }
+    if (!SequenceLocks(tx, LOCKTIME_VERIFY_SEQUENCE, &prevheights, pindex))
+    {
+        return state.DoS(100, false, REJECT_NONFINAL, "bad-txns-nonfinal");
+    }
+    if (!fCheckInputs)
+        return true;
+    const uint32_t flags = GetBlockScriptFlags(&pindex, chainparams.GetConsensus());
+    return CheckInputs(
+        tx, state, view, readonlyCoins, fScriptChecks, flags, cacheStore, resourceTracker, chainparams, pvChecks);
+}
 
 //////////////////////////////////////////////////////////////////
 //
@@ -2771,9 +2823,8 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
 
         LOCK(tailstormForest.cs_forest);
         setDag.clear();
-        std::vector<std::map<uint256, CTreeNodeRef> > vDoubleSpendTxns;
-        std::map<COutPoint, CTransactionRef> mapInputs;
-        if (!tailstormForest.GetDagForBlock(pblock, setDag, &vDoubleSpendTxns, &mapInputs))
+        CTailstormTreeRef dagTree = nullptr;
+        if (!tailstormForest.GetDagForBlock(pblock, setDag, &dagTree))
         {
             // Some subblocks were not found in the dag that match this blocks minerData
             tailstormForest.AddSummaryBlockOrphan(pblock);
@@ -2844,58 +2895,11 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
         {
             setBlockHashes.insert(pblock->vtx[i]->GetId());
         }
-        // Subblocks that were admitted to the dag unprocessed are never connected, so they
-        // are never evaluated for transaction conflicts. When an unprocessed subblock is included
-        // in an inbound Summary Block the miner will have rightfully removed any conflicting transactions.
-        // This node, unaware of the conflict, will incorrectly see the losing side of a double spend
-        // as a missing transaction from the Summary Block.
-        // Scan the unprocessed subblock transactions now otherwise this node will require both sides
-        // of a double spend to be present in the Summary block which is not allowed, resulting in
-        // this node perpetually rejecting this summary block.
-        {
-            // Evaluate over the subblocks this summary includes as regular subblocks. Uncles are
-            // excluded: the summary references them without requiring their transactions, so they
-            // cannot double spend anything it must contain. This matches GetDagTxns above.
-            std::vector<CTreeNodeRef> vDagSubblocks;
-            vDagSubblocks.reserve(setDag.size());
-            for (const auto &node : setDag)
-            {
-                if (node->subblock && !node->fUncle)
-                    vDagSubblocks.push_back(node);
-            }
-            for (const auto &node : setDag)
-            {
-                if (!node->subblock || node->fUncle)
-                    continue;
-
-                // A processed subblock was connected, so any conflict it has is already recorded.
-                if (node->fProcessed)
-                    continue;
-
-                // mapInputs is otherwise only filled when a subblock connects, so without this the
-                // descendant walk cannot find transactions chained off a losing double spend.
-                for (CTransactionRef ptx : node->subblock->vtx)
-                {
-                    if (ptx->IsCoinBase())
-                        continue;
-
-                    for (auto &input : ptx->vin)
-                    {
-                        mapInputs.emplace(input.prevout, ptx);
-                    }
-                }
-
-                size_t nBefore = vDoubleSpendTxns.size();
-                FindDagConflicts(vDagSubblocks, node, vDoubleSpendTxns);
-                if (vDoubleSpendTxns.size() != nBefore)
-                {
-                    LOG(DAG, "Unprocessed subblock %s in block %s yielded %d double spend conflict group(s)",
-                        node->hash.ToString(), pblock->GetHash().ToString(), (int)(vDoubleSpendTxns.size() - nBefore));
-                }
-            }
-        }
-
-        std::set<uint256> setTxnExclusions = GetTxnExclusionSet(setDag, vDoubleSpendTxns, mapInputs);
+        // Parked subblocks are already in the spend index. GetTxnExclusionSet
+        // uses that index, so unprocessed members of setDag are included.
+        // GetDagForBlock returning true guarantees the tree.
+        assert(dagTree);
+        std::set<uint256> setTxnExclusions = GetTxnExclusionSet(setDag, *dagTree);
         for (auto &mi : mapDagTxns)
         {
             // Don't check for excluded txns. These would be double spends that were not the ones
@@ -2966,15 +2970,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     nFees = 0;
     int64_t nTime2 = GetStopwatchMicros();
     LOG(BLK, "Canonical ordering for %s MTP: %d\n", pblock->GetHash().ToString(), pindex->GetMedianTimePast());
-    // Enforce BIP68(sequence locks) and BIP112(CHECKSEQUENCEVERIFY)
-    int nLockTimeFlags = 0;
-    nLockTimeFlags |= LOCKTIME_VERIFY_SEQUENCE;
-
-    // Get the script flags for this block
-    const uint32_t flags = GetBlockScriptFlags(pindex, chainparams.GetConsensus());
 
     std::vector<ValidationResourceTracker> txResourceTracker;
-    std::vector<int> prevheights;
     int nInputs = 0;
     CDiskTxPos pos(pindex->GetBlockPos(), GetSizeOfCompactSize(pblock->vtx.size()));
     blockundo.vtxundo.reserve(pblock->vtx.size() - 1);
@@ -3152,50 +3149,40 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
 
             if (!tx.IsCoinBase())
             {
-                const char *errStr = nullptr;
-                // Check that transaction is BIP68 final
-                // BIP68 lock checks (as opposed to nLockTime checks) must
-                // be in ConnectBlock because they require the UTXO set
-                prevheights.resize(tx.vin.size());
+                // If XVal is not on then check all inputs, otherwise only check
+                // transactions that were not previously verified in the mempool.
+                const bool fUnVerified = pblock->setUnVerifiedTxns.count(tx.GetId());
+                const bool fCheckInputs = fUnVerified || !pblock->fXVal;
+                if (fUnVerified)
+                    nUnVerifiedChecked++;
+                std::vector<CScriptCheck> vChecks;
+                // The helper walks the inputs once: presence, amount match, fee
+                // accumulation, BIP68 and CheckInputs. On an input failure it sets
+                // state.relevantInput / relevantTxid for the diagnostics below.
+                if (!CheckTxFinalAndInputs(txref, state, view, *pcoinsTip, *pindex, chainparams, fCheckInputs,
+                        fScriptChecks, fJustCheck, fCheckInputs ? &txResourceTracker[i] : nullptr,
+                        (fCheckInputs && PV->ThreadCount()) ? &vChecks : nullptr, &nFees))
                 {
-                    int badIdx = -1;
-                    uint32_t errCode = 0;
-                    for (size_t j = 0; j < tx.vin.size(); j++)
+                    // The helper reports an input failure by setting relevantInput; the code then
+                    // separates a missing or spent input (REJECT_CONFLICT) from an amount mismatch
+                    // (REJECT_INVALID). Script failures leave relevantInput at -1.
+                    const unsigned int code = state.GetRejectCode();
+                    const int badIdx = state.relevantInput;
+                    if (badIdx >= 0 && (code == REJECT_CONFLICT || code == REJECT_INVALID))
                     {
-                        if (!tx.vin[j].IsReadOnly())
+                        if (code == REJECT_CONFLICT)
                         {
-                            CoinAccessor coin(view, tx.vin[j].prevout);
-                            // isSpend is true for empty coin object (coinEmpty)
-                            if (coin->IsSpent())
-                            {
-                                badIdx = j;
-                                LOGA("block %s: TX %d (idem: %s:%d) normal input missing or spent (%s)\n",
-                                    pblock->GetHash().ToString(), i, tx.GetIdem().GetHex(), j,
-                                    tx.vin[j].prevout.GetHex());
-                                errCode = REJECT_CONFLICT;
-                                errStr = "bad-txns-inputs-missingorspent";
-                                state.relevantInput = j;
-                                state.relevantTxid = tx.GetId();
-                                break;
-                            }
-                            prevheights[j] = coin->height();
-                            nFees = nFees + coin->out.nValue;
-                            if (coin->out.nValue != tx.vin[j].amount)
-                            {
-                                badIdx = j;
-                                LOGA("block %s: TX %d (idem: %s:%d) amount mismatch (%d, %d)\n",
-                                    pblock->GetHash().ToString(), i, tx.GetIdem().GetHex(), j, coin->out.nValue,
-                                    tx.vin[j].amount);
-                                errCode = REJECT_INVALID;
-                                errStr = "bad-txns-input-amount-mismatch";
-                                state.relevantInput = j;
-                                state.relevantTxid = tx.GetId();
-                                break;
-                            }
+                            LOGA("block %s: TX %d (idem: %s:%d) normal input missing or spent (%s)\n",
+                                pblock->GetHash().ToString(), i, tx.GetIdem().GetHex(), badIdx,
+                                tx.vin[badIdx].prevout.GetHex());
                         }
-                    }
-                    if (badIdx >= 0)
-                    {
+                        else
+                        {
+                            CoinAccessor coin(view, tx.vin[badIdx].prevout);
+                            LOGA("block %s: TX %d (idem: %s:%d) amount mismatch (%d, %d)\n",
+                                pblock->GetHash().ToString(), i, tx.GetIdem().GetHex(), badIdx, coin->out.nValue,
+                                tx.vin[badIdx].amount);
+                        }
                         // If we were validating at the same time as another block and the other block wins the
                         // validation race and updates the UTXO first, then we may end up here with missing inputs.
                         // Therefore we check to see if the chainwork has advanced or if we recieved a quit and if
@@ -3203,45 +3190,30 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                         if (PV->ChainWorkHasChanged(nStartingChainWork, fSummaryBlock) ||
                             PV->QuitReceived(this_id, fParallel))
                         {
+                            // The helper set a DoS state for the missing input. Clear it so a
+                            // cancelled validation is not treated as an invalid block.
+                            LOG(BLK, "%s: validation of %s cancelled at tx %d, chain work changed or quit\n", __func__,
+                                pblock->GetHash().ToString(), i);
+                            state = CValidationState();
                             return false;
                         }
-                        return state.DoS(100,
-                            error("%s: block %s inputs missing, spent, or invalid in tx %d.%d %s", __func__,
-                                pblock->GetHash().ToString(), i, badIdx, tx.GetId().ToString()),
-                            errCode, errStr);
+                        // The helper has already set the DoS state for this reject.
+                        return error("%s: block %s inputs missing, spent, or invalid in tx %d.%d %s", __func__,
+                            pblock->GetHash().ToString(), i, badIdx, tx.GetId().ToString());
                     }
+                    if (code == REJECT_NONFINAL)
+                    {
+                        return error("%s: block %s contains a non-BIP68-final transaction", __func__,
+                            pblock->GetHash().ToString());
+                    }
+                    return error("%s: block %s CheckTxFinalAndInputs on %s failed with %s", __func__,
+                        pblock->GetHash().ToString(), tx.GetId().ToString(), state.GetLogString());
                 }
                 nFees = nFees - tx.GetValueOut();
-
-                if (!SequenceLocks(txref, nLockTimeFlags, &prevheights, *pindex))
+                if (fCheckInputs)
                 {
-                    return state.DoS(100,
-                        error("%s: block %s contains a non-BIP68-final transaction", __func__,
-                            pblock->GetHash().ToString()),
-                        REJECT_NONFINAL, "bad-txns-nonfinal");
-                }
-
-                {
-                    // If XVal is not on then check all inputs, otherwise only check
-                    // transactions that were not previously verified in the mempool.
-                    bool fUnVerified = pblock->setUnVerifiedTxns.count(tx.GetId());
-                    if (fUnVerified || !pblock->fXVal)
-                    {
-                        if (fUnVerified)
-                            nUnVerifiedChecked++;
-
-                        std::vector<CScriptCheck> vChecks;
-                        bool fCacheResults = fJustCheck; /* Don't cache results if we're actually connecting blocks
-                                                            (still consult the cache, though) */
-                        if (!CheckInputs(txref, state, view, *pcoinsTip, fScriptChecks, flags, fCacheResults,
-                                &txResourceTracker[i], chainparams, PV->ThreadCount() ? &vChecks : nullptr))
-                        {
-                            return error("%s: block %s CheckConsumedInputs on %s failed with %s", __func__,
-                                pblock->GetHash().ToString(), tx.GetId().ToString(), state.GetLogString());
-                        }
-                        control.Add(vChecks);
-                        nChecked++;
-                    }
+                    control.Add(vChecks);
+                    nChecked++;
                 }
             }
 
