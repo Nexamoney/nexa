@@ -7,6 +7,9 @@
 #include "logging.h"
 #include "util.h"
 
+#include <cerrno>
+#include <cstring>
+
 std::atomic<bool> fLogTimestamps{DEFAULT_LOGTIMESTAMPS};
 std::atomic<bool> fLogTimeMicros{DEFAULT_LOGTIMEMICROS};
 std::atomic<bool> fPrintToConsole{false};
@@ -153,7 +156,22 @@ int LogPrintStr(const std::string &str)
     }
     if (fPrintToDebugLog.load())
     {
-        std::scoped_lock scoped_lock(*mutexDebugLog.load());
+        std::mutex *mutexLog = mutexDebugLog.load();
+        // Logging may be called before the mutex is initialized.
+        // Without this check, std::scoped_lock scoped_lock(*mutexDebugLog.load())
+        // would dereference nullptr and could segfault while reporting a startup error
+        if (mutexLog == nullptr)
+        {
+            // If the logger is not up, log to stderr even if stdout logging is
+            // configured off, because otherwise the log gets lost.
+            if (!fPrintToConsole.load())
+            {
+                ret = fwrite(strTimestamped.data(), 1, strTimestamped.size(), stderr);
+                fflush(stderr);
+            }
+            return ret;
+        }
+        std::scoped_lock scoped_lock(*mutexLog);
 
         // buffer if we haven't opened the log yet
         if (logger_fileout == nullptr)
@@ -290,6 +308,17 @@ void LogInit(std::vector<std::string> categories)
         if (logger_fileout.load())
         {
             setbuf(logger_fileout.load(), nullptr); // unbuffered
+        }
+        else
+        {
+            // The log file could not be opened: the directory may be missing or unwritable, the file
+            // may be locked or read only, or the path may not survive the conversion to the encoding
+            // the C runtime expects. Carry on without a log file. Leaving fPrintToDebugLog set would
+            // abort on the very next log statement, which on the GUI kills the process behind an
+            // assertion dialog before any window can report what is wrong.
+            fprintf(stderr, "Unable to open debug log %s: %s. Logging to file is disabled.\n",
+                pathDebug.string().c_str(), strerror(errno));
+            fPrintToDebugLog.store(false);
         }
     }
 
