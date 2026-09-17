@@ -105,8 +105,6 @@ bool CThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom)
     {
         if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::XTHINBLOCK, inv.hash) && !connmgr->IsExpeditedUpstream(pfrom))
         {
-            // This might be a subblock we have moved away from so do not misbehaving this node
-            // dosMan.Misbehaving(pfrom, 10, BanReasonUnrequestedObject);
             return error("unrequested thinblock from peer %s", pfrom->GetLogName());
         }
     }
@@ -291,7 +289,6 @@ bool CXThinBlockTx::HandleMessage(CDataStream &vRecv, CNode *pfrom)
         // Do not process unrequested xblocktx unless from an expedited node.
         if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::XTHINBLOCK, inv.hash) && !connmgr->IsExpeditedUpstream(pfrom))
         {
-            dosMan.Misbehaving(pfrom, 10, BanReasonUnrequestedObject);
             return error(
                 "Received xblocktx %s from peer %s but was unrequested", inv.hash.ToString(), pfrom->GetLogName());
         }
@@ -562,7 +559,6 @@ bool CXThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom, std::string st
             if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::XTHINBLOCK, inv.hash) &&
                 !connmgr->IsExpeditedUpstream(pfrom))
             {
-                dosMan.Misbehaving(pfrom, 10, BanReasonUnrequestedObject);
                 return error(
                     "%s %s from peer %s but was unrequested\n", strCommand, inv.hash.ToString(), pfrom->GetLogName());
             }
