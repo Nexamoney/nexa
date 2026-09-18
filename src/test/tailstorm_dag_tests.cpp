@@ -87,9 +87,9 @@ public:
     {
         return missingInputs.RemoveFor(outpoint);
     }
-    void Retry(const CTransactionRef &tx, CCoinsViewCache &coins, int height)
+    void Retry(const CTransactionRef &tx, CCoinsViewCache &coins)
     {
-        ConnectDependentTxs(tx, coins, height, {});
+        ConnectDependentTxs(tx, coins, {});
     }
     const std::set<uint256> &BadSubblocks() const { return setBadSubblocks; }
     bool HasDagTx(const uint256 &txid) const { return mapDagTxns.count(txid) != 0; }
@@ -493,7 +493,7 @@ BOOST_AUTO_TEST_CASE(retry_verdict_marks_subblocks_bad)
     TestTailstormTree tree;
     tree.SetSummaryRoot(&chain.previousSummary);
     tree.SetSummaryRootCoins(&coinsCache);
-    CCoinsViewCache coins(&coinsCache);
+    CCoinsViewCache tcoins(&coinsCache);
     const int height = chain.previousSummary.height() + 1;
 
     // The parent creates three outputs. A bare script that OP_0 satisfies keeps the valid
@@ -504,7 +504,7 @@ BOOST_AUTO_TEST_CASE(retry_verdict_marks_subblocks_bad)
     for (int i = 0; i < 3; i++)
         parent.vout.emplace_back(1000, spendable);
     const CTransactionRef parentTx = MakeTransactionRef(parent);
-    AddCoins(coins, *parentTx, height);
+    AddCoins(tcoins, *parentTx, height);
 
     auto makeChild = [&](unsigned int parentOutput, CAmount claimed, unsigned char tag, bool extraInput)
     {
@@ -530,23 +530,23 @@ BOOST_AUTO_TEST_CASE(retry_verdict_marks_subblocks_bad)
     tree.IndexMissing(validTx, subblockA);
     tree.IndexMissing(waitingTx, subblockB);
 
-    tree.Retry(parentTx, coins, height);
+    tree.Retry(parentTx, tcoins);
 
     // Invalid: both subblocks marked, not applied, not re-indexed, output untouched.
     BOOST_CHECK_EQUAL(tree.BadSubblocks().size(), 2);
     BOOST_CHECK_EQUAL(tree.BadSubblocks().count(subblockA), 1);
     BOOST_CHECK_EQUAL(tree.BadSubblocks().count(subblockB), 1);
     BOOST_CHECK(!tree.HasDagTx(invalidTx->GetId()));
-    BOOST_CHECK(coins.HaveCoin(parentTx->OutpointAt(0)));
+    BOOST_CHECK(tcoins.HaveCoin(parentTx->OutpointAt(0)));
     BOOST_CHECK(tree.TakeWaiting(parentTx->OutpointAt(0)).empty());
 
     // Valid: applied.
     BOOST_CHECK(tree.HasDagTx(validTx->GetId()));
-    BOOST_CHECK(!coins.HaveCoin(parentTx->OutpointAt(1)));
+    BOOST_CHECK(!tcoins.HaveCoin(parentTx->OutpointAt(1)));
 
     // Waiting: back on the index under its subblock, nothing applied.
     BOOST_CHECK(!tree.HasDagTx(waitingTx->GetId()));
-    BOOST_CHECK(coins.HaveCoin(parentTx->OutpointAt(2)));
+    BOOST_CHECK(tcoins.HaveCoin(parentTx->OutpointAt(2)));
     const auto waiting = tree.TakeWaiting(parentTx->OutpointAt(2));
     BOOST_REQUIRE_EQUAL(waiting.size(), 1);
     BOOST_CHECK(waiting[0].first->GetId() == waitingTx->GetId());

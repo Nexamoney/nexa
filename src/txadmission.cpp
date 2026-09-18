@@ -892,6 +892,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
         LOGA("Do not have corral during parallelaccepttomemorypool"));
 
     const CChainParams &chainparams = Params();
+    CBlockIndex *chainTip = chainActive.Tip();
 
     if (isRespend)
         *isRespend = false;
@@ -907,7 +908,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
         debugger->txid = tx->GetId().ToString();
     }
 
-    if (!CheckTransaction(tx, state) || !ContextualCheckTransaction(tx, state, chainActive.Tip(), chainparams))
+    if (!CheckTransaction(tx, state) || !ContextualCheckTransaction(tx, state, chainTip, chainparams))
     {
         if (state.GetDebugMessage() == "")
             state.SetDebugMessage("CheckTransaction failed");
@@ -973,8 +974,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
 
     uint32_t flags = STANDARD_SCRIPT_VERIFY_FLAGS;
 
-    CBlockIndex *tip = chainActive.Tip();
-    if (IsUpgrade2Activated(tip) || IsUpgrade2Pending(tip))
+    if (IsUpgrade2Activated(chainTip) || IsUpgrade2Pending(chainTip))
     {
         flags = POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS;
     }
@@ -1062,9 +1062,9 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
         CCoinsView dummy;
         CCoinsViewCache view(&dummy);
 
-        // coinstip is used for storing read only inputs
+        // roCoinsTip is used for storing read only inputs
         CCoinsView dummy2;
-        CCoinsViewCache coinstip(&dummy2);
+        CCoinsViewCache roCoinsTip(&dummy2);
 
         CAmount nValueIn = 0;
         LockPoints lp;
@@ -1091,7 +1091,13 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
 
             CCoinsViewMemPool viewMemPool(ptip, mempool);
             view.SetBackend(viewMemPool);
-            coinstip.SetBackend(*ptip);
+            // Consumed inputs may come from the tailstorm DAG, but read only inputs must be confirmed before being
+            // used.  So roCoinsTip points directly at the coins of the summary block tip.
+            // Recall that every transaction in a summary block is effectively seen as being executed simultaneously,
+            // so in subblocks you can continue to access spent UTXOs **as read only** until the summary block
+            // collapses the DAG.  This allows the behavior of the subblock DAG to mirror that of the summary block
+            // they collapse into.
+            roCoinsTip.SetBackend(*pcoinsTip);
 
             // do all inputs exist?
             if (pfMissingInputs)
@@ -1114,12 +1120,12 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                     bool fMissingOrSpent = false;
                     if (txin.IsReadOnly())
                     {
-                        if (!coinstip.HaveCoinInCache(txin.prevout, fSpent))
+                        if (!roCoinsTip.HaveCoinInCache(txin.prevout, fSpent))
                         {
                             // Read-only inputs can only refer to confirmed inputs
                             // look in coins (utxo of blockchain tip, not mempool tip)
                             // but ignore whether its spent (read-only spent coins are still accessible in this block).
-                            if (!coinstip.GetCoinFromDB(txin.prevout))
+                            if (!roCoinsTip.GetCoinFromDB(txin.prevout))
                             {
                                 state.relevantInput = inIdx;
                                 state.relevantTxid = tx->GetId();
@@ -1184,7 +1190,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
 
             // Bring the best block into scope
             view.GetBestBlock();
-            coinstip.GetBestBlock();
+            roCoinsTip.GetBestBlock();
 
             nValueIn = tx->GetValueIn();
             // NOTE this view function MUST be executed, so we can cache all inputs, before SetBackend(dummy)
@@ -1205,14 +1211,14 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
             }
             // we have all inputs cached now, so switch back to dummy, so we don't need to keep lock on mempool
             view.SetBackend(dummy);
-            coinstip.SetBackend(dummy2);
+            roCoinsTip.SetBackend(dummy2);
 
             // Only accept BIP68 sequence locked transactions that can be mined in the next
             // block; we don't want our mempool filled up with transactions that can't
             // be mined yet.
             // Must keep pool.cs for this unless we change CheckSequenceLocks to take a
             // CoinsViewCache instead of create its own
-            if (!CheckSequenceLocks(tx, STANDARD_LOCKTIME_VERIFY_FLAGS, &lp, false))
+            if (!CheckSequenceLocks(tx, STANDARD_LOCKTIME_VERIFY_FLAGS, chainTip, view, roCoinsTip, &lp, false))
             {
                 if (debugger)
                 {
@@ -1258,10 +1264,10 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
             //
             // And, keep track of transactions that spend a coinbase, which we re-scan
             // during reorgs to ensure COINBASE_MATURITY is still met.
-            dPriority = view.GetPriority(*tx, chainActive.Height(), inChainInputValue, fSpendsCoinbase);
+            dPriority = view.GetPriority(*tx, chainTip->height(), inChainInputValue, fSpendsCoinbase);
             // Check that input script constraints are satisfied
             unsigned char sighashType = 0;
-            if (!CheckInputs(tx, state, view, coinstip, true, flags, true, &resourceTracker, chainparams, nullptr,
+            if (!CheckInputs(tx, state, view, roCoinsTip, true, flags, true, &resourceTracker, chainparams, nullptr,
                     &sighashType, debugger))
             {
                 if (state.GetDebugMessage() == "")
@@ -1308,11 +1314,11 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
 
         // Create a commit data entry
         CTxMemPoolEntry entry(
-            tx, nFees, GetTime(), dPriority, chainActive.Height(), inChainInputValue, fSpendsCoinbase, nSigOps, lp);
+            tx, nFees, GetTime(), dPriority, chainTip->height(), inChainInputValue, fSpendsCoinbase, nSigOps, lp);
 
         nSize = entry.GetTxSize();
         if (fRelayPriority && (nModifiedFees < ::minRelayTxFee.GetFee(nSize)) &&
-            (!AllowFree(entry.GetPriority(chainActive.Height() + 1))))
+            (!AllowFree(entry.GetPriority(chainTip->height() + 1))))
         {
             if (debugger)
             {
@@ -1585,20 +1591,26 @@ uint64_t ProcessOrphans(const std::vector<CTransactionRef> &possibleAncestors)
 }
 
 
-bool CheckSequenceLocks(const CTransactionRef tx, int flags, LockPoints *lp, bool useExistingLockPoints)
+bool CheckSequenceLocks(const CTransactionRef tx,
+    int flags,
+    CBlockIndex *chainTip,
+    const CCoinsViewCache &viewMemPool,
+    const CCoinsViewCache &roCoinsTip,
+    LockPoints *lp,
+    bool useExistingLockPoints)
 {
     AssertLockHeld(mempool.cs_txmempool);
 
-    CBlockIndex *tip = chainActive.Tip();
-    CBlockIndex index;
-    index.pprev = tip;
     // CheckSequenceLocks() uses chainActive.Height()+1 to evaluate
     // height based locks because when SequenceLocks() is called within
     // ConnectBlock(), the height of the block *being*
     // evaluated is what is used.
     // Thus if we want to know if a transaction can be part of the
     // *next* block, we need to use one more than chainActive.Height()
-    index.SetBlockHeaderHeight(tip->height() + 1);
+    CBlockHeader fakeHeader;
+    fakeHeader.height = chainTip->height() + 1;
+    CBlockIndex index(fakeHeader);
+    index.pprev = chainTip;
 
     std::pair<int, int64_t> lockPair;
     if (useExistingLockPoints)
@@ -1609,24 +1621,27 @@ bool CheckSequenceLocks(const CTransactionRef tx, int flags, LockPoints *lp, boo
     }
     else
     {
-        // ptip contains the UTXO set for chainActive.Tip() or the tailstorm dag tip
-        CCoinsViewCache *ptip = fTailstormEnabled ? tailstormForest.bestGroveCoins() : pcoinsTip;
-        CCoinsViewMemPool tmpView(ptip, mempool);
-        CCoinsViewMemPool &viewMemPool = tmpView;
         std::vector<int> prevheights;
         prevheights.resize(tx->vin.size());
         for (size_t txinIndex = 0; txinIndex < tx->vin.size(); txinIndex++)
         {
             const CTxIn &txin = tx->vin[txinIndex];
             Coin coin;
-            if (!viewMemPool.GetCoin(txin.prevout, coin))
+            if (txin.IsReadOnly())
+            {
+                if (!roCoinsTip.GetCoin(txin.prevout, coin))
+                {
+                    return error("%s: Missing read-only input", __func__);
+                }
+            }
+            else if (!viewMemPool.GetCoin(txin.prevout, coin))
             {
                 return error("%s: Missing input", __func__);
             }
             if (coin.nHeight == MEMPOOL_HEIGHT)
             {
                 // Assume all mempool transaction confirm in the next block
-                prevheights[txinIndex] = tip->height() + 1;
+                prevheights[txinIndex] = chainTip->height() + 1;
             }
             else
             {
@@ -1646,8 +1661,8 @@ bool CheckSequenceLocks(const CTransactionRef tx, int flags, LockPoints *lp, boo
             // if any of the sequence locked inputs depend on unconfirmed txs,
             // except in the special case where the relative lock time/height
             // is 0, which is equivalent to no sequence lock. Since we assume
-            // input height of tip+1 for mempool txs and test the resulting
-            // lockPair from CalculateSequenceLocks against tip+1.  We know
+            // input height of chainTip+1 for mempool txs and test the resulting
+            // lockPair from CalculateSequenceLocks against chainTip+1.  We know
             // EvaluateSequenceLocks will fail if there was a non-zero sequence
             // lock on a mempool input, so we can use the return value of
             // CheckSequenceLocks to indicate the LockPoints validity
@@ -1655,12 +1670,12 @@ bool CheckSequenceLocks(const CTransactionRef tx, int flags, LockPoints *lp, boo
             for (int height : prevheights)
             {
                 // Can ignore mempool inputs since we'll fail if they had non-zero locks
-                if (height != tip->height() + 1)
+                if (height != chainTip->height() + 1)
                 {
                     maxInputHeight = std::max(maxInputHeight, height);
                 }
             }
-            lp->maxInputBlock = tip->GetAncestor(maxInputHeight);
+            lp->maxInputBlock = chainTip->GetAncestor(maxInputHeight);
         }
     }
     return EvaluateSequenceLocks(index, lockPair);

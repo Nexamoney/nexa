@@ -298,12 +298,6 @@ CBlockIndex CreateBlockIndex(int nHeight)
     return index;
 }
 
-bool TestSequenceLocks(const CTransaction &tx, int flags)
-{
-    READLOCK(mempool.cs_txmempool);
-    return CheckSequenceLocks(MakeTransactionRef(tx), flags);
-}
-
 bool TxIn(uint256 txHash, std::vector<CTransactionRef> &vtx)
 {
     for (const auto &tx : vtx)

@@ -240,6 +240,9 @@ bool CheckFinalTx(const CTransaction *tx, int flags = -1);
  */
 bool CheckSequenceLocks(const CTransactionRef tx,
     int flags,
+    CBlockIndex *chainTip,
+    const CCoinsViewCache &coinsTip,
+    const CCoinsViewCache &roCoinsTip,
     LockPoints *lp = nullptr,
     bool useExistingLockPoints = false);
 

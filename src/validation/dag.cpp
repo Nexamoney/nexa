@@ -429,11 +429,29 @@ void CDagMissingInputIndex::Add(const CTreeNodeRef &node,
 // outputs when every input is present and they are not current losers.
 void CTailstormTree::ConnectDependentTxs(const CTransactionRef &ptx,
     CCoinsViewCache &coins,
-    int height,
     const std::set<uint256> &losers)
 {
     if (!ptx)
         return;
+
+    // Create temporary storage and then a pointer to a fake block index for the forthcoming summary block
+    std::shared_ptr<CBlockHeader> header = std::make_shared<CBlockHeader>();
+    // If pindexSummaryRoot is null, none of this will be used anyway
+    header->height = pindexSummaryRoot ? pindexSummaryRoot->height() + 1 : 0;
+    header->nTime = 0;
+    CBlockIndex indexEpoch(header);
+    indexEpoch.pprev = pindexSummaryRoot;
+    ConnectDependentTxsRecurse(indexEpoch, ptx, coins, losers);
+}
+
+void CTailstormTree::ConnectDependentTxsRecurse(CBlockIndex &indexEpoch,
+    const CTransactionRef &ptx,
+    CCoinsViewCache &coins,
+    const std::set<uint256> &losers)
+{
+    if (!ptx)
+        return;
+
     for (size_t j = 0; j < ptx->vout.size(); j++)
     {
         auto deps = missingInputs.RemoveFor(ptx->OutpointAt(j));
@@ -481,7 +499,7 @@ void CTailstormTree::ConnectDependentTxs(const CTransactionRef &ptx,
             {
                 CValidationState depState;
                 if (!CheckTxFinalAndInputs(
-                        wtx, depState, coins, *_pcoinsSummaryRoot, *pindexSummaryRoot, Params(), true, true, false))
+                        wtx, depState, coins, *_pcoinsSummaryRoot, indexEpoch, Params(), true, true, false))
                 {
                     LOG(DAG, "%s: dependent tx %s failed validation, not including it: %s", __func__,
                         wtx->GetId().ToString(), depState.GetLogString());
@@ -507,7 +525,7 @@ void CTailstormTree::ConnectDependentTxs(const CTransactionRef &ptx,
             }
             try
             {
-                UpdateCoins(*wtx, coins, height);
+                UpdateCoins(*wtx, coins, indexEpoch.height());
             }
             catch (const std::logic_error &)
             {
@@ -520,7 +538,7 @@ void CTailstormTree::ConnectDependentTxs(const CTransactionRef &ptx,
                 mempool._removeConflicts(*wtx, txConflicted);
             }
             LOG(DAG, "%s: included dependent tx %s", __func__, wtx->GetId().ToString());
-            ConnectDependentTxs(wtx, coins, height, losers);
+            ConnectDependentTxsRecurse(indexEpoch, wtx, coins, losers);
         }
     }
 }
@@ -1066,8 +1084,8 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             // Child cache: a failed connect must not dirty the tree view.
             CCoinsViewCache upperview(view);
             bool fOK = ConnectBlockCanonicalOrdering(newNode->subblock, state, pindexSummaryRoot, upperview,
-                chainparams, fJustCheck, SINGLE_THREADED, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages,
-                accumulatedAuthorities, &mapDagTxns, &viewExcl);
+                *_pcoinsSummaryRoot, chainparams, fJustCheck, SINGLE_THREADED, fScriptChecks, nFees, blockundo, vPos,
+                accumulatedMintages, accumulatedAuthorities, &mapDagTxns, &viewExcl);
             if (!fOK)
             {
                 LOG(DAG, "%s: subblock %s failed to validate: %s", __func__, newNode->hash.ToString(),
@@ -1092,12 +1110,11 @@ CTreeNodeRef CTailstormTree::Insert(CTreeNodeRef newNode)
             bool result = upperview.Flush();
             assert(result);
 
-            const int nHeight = pindexSummaryRoot ? pindexSummaryRoot->height() : 0;
             for (CTransactionRef ptx : newNode->subblock->vtx)
             {
                 if (ptx->IsCoinBase() || viewExcl.count(ptx->GetId()))
                     continue;
-                ConnectDependentTxs(ptx, *view, nHeight, losers);
+                ConnectDependentTxs(ptx, *view, losers);
             }
 
             std::list<CTransactionRef> txConflicted;
@@ -1639,12 +1656,11 @@ void CTailstormForest::RefreshTransactionsAfterSubblockInsertion(CTailstormGrove
         grove->GetBestDag(viewDag);
         std::set<uint256> losers;
         auto excl = GetTxnExclusionSet(viewDag, tree.conflictRegistry, tree._pcoinsSummaryRoot, &losers);
-        const int nHeight = tree.pindexSummaryRoot ? tree.pindexSummaryRoot->height() : 0;
         for (const auto &ptx : newNode->subblock->vtx)
         {
             if (ptx->IsCoinBase() || excl.count(ptx->GetId()))
                 continue;
-            tree.ConnectDependentTxs(ptx, *tree.view, nHeight, losers);
+            tree.ConnectDependentTxs(ptx, *tree.view, losers);
         }
     }
 
@@ -2999,9 +3015,9 @@ CTreeNodeRef CTailstormForest::ReGenerateDagDataForSubblocks(CTailstormTree *tre
             treenode->subblock->GetHash().ToString(), treenode->subblock->ToString());
         CValidationState state;
         CCoinsViewCache layer(tree->view);
-        bool fOK = ConnectBlockCanonicalOrdering(treenode->subblock, state, tree->pindexSummaryRoot, layer, chainparams,
-            fJustCheck, fParallel, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages, accumulatedAuthorities,
-            &tree->mapDagTxns, &omit);
+        bool fOK = ConnectBlockCanonicalOrdering(treenode->subblock, state, tree->pindexSummaryRoot, layer,
+            *tree->_pcoinsSummaryRoot, chainparams, fJustCheck, fParallel, fScriptChecks, nFees, blockundo, vPos,
+            accumulatedMintages, accumulatedAuthorities, &tree->mapDagTxns, &omit);
         if (fOK)
         {
             bool flushed = layer.Flush();
@@ -3026,7 +3042,6 @@ CTreeNodeRef CTailstormForest::ReGenerateDagDataForSubblocks(CTailstormTree *tre
     }
 
     // Re-index omitted non-losers, then include any that can now source.
-    const int nHeight = tree->pindexSummaryRoot ? tree->pindexSummaryRoot->height() : 0;
     for (const auto &treenode : sortedDag)
     {
         if (!treenode || !treenode->subblock)
@@ -3036,7 +3051,7 @@ CTreeNodeRef CTailstormForest::ReGenerateDagDataForSubblocks(CTailstormTree *tre
         {
             if (ptx->IsCoinBase() || omit.count(ptx->GetId()))
                 continue;
-            tree->ConnectDependentTxs(ptx, *tree->view, nHeight, losers);
+            tree->ConnectDependentTxs(ptx, *tree->view, losers);
         }
     }
     return CTreeNodeRef();

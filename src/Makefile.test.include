@@ -146,6 +146,7 @@ NEXA_TESTS =\
   test/skiplist_tests.cpp \
   test/streams_tests.cpp \
   test/tailstorm_dag_tests.cpp \
+  test/tailstorm_readonly_tests.cpp \
   test/thinblock_tests.cpp \
   test/thinblock_data_tests.cpp \
   test/thinblock_util_tests.cpp \

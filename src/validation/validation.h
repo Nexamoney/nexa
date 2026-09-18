@@ -181,16 +181,20 @@ bool ConnectBlock(ConstCBlockRef pblock,
     CValidationState &state,
     CBlockIndex *pindex,
     CCoinsViewCache &view,
+    const CCoinsViewCache &beginningTipView,
     const CChainParams &chainparams,
     std::map<CGroupTokenID, CAmount> &accumulatedMintages,
     std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
     bool fJustCheck = false,
     bool fParallel = false);
 
+/** For summary blocks, pindex is the CBlockIndex of the passed pblock.  For subblocks, its the parent CBlockIndex
+ because a subblock has no CBlockIndex. */
 bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     CValidationState &state,
     CBlockIndex *pindex,
     CCoinsViewCache &view,
+    const CCoinsViewCache &readonlyview,
     const CChainParams &chainparams,
     bool fJustCheck,
     bool fParallel,
