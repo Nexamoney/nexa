@@ -132,7 +132,10 @@ public:
 
     // Get the next height in the dag which we use to position the item
     // in the dagviewer's scene.
-    int32_t GetNextDagViewerHeight(uint256 &prevDagHash, const CBlockHeader &header, const uint32_t blockType);
+    bool GetNextDagViewerHeight(uint256 &prevDagHash,
+        uint32_t &nNextDagViewerHeight,
+        const CBlockHeader &header,
+        const uint32_t blockType);
 
     // Try to connect any orphaned items.
     void ProcessOrphans();

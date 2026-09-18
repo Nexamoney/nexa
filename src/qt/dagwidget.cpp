@@ -567,8 +567,10 @@ void DagWidget::AddItem(uint256 hash,
 
     // If the block height is less than the smallest block height we currently have in our
     // dag then do not accept it since we've already trimmed passed that height already.
-    uint32_t nDagViewerHeight = GetNextDagViewerHeight(prevhash, header, blockType);
-
+    uint32_t nDagViewerHeight = 0;
+    bool fNextDagViewerHeight = GetNextDagViewerHeight(prevhash, nDagViewerHeight, header, blockType);
+    if (!fNextDagViewerHeight)
+        return;
     if ((mapDag.begin() != mapDag.end()) && (nDagViewerHeight < mapDag.begin()->first))
         return;
 
@@ -1440,21 +1442,28 @@ void DagWidget::AddText(uint256 hash, QPen pen, qreal x, qreal y, uint8_t blockT
     return;
 }
 
-int32_t DagWidget::GetNextDagViewerHeight(uint256 &prevDagHash, const CBlockHeader &header, const uint32_t blockType)
+bool DagWidget::GetNextDagViewerHeight(uint256 &prevDagHash,
+    uint32_t &nNextDagViewerHeight,
+    const CBlockHeader &header,
+    const uint32_t blockType)
 {
     LOCK(cs_info);
     if (mapInfo.empty())
-        return 1;
+    {
+        nNextDagViewerHeight = 1;
+        return true;
+    }
 
     if (blockType == UNCLE_BLOCK)
     {
         if (mapInfo.count(prevDagHash))
         {
-            return mapInfo[prevDagHash]->nDagViewerHeight + 1;
+            nNextDagViewerHeight = mapInfo[prevDagHash]->nDagViewerHeight + 1;
+            return true;
         }
         else
         {
-            return -1;
+            return false;
         }
     }
 
@@ -1494,13 +1503,14 @@ int32_t DagWidget::GetNextDagViewerHeight(uint256 &prevDagHash, const CBlockHead
         if (fHavePrevInfo || (fHaveOneItem && nPrevDagViewerHeight < Params().GetConsensus().tailstorm_k))
         {
             LOG(DAGVIEWER, "Dagwidget: got next viewer height %ld for summary.", nPrevDagViewerHeight + 1);
-            return nMaxDagHeight + 1;
+            nNextDagViewerHeight = nMaxDagHeight + 1;
+            return true;
         }
         else
         {
             LOG(DAGVIEWER, "Dagwidget: prevhash %s not found for SUMMARY !!! - defer in dagviewer",
                 header.GetHash().ToString());
-            return -1;
+            return false;
         }
     }
     else
@@ -1518,7 +1528,7 @@ int32_t DagWidget::GetNextDagViewerHeight(uint256 &prevDagHash, const CBlockHead
                 {
                     LOG(DAGVIEWER, "Dagwidget: prevhash %s not found for subblock !!! - defer in dagviewer",
                         prevhash.ToString());
-                    return -1;
+                    return false;
                 }
                 if (fHaveInfo && mapInfo[prevhash]->nDagViewerHeight > nMaxDagViewerHeight)
                 {
@@ -1528,17 +1538,19 @@ int32_t DagWidget::GetNextDagViewerHeight(uint256 &prevDagHash, const CBlockHead
             }
             LOG(DAGVIEWER, "Dagwidget: got next dagviewer subblock height %ld from prevhashes",
                 nMaxDagViewerHeight + 1);
-            return nMaxDagViewerHeight + 1;
+            nNextDagViewerHeight = nMaxDagViewerHeight + 1;
+            return true;
         }
         else if (mapInfo.count(prevDagHash))
         {
             // Check the prevhash exists for Legacy blocks.
             LOG(DAGVIEWER, "Dagwidget: got next dagviewer subblock height from prevhash %s : %ld",
                 prevDagHash.ToString(), mapInfo[prevDagHash]->nDagViewerHeight + 1);
-            return mapInfo[prevDagHash]->nDagViewerHeight + 1;
+            nNextDagViewerHeight = mapInfo[prevDagHash]->nDagViewerHeight + 1;
+            return true;
         }
 
-        return -1;
+        return false;
     }
 }
 
@@ -1577,7 +1589,8 @@ static void BlockTipChanged(DagWidget *dagwidget,
     if (GetMinerDataVersion(header.minerData) != 0)
     {
         blockType = fSubblock ? DagWidget::STORM_BLOCK : DagWidget::SUMMARY;
-        auto nNextDagViewerHeight = dagwidget->GetNextDagViewerHeight(prevDagHash, header, blockType);
+        uint32_t nNextDagViewerHeight = 0;
+        bool fNextHeight = dagwidget->GetNextDagViewerHeight(prevDagHash, nNextDagViewerHeight, header, blockType);
         if (!fSubblock)
         {
             // Special case for summary blocks. The vLinks will point back to the best dag tip
@@ -1585,7 +1598,7 @@ static void BlockTipChanged(DagWidget *dagwidget,
             vLinks = {{prevDagHash, true}};
         }
 
-        if (nNextDagViewerHeight == -1)
+        if (!fNextHeight)
         {
             // defer summary block
             if (!fSubblock)
@@ -1607,8 +1620,9 @@ static void BlockTipChanged(DagWidget *dagwidget,
     else
     {
         blockType = DagWidget::LEGACY_BLOCK;
-        auto nNextDagViewerHeight = dagwidget->GetNextDagViewerHeight(prevDagHash, header, blockType);
-        if (nNextDagViewerHeight == -1)
+        uint32_t nNextDagViewerHeight = 0;
+        bool fNextHeight = dagwidget->GetNextDagViewerHeight(prevDagHash, nNextDagViewerHeight, header, blockType);
+        if (!fNextHeight)
         {
             LOG(DAGVIEWER, "Dagwidget: Deferring legacy block in dagwidget %s which points to %s", hash.ToString(),
                 prevDagHash.ToString());
@@ -1678,7 +1692,8 @@ static void BlockHeaderChanged(DagWidget *dagwidget,
 
     if (GetMinerDataVersion(header.minerData) != 0)
     {
-        auto nNextDagViewerHeight = dagwidget->GetNextDagViewerHeight(prevDagHash, header, blockType);
+        uint32_t nNextDagViewerHeight = 0;
+        bool fNextHeight = dagwidget->GetNextDagViewerHeight(prevDagHash, nNextDagViewerHeight, header, blockType);
         if (!fSubblock)
         {
             // Special case for summary blocks. The vLinks will point back to the best dag tip
@@ -1687,7 +1702,7 @@ static void BlockHeaderChanged(DagWidget *dagwidget,
         }
 
         blockType = fSubblock ? DagWidget::STORM_BLOCK : DagWidget::SUMMARY;
-        if (nNextDagViewerHeight == -1)
+        if (!fNextHeight)
         {
             // defer summary block
             if (!fSubblock)
@@ -1712,8 +1727,9 @@ static void BlockHeaderChanged(DagWidget *dagwidget,
     else
     {
         blockType = DagWidget::LEGACY_BLOCK;
-        auto nNextDagViewerHeight = dagwidget->GetNextDagViewerHeight(prevDagHash, header, blockType);
-        if (nNextDagViewerHeight == -1)
+        uint32_t nNextDagViewerHeight = 0;
+        bool fNextHeight = dagwidget->GetNextDagViewerHeight(prevDagHash, nNextDagViewerHeight, header, blockType);
+        if (!fNextHeight)
         {
             LOG(DAGVIEWER, "Dagwidget: Deferring legacy block in dagwidget %s which points to %s", hash.ToString(),
                 prevDagHash.ToString());
@@ -1773,8 +1789,9 @@ static void UncleReceived(DagWidget *dagwidget,
     auto blockType = DagWidget::UNCLE_BLOCK;
     bool fDoubleSpend = false;
 
-    auto nNextDagViewerHeight = dagwidget->GetNextDagViewerHeight(prevDagHash, header, blockType);
-    if (nNextDagViewerHeight == -1)
+    uint32_t nNextDagViewerHeight = 0;
+    bool fNextHeight = dagwidget->GetNextDagViewerHeight(prevDagHash, nNextDagViewerHeight, header, blockType);
+    if (!fNextHeight)
     {
         LOG(DAGVIEWER, "Dagwidget: Deferring uncle in dagwidget %s with prevhash", hash.ToString(),
             prevDagHash.ToString());
