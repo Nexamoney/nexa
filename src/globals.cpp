@@ -569,6 +569,10 @@ CTweak<bool> enforceMinTxSize("test.enforceMinTxSize",
     "Whether we will enforce the min tx size limit of 100 bytes or not (default: true)",
     true);
 
+CTweak<bool> requestMissingSubblocks("test.requestMissingSubblocks",
+    "Whether we will request missing tailstorm subblocks when a summary block arives (default: true)",
+    true);
+
 CTweak<bool> allowp2pTxVal("net.allowp2pTxVal",
     strprintf(
         "allow requests to check if a transaction would be accepted into the mempool via p2p message (default: false)"),

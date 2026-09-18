@@ -49,6 +49,7 @@ extern CTweak<unsigned int> blockDownloadWindow;
 extern CTweak<unsigned int> blockLookAheadInterval;
 extern CTweak<unsigned int> blkRetryInterval;
 extern CTweak<unsigned int> txRetryInterval;
+extern CTweak<bool> requestMissingSubblocks;
 
 // Request management
 extern CRequestManager requester;
@@ -604,6 +605,9 @@ static bool IsGrapheneVersionSupported(CNode *pfrom)
 
 void CRequestManager::RequestMissingSubblocks(const ConstCBlockRef &pblock, CNode *pfrom)
 {
+    if (!requestMissingSubblocks.Value())
+        return;
+
     if (pfrom == nullptr) // Try the nodes that have the summary block first
     {
         LOCK(cs_objDownloader);
