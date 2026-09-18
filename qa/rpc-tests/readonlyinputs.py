@@ -5,6 +5,7 @@
 
 import test_framework.loginit
 import logging
+import os
 import pprint
 from copy import copy as scopy
 
@@ -48,6 +49,15 @@ def spendOutputOfAmount(amt, tx, templateScript, constraintArgs=None, satisfierA
             return inp
     return None
 
+def roSpendOutputOfAmount(amt, tx, templateScript):
+    """Return a read-only input that references the output of tx that has value amt"""
+    inp = spendOutputOfAmount(amt, tx, templateScript)
+    assert inp != None
+    inp.t = CTxIn.READONLY
+    inp.amount = 0
+    inp.scriptSig = bytes()
+    return inp
+
 
 def UnpackGroupAmount(b):
     unp = "<B"
@@ -88,7 +98,7 @@ def spendOutput(idx, tx, templateScript, constraintArgs=None, satisfierArgs=None
 
 
 class RoTest(BitcoinTestFramework):
-    NUM_NODES = 2
+    NUM_NODES = 4
     def setup_chain(self,bitcoinConfDict=None, wallets=None):
         libnexa.loadLibNexaOrExit(self.options.srcdir)
         print("Initializing test directory "+self.options.tmpdir)
@@ -349,6 +359,8 @@ class RoTest(BitcoinTestFramework):
         self.sync_blocks()
         for i in range(0, self.NUM_NODES):
             waitFor(60, lambda: self.nodes[i].getwalletinfo()["syncblock"] in blkhash)
+        # Only nodes 0 (tx sender) and 1 (miner) have wallets affected by this block
+        for i in range(0, 2):
             assert_not_equal(StartBalances[i], self.nodes[i].getbalance())
 
     def testGroupReadOnlyInput(self):
@@ -478,6 +490,130 @@ class RoTest(BitcoinTestFramework):
         mnt =  n.token("mintage", gid)
         assert mnt["mintage_satoshis"] == 3000
 
+    def testReadOnlyVerifyDB(self, numBlocks=6):
+        """Mine blocks containing a mix of read-only input uses, then restart nodes with -checklevel=2, 3 and 4
+        so that startup VerifyDB must check undo data, disconnect, and reconnect blocks with read-only inputs.
+        """
+        n = self.nodes[0]
+        scr = CScript([OP_FROMALTSTACK, OP_FROMALTSTACK, OP_DROP, OP_DROP])  # pop the two public args and always work
+
+        sink = TxOut(nValue=5000)
+        sink.setLockingToTemplate(scr, None, [3, 4])
+
+        LONG_LIVED_AMT = 30000
+        def createdAmts(blk):
+            """Unique amounts of the outputs created in block blk, so that they can be found by value.
+            Returns (read-only only, read-only and spent in the same block, read-only then spent in the next block)"""
+            base = 20000 + blk*10
+            return (base, base+1, base+2)
+
+        def createOutputs(amts):
+            tx = CTransaction()
+            for amt in amts:
+                out = TxOut(nValue=amt)
+                out.setLockingToTemplate(scr, None, [1, 2])
+                tx.vout.append(out)
+            return fundSignSendParse(n, tx)
+
+        def roTx(*inputs):
+            tx = CTransaction()
+            for (prevTx, amt) in inputs:
+                tx.vin.append(roSpendOutputOfAmount(amt, prevTx, scr))
+            tx.vout.append(scopy(sink))
+            return fundSignSendParse(n, tx)
+
+        def spendTx(prevTx, amt):
+            tx = CTransaction()
+            inp = spendOutputOfAmount(amt, prevTx, scr)
+            assert inp != None
+            tx.vin.append(inp)
+            tx.vout.append(scopy(sink))
+            n.sendrawtransaction(tx.toHex())
+            return tx
+
+        def mineAndSync(expected):
+            idems = [t.GetRpcHexIdem() for t in expected]
+            waitFor(60, lambda: set(idems).issubset(set(n.getrawtxpool())),
+                    onError=lambda: "txpool is missing tx: %s" % str(set(idems) - set(n.getrawtxpool())))
+            blkhash = n.generate(1)[0]
+            blk = n.getblock(blkhash)
+            for idem in idems:
+                assert idem in blk["txidem"], "tx %s not in block %s" % (idem, blkhash)
+            self.sync_blocks()
+            for node in self.nodes:
+                waitFor(60, lambda: node.gettxpoolinfo()["size"] == 0)
+            sync_wallet(60, n)
+            return blkhash
+
+        sync_blocks(self.nodes)
+        sync_wallet(60, n)
+
+        # Setup block: make a long-lived UTXO and the UTXOs the first test block uses
+        longTx = createOutputs((LONG_LIVED_AMT,) + createdAmts(0))
+        mineAndSync([longTx])
+        startHeight = n.getblockcount()
+
+        prevTx = longTx
+        pendingSpend = None  # UTXO used read-only in the prior block, that gets spent in this one
+        for blk in range(1, numBlocks+1):
+            (roAmt, roSpendAmt, roLaterAmt) = createdAmts(blk-1)
+            expected = []
+            # read-only use of a UTXO that is never spent
+            expected.append(roTx((longTx, LONG_LIVED_AMT)))
+            # read-only use of a UTXO created in the prior block
+            expected.append(roTx((prevTx, roAmt)))
+            # multiple read-only inputs: the long-lived UTXO and one created in the prior block
+            expected.append(roTx((longTx, LONG_LIVED_AMT), (prevTx, roAmt)))
+            # read-only use of a UTXO created in the prior block, and a spend of that UTXO in this block
+            expected.append(roTx((prevTx, roSpendAmt)))
+            expected.append(spendTx(prevTx, roSpendAmt))
+            # spend the UTXO that was used read-only in the prior block
+            if pendingSpend is not None:
+                expected.append(spendTx(*pendingSpend))
+            # read-only use of a UTXO that will be spent in the next block
+            expected.append(roTx((prevTx, roLaterAmt)))
+            pendingSpend = (prevTx, roLaterAmt)
+            # create the UTXOs that the next block uses
+            prevTx = createOutputs(createdAmts(blk))
+            expected.append(prevTx)
+
+            blkhash = mineAndSync(expected)
+            logging.info("read-only verifydb test: block %d of %d: %s has %d tx" % (blk, numBlocks, blkhash, len(expected)))
+
+        assert_equal(n.getblockcount(), startHeight + numBlocks)
+        tip = n.getbestblockhash()
+        sync_blocks(self.nodes)
+
+        # Restart all but node 0 with different check levels
+        checkLevels = {1: 2, 2: 3, 3: 4}
+        logOffsets = {}
+        # Stop the nodes we want to restart at a certain checklevel
+        for i in checkLevels:
+            logOffsets[i] = os.path.getsize(log_filename(self.options.tmpdir, i, "debug.log"))
+            stop_node(self.nodes[i], i)
+        # Start them back up and check the log to see if checklevel worked
+        for i, level in checkLevels.items():
+            logging.info("read-only verifydb test: restarting node %d with -checklevel=%d" % (i, level))
+            self.nodes[i] = start_node(i, self.options.tmpdir, ["-checklevel=%d" % level, "-checkblocks=%d" % numBlocks])
+            waitFor(60, lambda: self.nodes[i].getbestblockhash() == tip)
+            with open(log_filename(self.options.tmpdir, i, "debug.log"), "r", errors="replace") as f:
+                f.seek(logOffsets[i])
+                log = f.read()
+            assert "Verifying last %d blocks at level %d" % (numBlocks, level) in log, "node %d did not verify at level %d" % (i, level)
+            assert "No coin database inconsistencies" in log, "node %d verification did not complete" % i
+
+        # Sanity check: Make sure the started nodes are working by interconnecting, mining some blocks, and verifying sync
+        interconnect_nodes(self.nodes)
+        sync_blocks(self.nodes)
+        for node in self.nodes:
+            assert_equal(node.getbestblockhash(), tip)
+
+        newTip = self.nodes[3].generate(1)[0]
+        sync_blocks(self.nodes)
+        # Are they all on the tip?
+        for node in self.nodes:
+            assert_equal(node.getbestblockhash(), newTip)
+
     def genBlock(self, node):
         blkhash = node.generate(1)[0]
         blkhdr = node.getblock(blkhash)
@@ -518,6 +654,8 @@ class RoTest(BitcoinTestFramework):
                 n.sendtoaddress(a, 1000000)
             blk2 = miningNode.generate(1)[0]
             # print("generated: " + blk2)
+            sync_blocks(self.nodes)
+            self.testReadOnlyVerifyDB()
 
 
 if __name__ == '__main__':

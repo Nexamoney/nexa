@@ -1498,14 +1498,15 @@ bool CheckInputs(const CTransactionRef &tx,
             inputCoins.reserve(tx->vin.size());
             for (size_t i = 0; i < tx->vin.size(); i++)
             {
-                CoinAccessor coin(inputs, tx->vin[i].prevout);
+                CoinAccessor coin(tx->vin[i].IsReadOnly() ? readonlyinputs : inputs, tx->vin[i].prevout);
                 inputCoins.push_back(coin->out);
             }
             for (size_t i = 0; i < tx->vin.size(); i++)
             {
                 const COutPoint &prevout = tx->vin[i].prevout;
                 const CScript &scriptSig = tx->vin[i].scriptSig;
-                CoinAccessor coin(inputs, prevout);
+                const bool fReadOnly = tx->vin[i].IsReadOnly();
+                CoinAccessor coin(fReadOnly ? readonlyinputs : inputs, prevout);
                 bool scriptCheckNeeded = true;
 
                 if (coin->IsSpent())
@@ -1513,10 +1514,15 @@ bool CheckInputs(const CTransactionRef &tx,
                     if (debugger)
                     {
                         debugger->SetInputCheckResult(false);
-                        debugger->AddInputCheckError(strprintf("COutPoint %s is spent", prevout.GetHex().c_str()));
-                        debugger->FinishCheckInputSession();
+                        debugger->AddInputCheckError(
+                            strprintf("COutPoint %d:%s is spent", i, prevout.GetHex().c_str()));
+                        allPassed = false;
                     }
-                    return false;
+                    else
+                    {
+                        return state.Invalid(false, REJECT_CONFLICT, "bad-txns-inputs-missingorspent",
+                            strprintf("COutPoint %d:%s is spent", i, prevout.GetHex()));
+                    }
                 }
 
                 // We very carefully only pass in things to CScriptCheck which
@@ -1692,6 +1698,7 @@ bool CheckInputs(const CTransactionRef &tx,
     {
         debugger->SetInputCheckResult(allPassed);
         debugger->FinishCheckInputSession();
+        return allPassed;
     }
     return true;
 }
@@ -1824,7 +1831,8 @@ bool TestBlockValidity(CValidationState &state,
 
     std::map<CGroupTokenID, CAmount> dummyMintages;
     std::map<CGroupTokenID, CAuth> dummyAuthorities;
-    if (!ConnectBlock(pblock, state, &indexDummy, viewNew, chainparams, dummyMintages, dummyAuthorities, true))
+    if (!ConnectBlock(
+            pblock, state, &indexDummy, viewNew, *pcoinsTip, chainparams, dummyMintages, dummyAuthorities, true))
         return false;
     assert(state.IsValid());
 
@@ -2955,6 +2963,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     CValidationState &state,
     CBlockIndex *pindex,
     CCoinsViewCache &view,
+    const CCoinsViewCache &readonlyinputs,
     const CChainParams &chainparams,
     bool fJustCheck,
     bool fParallel,
@@ -2978,7 +2987,34 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     int nChecked = 0;
     int nUnVerifiedChecked = 0;
     const arith_uint256 nStartingChainWork = chainActive.Tip()->chainWork();
-    bool fSummaryBlock = IsSummaryBlock(pblock);
+
+    // For a summary block, pindex is the index of the block being connected.
+    // For a subblock it is the summary block dag root (basically the previous summary block of what these
+    // transactions will actually appear in).
+    // We have to resolve overloading of pindex to get the actual effective summary block height.
+    bool fSummaryBlock = IsSummaryBlock(*pblock);
+    // subblocks mark their height to be that of the summary block they will be included in, so this works for both
+    // block types.
+    const int height = pblock->height;
+
+    // Create temporary storage and then a pointer to the actual pindex of this summary block,
+    // or a dummy pindex that is a stand-in for the not-yet-created summary block of the new epoch.
+    // Basically, pindexEpoch is a stand in for the summary block that contains or will contain these transactions.
+    CBlockIndex indexEpoch;
+    const CBlockIndex *pindexEpoch;
+    // If its a summary block this IS the tailstorm epoch end (that is, the DAG collapse).
+    if (fSummaryBlock)
+        pindexEpoch = pindex;
+    else
+    {
+        // If its a subblock, we make a temporary stand-in for the next CBlockIndex.
+        // This works because we barely use the CBlockIndex.  Basically we just want it to check height and
+        // MTP (parent medianTimePast) in lower level APIs.  It would be possible to replace those APIs' parameters
+        // to take these values directly.  But I am not sure if that would increase or decrease clarity.
+        indexEpoch.pprev = pindex;
+        indexEpoch.SetBlockHeader(pblock);
+        pindexEpoch = &indexEpoch;
+    }
 
     // Section for boost scoped lock on the scriptcheck_mutex
     boost::thread::id this_id(boost::this_thread::get_id());
@@ -2992,7 +3028,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && PV->ThreadCount() ? pScriptQueue : nullptr);
 
     // Indicate that block validation has begun.
-    if (!PV->BeginValidation(this_id, pindex, fParallel))
+    if (!PV->BeginValidation(this_id, pindexEpoch, fParallel))
         return false;
 
     /*********************************************************************************************
@@ -3028,8 +3064,12 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
             {
                 if (txref->vin[j].IsReadOnly())
                 {
-                    CoinAccessor coin(view, txref->vin[j].prevout);
-                    if (coin->IsSpent())
+                    bool fReadOnlyUnavailable = false;
+                    {
+                        CoinAccessor coin(readonlyinputs, txref->vin[j].prevout);
+                        fReadOnlyUnavailable = coin->IsSpent();
+                    }
+                    if (fReadOnlyUnavailable)
                     {
                         // Chain got reorged, this is just a block on the wrong chain not a malicious block
                         if (PV->ChainWorkHasChanged(nStartingChainWork, fSummaryBlock) ||
@@ -3038,11 +3078,26 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                             return false;
                         }
 
-                        LOG(BLK,
-                            "%s: block %s read only input UTXO %s missing or spent in tx.in: %d.%d txid: %s (idem: %s)",
-                            __func__, pblock->GetHash().ToString(), txref->vin[j].prevout.GetHex(), i, j,
+                        // Separate "this epoch made it" from "it never existed" so the reject reason is more
+                        // informative.
+                        bool fCreatedThisEpoch = false;
+                        {
+                            CoinAccessor coin(view, txref->vin[j].prevout);
+                            fCreatedThisEpoch = !coin->IsSpent();
+                        }
+
+                        LOG(BLK, "%s: block %s read only input UTXO %s %s in tx.in: %d.%d txid: %s (idem: %s)",
+                            __func__, pblock->GetHash().ToString(), txref->vin[j].prevout.GetHex(),
+                            fCreatedThisEpoch ? "created by this epoch" : "missing or spent", i, j,
                             txref->GetId().ToString(), txref->GetIdem().GetHex());
-                        DbgAssert(false, );
+                        if (fCreatedThisEpoch)
+                        {
+                            return state.DoS(100,
+                                error("%s: block %s read only input references an output created within this epoch in "
+                                      "tx.in: %d.%d txid: %s",
+                                    __func__, pblock->GetHash().ToString(), i, j, txref->GetId().ToString()),
+                                REJECT_INVALID, "bad-txns-read-only-input-created-in-epoch");
+                        }
                         return state.DoS(100,
                             error("%s: block %s read only inputs missing or spent in tx.in: %d.%d txid: %s", __func__,
                                 pblock->GetHash().ToString(), i, j, txref->GetId().ToString()),
@@ -3068,7 +3123,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
 
             try
             {
-                AddCoins(view, tx, pindex->height());
+                AddCoins(view, tx, height);
             }
             catch (std::logic_error &e)
             {
@@ -3159,7 +3214,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                 // The helper walks the inputs once: presence, amount match, fee
                 // accumulation, BIP68 and CheckInputs. On an input failure it sets
                 // state.relevantInput / relevantTxid for the diagnostics below.
-                if (!CheckTxFinalAndInputs(txref, state, view, *pcoinsTip, *pindex, chainparams, fCheckInputs,
+                if (!CheckTxFinalAndInputs(txref, state, view, readonlyinputs, *pindexEpoch, chainparams, fCheckInputs,
                         fScriptChecks, fJustCheck, fCheckInputs ? &txResourceTracker[i] : nullptr,
                         (fCheckInputs && PV->ThreadCount()) ? &vChecks : nullptr, &nFees))
                 {
@@ -3251,7 +3306,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
             {
                 blockundo.vtxundo.push_back(CTxUndo());
             }
-            if (!SpendCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->height()))
+            if (!SpendCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), height))
             {
                 return state.DoS(100,
                     error("%s: block %s inputs missing or spent (possibly doublespent) in tx: %d txid: %s", __func__,
@@ -3274,7 +3329,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
 
         // Validate we are within sigcheck limits.
         // Stop checking sigops when Upgrade2 becomes active.
-        if (!IsUpgrade2Activated(pindex))
+        if (!IsUpgrade2Activated(pindexEpoch))
         {
             uint64_t blockSigChecks = 0;
             for (const auto &t : txResourceTracker) // its ok to add the coinbase sigchecks because they must be 0
@@ -3290,8 +3345,9 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
             }
 
             LOG(BENCH, "Number of SigChecks performed in block: %d\n", blockSigChecks);
-            uint64_t maxSigChecksAllowed = GetMaxBlockSigChecks(
-                (pindex->pprev) ? pindex->pprev->GetNextMaxBlockSize() : chainparams.GetConsensus().nNextMaxBlockSize);
+            uint64_t maxSigChecksAllowed =
+                GetMaxBlockSigChecks((pindexEpoch->pprev) ? pindexEpoch->pprev->GetNextMaxBlockSize() :
+                                                            chainparams.GetConsensus().nNextMaxBlockSize);
             if (blockSigChecks > maxSigChecksAllowed)
             {
                 return state.DoS(
@@ -3324,6 +3380,7 @@ bool ConnectBlock(ConstCBlockRef pblock,
     CValidationState &state,
     CBlockIndex *pindex,
     CCoinsViewCache &view,
+    const CCoinsViewCache &beginningTipView,
     const CChainParams &chainparams,
     std::map<CGroupTokenID, CAmount> &accumulatedMintages,
     std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
@@ -3381,8 +3438,9 @@ bool ConnectBlock(ConstCBlockRef pblock,
     std::vector<std::pair<uint256, CDiskTxPos> > vPos;
     vPos.reserve(pblock->vtx.size());
 
-    if (!ConnectBlockCanonicalOrdering(pblock, state, pindex, view, chainparams, fJustCheck, fParallel, fScriptChecks,
-            nFees, blockundo, vPos, accumulatedMintages, accumulatedAuthorities))
+    // When connecting a summary block, the read-only inputs come directly from the tip we are building on.
+    if (!ConnectBlockCanonicalOrdering(pblock, state, pindex, view, beginningTipView, chainparams, fJustCheck,
+            fParallel, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages, accumulatedAuthorities))
     {
         return false;
     }
@@ -3928,8 +3986,8 @@ bool ConnectTip(CValidationState &state,
     CCoinsViewCache view(pcoinsTip);
     std::map<CGroupTokenID, CAmount> accumulatedMintages;
     std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
-    bool rv = ConnectBlock(
-        pblock, state, pindexNew, view, chainparams, accumulatedMintages, accumulatedAuthorities, false, fParallel);
+    bool rv = ConnectBlock(pblock, state, pindexNew, view, *pcoinsTip, chainparams, accumulatedMintages,
+        accumulatedAuthorities, false, fParallel);
     GetMainSignals().BlockChecked(*pblock, state);
     if (!rv)
     {

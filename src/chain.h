@@ -240,6 +240,7 @@ public:
 
 protected:
     //! block header - must be private to prevent a nullptr access. Use GetBlockHeader() and SetBlockHeader().
+    // TODO this should be a const CBlockHeader (you cannot be modifying block headers)
     std::shared_ptr<CBlockHeader> header;
 
 public:
@@ -278,6 +279,7 @@ public:
     CBlockIndex()
     {
         SetNull();
+        // TODO this should be a const CBlockHeader (you cannot be modifying block headers)
         header = std::make_shared<CBlockHeader>(CBlockHeader());
     }
 
@@ -291,6 +293,18 @@ public:
         nTx = block.txCount;
         nTime = block.nTime;
         nBits = block.nBits;
+    }
+
+    CBlockIndex(const std::shared_ptr<CBlockHeader> &block)
+    {
+        SetNull();
+        header = block;
+        nHeight = block->height;
+        nChainWork = UintToArith256(block->chainWork);
+        nSize = block->size;
+        nTx = block->txCount;
+        nTime = block->nTime;
+        nBits = block->nBits;
     }
 
     CDiskBlockPos GetBlockPos() const
@@ -316,7 +330,26 @@ public:
     }
 
     bool IsHeaderNull() const { return header == nullptr; }
-    void SetBlockHeader(std::shared_ptr<CBlockHeader> _header) { header = _header; }
+    void SetBlockHeader(std::shared_ptr<const CBlockHeader> _header)
+    {
+        // TODO remove this std::const_pointer_cast
+        header = std::const_pointer_cast<CBlockHeader>(_header);
+        // If we are zeroing the header pointer, its for caching so we want to keep these values
+        // But if we are actually setting this Index to a different header (typically during init) then
+        // we should update them.
+        if (_header != nullptr)
+        {
+            nHeight = _header->height;
+            nChainWork = UintToArith256(_header->chainWork);
+            nSize = _header->size;
+            nTx = _header->txCount;
+            nTime = _header->nTime;
+            nBits = _header->nBits;
+        }
+    }
+
+    /* TODO we should not allow you to modify a block header once its inside an index.
+     So all of these Set functions need to be removed */
     void SetBlockHeaderHeight(uint32_t _height)
     {
         WRITELOCK(cs_mapBlockIndex);

@@ -359,9 +359,11 @@ protected:
         return checkUpdateAncestryInsertIntoDag(newNode, excluded, losers);
     }
 
-    void ConnectDependentTxs(const CTransactionRef &ptx,
+    void ConnectDependentTxs(const CTransactionRef &ptx, CCoinsViewCache &coins, const std::set<uint256> &losers);
+
+    void ConnectDependentTxsRecurse(CBlockIndex &indexEpoch,
+        const CTransactionRef &ptx,
         CCoinsViewCache &coins,
-        int height,
         const std::set<uint256> &losers);
 
     // Omit txs that cannot spend against coins right now. Absent inputs go

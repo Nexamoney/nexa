@@ -122,7 +122,10 @@ bool CVerifyDB::VerifyDB(const CChainParams &chainparams, CCoinsView *coinsview,
                     pindex->GetBlockHash().ToString());
             std::map<CGroupTokenID, CAmount> dummyMintages;
             std::map<CGroupTokenID, CAuth> dummyAuthorities;
-            if (!ConnectBlock(pblock, state, pindex, coins, chainparams, dummyMintages, dummyAuthorities))
+            // Read-only inputs are checked against the UTXO state as of the prior block
+            CCoinsViewCache incomingcoins(&coins);
+            if (!ConnectBlock(
+                    pblock, state, pindex, coins, incomingcoins, chainparams, dummyMintages, dummyAuthorities))
                 return error("VerifyDB(): *** found unconnectable block at %d, hash=%s", pindex->height(),
                     pindex->GetBlockHash().ToString());
         }
