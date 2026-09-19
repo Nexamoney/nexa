@@ -12,6 +12,7 @@
 #include "test/test_nexa.h"
 #include "txadmission.h"
 #include "validation/tailstorm.h"
+#include "validation/validation.h"
 
 #include <boost/test/unit_test.hpp>
 
@@ -551,6 +552,83 @@ BOOST_AUTO_TEST_CASE(retry_verdict_marks_subblocks_bad)
     BOOST_REQUIRE_EQUAL(waiting.size(), 1);
     BOOST_CHECK(waiting[0].first->GetId() == waitingTx->GetId());
     BOOST_CHECK_EQUAL(waiting[0].second.count(subblockB), 1);
+}
+
+BOOST_AUTO_TEST_CASE(retry_uses_epoch_height)
+{
+    // Child-first replay must accept sequence-zero spends at H+1 and record outputs there,
+    // just like parent-first validation, including recursively retried descendants.
+    PreviousEpochTestChain chain(&coinsCache, 73, 74);
+    TestTailstormTree tree;
+    tree.SetSummaryRoot(&chain.previousSummary);
+    tree.SetSummaryRootCoins(&coinsCache);
+    CCoinsViewCache replayCoins(&coinsCache);
+    const int height = chain.previousSummary.height() + 1;
+    const CScript spendable = CScript() << 2 << OP_ADD << 0 << OP_GREATERTHAN;
+
+    CMutableTransaction parent;
+    parent.vin.emplace_back(COutPoint(MakeTestTreeNode(75)->hash, 0), 1000);
+    parent.vout.emplace_back(1000, spendable);
+    const CTransactionRef parentTx = MakeTransactionRef(parent);
+
+    CMutableTransaction child;
+    child.vin.emplace_back(parentTx->OutpointAt(0), 1000);
+    child.vin[0].scriptSig = CScript() << OP_0;
+    child.vin[0].nSequence = 0;
+    child.vout.emplace_back(450, spendable);
+    child.vout.emplace_back(450, spendable);
+    const CTransactionRef childTx = MakeTransactionRef(child);
+
+    CMutableTransaction grandchild;
+    grandchild.vin.emplace_back(childTx->OutpointAt(0), 450);
+    grandchild.vin[0].scriptSig = CScript() << OP_0;
+    grandchild.vin[0].nSequence = 0;
+    grandchild.vout.emplace_back(400, spendable);
+    const CTransactionRef grandchildTx = MakeTransactionRef(grandchild);
+
+    LOCK(tailstormForest.cs_forest);
+    tree.IndexMissing(grandchildTx, MakeTestTreeNode(76)->hash);
+    tree.IndexMissing(childTx, MakeTestTreeNode(77)->hash);
+    tree.Retry(parentTx, replayCoins);
+    BOOST_CHECK(!tree.HasDagTx(childTx->GetId()));
+    BOOST_CHECK(!tree.HasDagTx(grandchildTx->GetId()));
+    BOOST_CHECK(tree.BadSubblocks().empty());
+
+    // Establish the parent-first result with both spends validated in the same epoch.
+    CCoinsViewCache orderedCoins(&coinsCache);
+    AddCoins(orderedCoins, *parentTx, height);
+    CBlockHeader epochHeader;
+    epochHeader.height = height;
+    CBlockIndex epoch(epochHeader);
+    epoch.pprev = &chain.previousSummary;
+    for (const auto &tx : {childTx, grandchildTx})
+    {
+        CValidationState state;
+        BOOST_REQUIRE(CheckTxFinalAndInputs(tx, state, orderedCoins, coinsCache, epoch, Params(), true, true, false));
+        UpdateCoins(*tx, orderedCoins, height);
+    }
+
+    AddCoins(replayCoins, *parentTx, height);
+    tree.Retry(parentTx, replayCoins);
+    BOOST_CHECK(tree.BadSubblocks().empty());
+    BOOST_REQUIRE(tree.HasDagTx(childTx->GetId()));
+    BOOST_REQUIRE(tree.HasDagTx(grandchildTx->GetId()));
+    BOOST_CHECK(tree.TakeWaiting(parentTx->OutpointAt(0)).empty());
+    BOOST_CHECK(tree.TakeWaiting(childTx->OutpointAt(0)).empty());
+    BOOST_CHECK(!replayCoins.HaveCoin(parentTx->OutpointAt(0)));
+    BOOST_CHECK(!replayCoins.HaveCoin(childTx->OutpointAt(0)));
+
+    for (const auto &outpoint : {childTx->OutpointAt(1), grandchildTx->OutpointAt(0)})
+    {
+        Coin replayCoin;
+        Coin orderedCoin;
+        BOOST_REQUIRE(replayCoins.GetCoin(outpoint, replayCoin));
+        BOOST_REQUIRE(orderedCoins.GetCoin(outpoint, orderedCoin));
+        BOOST_CHECK(replayCoin.out == orderedCoin.out);
+        BOOST_CHECK_EQUAL(replayCoin.height(), height);
+        BOOST_CHECK_EQUAL(replayCoin.height(), orderedCoin.height());
+        BOOST_CHECK(!coinsCache.HaveCoin(outpoint));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(regeneration_renumbers_after_bad_subblock_removal)
