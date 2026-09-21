@@ -1065,7 +1065,6 @@ void CRequestManager::SendRequests()
                 for (auto mi : iter.second)
                 {
                     const uint256 &hash = mi.second.inv.hash;
-                    // TODO need to store block type in the mapbatchblockrequests and then use it here.
                     MarkBlockAsInFlight(iter.first.get()->GetId(), hash, mi.second.blockType);
                     vInv.push_back(mi.second.inv);
                 }
@@ -1947,9 +1946,7 @@ void CRequestManager::DisconnectOnDownloadTimeout(CNode *pnode, const Consensus:
     auto &vBlocksInFlight = mapRequestManagerNodeState[nodeid].vBlocksInFlight;
     if (!pnode->IsDisconnecting() && !vBlocksInFlight.empty())
     {
-        if (nNow >
-            mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince +
-                consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER))
+        if (nNow > mapRequestManagerNodeState[nodeid].nDownloadingFromPeerSince + BlockDownloadTimeout())
         {
             // Look at the first item in the list.  Is it a block, if so, then initiate disconnect.
             //
@@ -1973,7 +1970,9 @@ void CRequestManager::DisconnectOnDownloadTimeout(CNode *pnode, const Consensus:
                 // While the askFor() time is not exactly the time the request was initiated it should only be
                 // a matter of a few millseconds longer and is accurate enough for our needs.
                 // Always remove from the map first!
-                MapBlocksInFlightErase(vBlocksInFlight.front().hash, nodeid);
+                const uint256 &hash = vBlocksInFlight.front().hash;
+                MapBlocksInFlightErase(hash, nodeid);
+                thinrelay.ClearAllBlockData(pnode, hash);
                 vBlocksInFlight.pop_front();
                 if (!vBlocksInFlight.empty())
                 {
@@ -1982,4 +1981,9 @@ void CRequestManager::DisconnectOnDownloadTimeout(CNode *pnode, const Consensus:
             }
         }
     }
+}
+
+int64_t CRequestManager::BlockDownloadTimeout()
+{
+    return Params().GetConsensus().nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER);
 }

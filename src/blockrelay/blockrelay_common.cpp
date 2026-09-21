@@ -291,10 +291,10 @@ void ThinTypeRelay::ClearBlockInFlight(NodeId id, const uint256 &hash)
         {
             if (entry->hash == hash)
             {
-                // it is safe to erase elements while iterating through sets since c++14
                 entry = key->second.erase(entry);
-                // set entry uniqueness is based on hash + thinType so dont break here to make sure
-                // that all entries with this block hash regardless of thinType are cleared
+
+                // set entry uniqueness is based on hash + thinType so dont break here so we make sure
+                // that all entries with this block hash regardless of thinType are cleared.
             }
             else
             {
@@ -335,33 +335,6 @@ void ThinTypeRelay::ClearSentGrapheneBlocks(NodeId id)
 {
     LOCK(cs_graphene_sender);
     mapGrapheneSentBlocks.erase(id);
-}
-
-void ThinTypeRelay::CheckForDownloadTimeout(CNode *pfrom)
-{
-    LOCK(cs_inflight);
-    auto key = mapThinTypeBlocksInFlight.find(pfrom->GetId());
-    if (key != mapThinTypeBlocksInFlight.end())
-    {
-        for (const CThinTypeBlockInFlight &entry : (*key).second)
-        {
-            // Use a timeout of 6 times the retry inverval before disconnecting.  This way only a max of 6
-            // re-requested thinblocks or graphene blocks could be in memory at any one time.
-            if (!entry.fReceived && (GetTime() - entry.nRequestTime) >
-                                        (int)MAX_THINTYPE_BLOCKS_IN_FLIGHT * blkRetryInterval.Value() / 1000000)
-            {
-                if (!pfrom->fWhitelisted && Params().NetworkIDString() != "regtest")
-                {
-                    std::string err = tfm::format(
-                        "ERROR: Disconnecting peer %s due to %s thinblock %s download timeout exceeded (%d secs)\n",
-                        pfrom->GetLogName(), entry.thinType, entry.hash.ToString(), (GetTime() - entry.nRequestTime));
-                    LOG(THIN | GRAPHENE | CMPCT, "%s", err);
-                    pfrom->CloseSocketDisconnect(err);
-                    return;
-                }
-            }
-        }
-    }
 }
 
 void ThinTypeRelay::RequestBlock(CNode *pfrom, const uint256 &hash)
@@ -431,6 +404,17 @@ void ThinTypeRelay::ClearBlockToReconstruct(NodeId id, const uint256 &hash)
     {
         key->second.erase(hash);
     }
+}
+bool ThinTypeRelay::BlockToReconstructExists(NodeId id, const uint256 &hash)
+{
+    LOCK(cs_reconstruct);
+    auto key = mapBlocksReconstruct.find(id);
+    if (key != mapBlocksReconstruct.end())
+    {
+        if (key->second.count(hash))
+            return true;
+    }
+    return false;
 }
 
 void ThinTypeRelay::ClearAllBlocksToReconstruct(NodeId id)

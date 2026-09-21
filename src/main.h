@@ -78,10 +78,6 @@ static const unsigned int MAX_REJECT_MESSAGE_LENGTH = 111;
 static const unsigned int AVG_LOCAL_ADDRESS_BROADCAST_INTERVAL = 24 * 24 * 60;
 /** Average delay between peer address broadcasts in seconds. */
 static const unsigned int AVG_ADDRESS_BROADCAST_INTERVAL = 30;
-/** Block download timeout base, expressed in millionths of the block interval (i.e. 10 min) */
-static const int64_t BLOCK_DOWNLOAD_TIMEOUT_BASE = 1000000;
-/** Additional block download timeout per parallel downloading peer (i.e. 5 min) */
-static const int64_t BLOCK_DOWNLOAD_TIMEOUT_PER_PEER = 500000;
 /** Timeout in secs for the initial sync. If we don't receive the first batch of headers */
 static const uint32_t INITIAL_HEADERS_TIMEOUT = 120;
 /** The maximum number of headers in the mapUnconnectedHeaders cache **/

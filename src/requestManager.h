@@ -60,6 +60,11 @@ static const unsigned int DEFAULT_MIN_BLK_REQUEST_RETRY_INTERVAL = 5 * 1000 * 10
 // Max requests in a singe getdata message
 static const unsigned int MAX_GETDATA_REQUESTS = 1000;
 
+/** Block download timeout base in microseconds */
+static const int64_t BLOCK_DOWNLOAD_TIMEOUT_BASE = 1000000;
+/** Additional block download timeout per parallel downloading peer in microseconds */
+static const int64_t BLOCK_DOWNLOAD_TIMEOUT_PER_PEER = 500000;
+
 // Which peers have mempool synchronization in-flight?
 extern CCriticalSection cs_mempoolsync;
 extern std::map<NodeId, CMempoolSyncState> mempoolSyncRequested;
@@ -155,7 +160,7 @@ struct CRequestManagerNodeState
     // data but then we'd have to iterate through the entire map to find what we're looking for.
     std::list<QueuedBlock> vBlocksInFlight;
 
-    // When the first entry in vBlocksInFlight started downloading. Don't care when vBlocksInFlight is empty.
+    // When the first entry in vBlocksInFlight started downloading in microseconds.
     int64_t nDownloadingFromPeerSince;
 
     // How many blocks are currently in flight and requested by this node.
@@ -376,6 +381,9 @@ public:
 
     // Check for block download timeout and disconnect node if necessary.
     void DisconnectOnDownloadTimeout(CNode *pnode, const Consensus::Params &consensusParams, int64_t nNow);
+
+    // The time in microseconds which we use to timeout a block download.
+    int64_t BlockDownloadTimeout();
 };
 
 
