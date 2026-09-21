@@ -112,6 +112,8 @@ BITCOIN_CORE_H = \
   bitmanip.h \
   blockrelay/blockrelay_common.h \
   blockrelay/compactblock.h \
+  blockrelay/connmgr.h \
+  blockrelay/expedited.h \
   blockrelay/graphene.h \
   blockrelay/graphene_set.h \
   blockrelay/mempool_sync.h \
@@ -139,7 +141,6 @@ BITCOIN_CORE_H = \
   compat/sanity.h \
   compressor.h \
   config.h \
-  connmgr.h \
   consensus/consensus.h \
   consensus/grouptokens.h \
   consensus/tx_verify.h \
@@ -154,7 +155,6 @@ BITCOIN_CORE_H = \
   deadlock-detection/threaddeadlock.h \
   dosman.h \
   dstencode.h \
-  expedited.h \
   electrum/electrumrpcinfo.h \
   electrum/electrumserver.h \
   electrum/rostrum.h \
@@ -286,6 +286,8 @@ libnexa_server_a_SOURCES = \
   banentry.cpp \
   blockrelay/blockrelay_common.cpp \
   blockrelay/compactblock.cpp \
+  blockrelay/connmgr.cpp \
+  blockrelay/expedited.cpp \
   blockrelay/graphene.cpp \
   blockrelay/graphene_set.cpp \
   blockrelay/mempool_sync.cpp \
@@ -299,12 +301,10 @@ libnexa_server_a_SOURCES = \
   capd/capd_rpc.cpp \
   chain.cpp \
   checkpoints.cpp \
-  connmgr.cpp \
   consensus/adaptive_blocksize.cpp \
   consensus/grouptokens.cpp \
   consensus/tx_verify.cpp \
   dosman.cpp \
-  expedited.cpp \
   electrum/electrumrpcinfo.cpp \
   electrum/electrumserver.cpp \
   electrum/rostrum.cpp \

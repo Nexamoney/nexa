@@ -16,11 +16,11 @@
 
 #include "addrman.h"
 #include "blockrelay/blockrelay_common.h"
+#include "blockrelay/connmgr.h"
 #include "blockrelay/graphene.h"
 #include "blockrelay/mempool_sync.h"
 #include "capd/capd.h"
 #include "chainparams.h"
-#include "connmgr.h"
 #include "consensus/consensus.h"
 #include "crypto/common.h"
 #include "dosman.h"

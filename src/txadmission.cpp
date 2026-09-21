@@ -4,8 +4,8 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "txadmission.h"
+#include "blockrelay/connmgr.h"
 #include "blockstorage/blockstorage.h"
-#include "connmgr.h"
 #include "consensus/tx_verify.h"
 #include "core_io.h"
 #include "dosman.h"

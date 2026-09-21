@@ -6,7 +6,7 @@
 
 #include "nodestate.h"
 
-#include "connmgr.h"
+#include "blockrelay/connmgr.h"
 #include "main.h"
 
 extern std::atomic<int> nPreferredDownload;
