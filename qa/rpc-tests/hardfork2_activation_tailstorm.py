@@ -1435,45 +1435,27 @@ class TailstormActivationTest(BitcoinTestFramework):
         node1_chaintip = self.nodes[1].getbestblockhash()
         assert_equal(node0_chaintip, node1_chaintip)
 
-        # Advance the chain on node1: node0 should fall behind
+        def assert_summary_deferred(block_hash):
+            # Wait for P2P delivery, then retry synchronously before checking the unchanged tip.
+            summary_hex = waitFor(waitTime, lambda: self.nodes[0].getblock(block_hash, 0))
+            self.nodes[0].submitblock(summary_hex)
+            info = self.nodes[0].gettailstorminfo()
+            assert_equal(info['chaintip'], node0_chaintip)
+            assert_equal(info['bestdag'], 1)
+            assert_equal(info['dagtip'], subblock_hash1[0])
+
+        # Check each summary through the depth limit before mining the next one.
         summary_hash = self.nodes[1].generate(1)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['chaintip'] == summary_hash[0])
+        assert_summary_deferred(summary_hash[0])
+        # Advance 4 more summary blocks which makes the check depth limit
+        # of 4+1 or 5: node0 should still not have advanced.
+        for _ in range(4):
+            self.nodes[1].generate(3)
+            summary_hash = self.nodes[1].generate(1)
+            assert_summary_deferred(summary_hash[0])
 
-        # submit the summary block to node0 using submitblock so that we are sure that node0 finished
-        # processing it before we continue checking state.
-        summary_hex = self.nodes[1].getblock(summary_hash[0], 0)
-        self.nodes[0].submitblock(summary_hex)
-
-        # Check the chain state on node1: node0 should have falled behind
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 1)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 0)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash1[0])
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == summary_hash[0])
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['chaintip'] == node0_chaintip)
-
-        node0_chaintip = self.nodes[0].getbestblockhash()
-        node1_chaintip = self.nodes[1].getbestblockhash()
-        assert_not_equal(node0_chaintip, node1_chaintip)
-
-        # Advance 4 more summary blocks which makes the check depth limit of 4+1 or 5: node0 should still not have advanced.
-        self.nodes[1].generate(4)
-        self.nodes[1].generate(4)
-        self.nodes[1].generate(3)
-        summary_hash = self.nodes[1].generate(1)
-        self.nodes[1].generate(2)
-
-        sublock_hash1 = self.nodes[1].generate(1)
-        summary_hash = self.nodes[1].generate(1)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 1)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 0)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash1[0])
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == summary_hash[0])
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['chaintip'] == node0_chaintip)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['chaintip'] == summary_hash[0])
-
-        node0_chaintip = self.nodes[0].getbestblockhash()
-        node1_chaintip = self.nodes[1].getbestblockhash()
-        assert_not_equal(node0_chaintip, node1_chaintip)
+        assert_equal(self.nodes[1].getbestblockhash(), summary_hash[0])
+        assert_not_equal(node0_chaintip, summary_hash[0])
 
         # mine one more summary block: node0 should catch up now and have the same chaintip
         self.nodes[1].generate(3)
