@@ -12,6 +12,7 @@
 
 #include "addrman.h"
 #include "amount.h"
+#include "blockrelay/connmgr.h"
 #include "blockstorage/blockstorage.h"
 #include "blockstorage/sequential_files.h"
 #include "capd/capd.h"
@@ -20,7 +21,6 @@
 #include "checkpoints.h"
 #include "compat/sanity.h"
 #include "config.h"
-#include "connmgr.h"
 #include "consensus/consensus.h"
 #include "consensus/validation.h"
 #include "dosman.h"

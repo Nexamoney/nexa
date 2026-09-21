@@ -6,7 +6,7 @@
 
 #include "dosman.h"
 #include "bandb.h"
-#include "connmgr.h"
+#include "blockrelay/connmgr.h"
 #include "ui_interface.h"
 #include "utiltranslate.h"
 

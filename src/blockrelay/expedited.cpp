@@ -5,9 +5,9 @@
 #include <sstream>
 #include <string>
 
-#include "connmgr.h"
+#include "blockrelay/connmgr.h"
+#include "blockrelay/expedited.h"
 #include "dosman.h"
-#include "expedited.h"
 #include "main.h" // cs_main
 #include "validation/validation.h"
 

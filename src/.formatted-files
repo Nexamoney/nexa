@@ -23,8 +23,12 @@ blockrelay/graphene_set.h
 blockrelay/graphene_set.cpp
 blockrelay/thinblock.h
 blockrelay/thinblock.cpp
+blockrelay/connmgr.cpp
+blockrelay/connmgr.h
 blockrelay/compactblock.cpp
 blockrelay/compactblock.h
+blockrelay/expedited.cpp
+blockrelay/expedited.h
 blockrelay/blockrelay_common.h
 blockrelay/blockrelay_common.cpp
 blockstorage/sequential_files.cpp
@@ -63,8 +67,6 @@ config.h
 compat.h
 compressor.cpp
 compressor.h
-connmgr.cpp
-connmgr.h
 core_io.h
 core_memusage.h
 core_read.cpp
@@ -89,8 +91,6 @@ electrum/electrumrpcinfo.cpp
 electrum/electrumrpcinfo.h
 electrum/electrumserver.cpp
 electrum/electrumserver.cpp
-expedited.cpp
-expedited.h
 extversionmessage.cpp
 extversionmessage.h
 fastfilter.h
