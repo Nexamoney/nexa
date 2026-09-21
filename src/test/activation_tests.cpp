@@ -32,6 +32,7 @@ BOOST_AUTO_TEST_CASE(isfork2enabled)
 
     // Exercise the effective activation time consumed by IsUpgrade2Activated().
     const auto activation = miningForkTime.Value();
+    BOOST_CHECK_EQUAL(activation, Params().GetConsensus().nextForkActivationTime);
 
     BOOST_CHECK(!IsUpgrade2Activated(nullptr));
     std::array<CBlockIndex, 12> blocks;
