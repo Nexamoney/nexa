@@ -162,8 +162,8 @@ bool CompactBlock::HandleMessage(CDataStream &vRecv, uint32_t msgCookie, CNode *
     LOG(CMPCT, "received compact block %s from peer %s of %d bytes\n", inv.hash.ToString(), pfrom->GetLogName(),
         compactBlock->GetSize());
 
-    // Do not process unrequested compact blocks unless from an expedited node.
-    if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::CMPCTBLOCK, inv.hash) && !connmgr->IsExpeditedUpstream(pfrom))
+    // Do not process unrequested compact blocks.
+    if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::CMPCTBLOCK, inv.hash))
     {
         return error("unrequested compact block from peer %s", pfrom->GetLogName());
     }
@@ -454,8 +454,8 @@ bool CompactReReqResponse::HandleMessage(CDataStream &vRecv, uint32_t msgCookie,
     }
     LOG(CMPCT, "received compactReReqResponse for %s peer=%s\n", inv.hash.ToString(), pfrom->GetLogName());
 
-    // Do not process unrequested compact blocks unless from an expedited node.
-    if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::CMPCTBLOCK, inv.hash) && !connmgr->IsExpeditedUpstream(pfrom))
+    // Do not process unrequested compact blocks.
+    if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::CMPCTBLOCK, inv.hash))
     {
         return error("Received compactReReqResponse %s from peer %s but was unrequested", inv.hash.ToString(),
             pfrom->GetLogName());

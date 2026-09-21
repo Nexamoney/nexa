@@ -912,148 +912,264 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     /******************************
      * Check for block download timeouts from both Full blocks and Subblocks as well as a mix of the two
      */
+    {
+        // Chains IS sync'd: No graphene nodes, No Thinblock nodes, No Cmpct nodes, Thinblocks OFF, Graphene OFF, CMPCT
+        // OFF
+        IsChainNearlySyncdSet(true);
+        SetBoolArg("-use-grapheneblocks", false);
+        SetBoolArg("-use-thinblocks", false);
+        SetBoolArg("-use-compactblocks", false);
+        thinrelay.AddPeers(&dummyNodeNone);
 
-    // Chains IS sync'd: No graphene nodes, No Thinblock nodes, No Cmpct nodes, Thinblocks OFF, Graphene OFF, CMPCT OFF
-    IsChainNearlySyncdSet(true);
-    SetBoolArg("-use-grapheneblocks", false);
-    SetBoolArg("-use-thinblocks", false);
-    SetBoolArg("-use-compactblocks", false);
-    thinrelay.AddPeers(&dummyNodeNone);
+        CRequestManager rman;
+        CRequestManagerTest rman_access(&rman);
+        std::map<NodeId, CRequestManagerNodeState> RmanNodeState = rman_access.GetNodeState();
 
-    CRequestManager rman;
-    CRequestManagerTest rman_access(&rman);
-    std::map<NodeId, CRequestManagerNodeState> RmanNodeState = rman_access.GetNodeState();
+        uint256 hash_block = GetRandHash();
+        CInv inv_block(MSG_BLOCK, hash_block);
+        rman.InitializeNodeState(dummyNodeNone.GetId());
 
-    uint256 hash_block = GetRandHash();
-    CInv inv_block(MSG_BLOCK, hash_block);
-    rman.InitializeNodeState(dummyNodeNone.GetId());
+        // make a new block request and check for proper disconnect timeout
+        rman.AskFor(inv_block, &dummyNodeNone, objType::BLOCK);
+        BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block, objType::BLOCK) == true);
+        BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
 
-    // make a new block request and check for proper disconnect timeout
-    rman.AskFor(inv_block, &dummyNodeNone, objType::BLOCK);
-    BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block, objType::BLOCK) == true);
-    BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
+        auto consensusParams = Params().GetConsensus();
+        int64_t nNow = GetStopwatchMicros();
+        int64_t nNewMocktime = nNow / 1000000;
+        SetMockTime(nNewMocktime);
+        rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+        BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
 
-    auto consensusParams = Params().GetConsensus();
-    int64_t nNow = GetStopwatchMicros();
-    int64_t nNewMocktime = nNow / 1000000;
-    SetMockTime(nNewMocktime);
-    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
-    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
-
-    // Set the mocktime to the download timeout limit and the node should not disconnect.
-    nNewMocktime +=
-        ((consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER)) /
-            1000000);
-    SetMockTime(nNewMocktime);
-    nNow = nNewMocktime * 1000000;
-    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
-    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
-
-
-    // Set the mocktime to beyond the download timeout and the node should disconnect.
-    nNewMocktime +=
-        ((consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER) +
-             1000000) /
-            1000000);
-    SetMockTime(nNewMocktime);
-    nNow = nNewMocktime * 1000000;
-    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
-    BOOST_CHECK(dummyNodeNone.IsDisconnecting()); // node should now be disconnected
+        // Set the mocktime to the download timeout limit and the node should not disconnect.
+        nNewMocktime += (rman.BlockDownloadTimeout() / 1000000);
+        SetMockTime(nNewMocktime);
+        nNow = nNewMocktime * 1000000;
+        rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+        BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
 
 
-    // Check disconnect timeout for a subblock only
-    CResetDisconnectForTest resetnode;
-    resetnode.ResetDisconnect(dummyNodeNone);
-    rman_access.ClearNodeState(dummyNodeNone.GetId());
-    rman.MapBlocksInFlightClear();
-
-    // make a new SUBBLOCK request and check for proper disconnect timeout
-    rman.AskFor(inv_block, &dummyNodeNone, objType::SUBBLOCK);
-    BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block, objType::SUBBLOCK) == true);
-    BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
-    RmanNodeState = rman_access.GetNodeState();
-    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
-
-    nNow = GetStopwatchMicros();
-    nNewMocktime = nNow / 1000000;
-    SetMockTime(nNewMocktime);
-    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
-    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
-
-    // Set the mocktime to the download timeout limit and the node should not disconnect.
-    nNewMocktime +=
-        ((consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER)) /
-            1000000);
-    SetMockTime(nNewMocktime);
-    nNow = nNewMocktime * 1000000;
-    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
-    RmanNodeState = rman_access.GetNodeState();
-    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
-    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
-
-    // Set the mocktime to beyond the download timeout and the node should disconnect.
-    nNewMocktime +=
-        ((consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER) +
-             1000000) /
-            1000000);
-    SetMockTime(nNewMocktime);
-    nNow = nNewMocktime * 1000000;
-    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
-    // After checking the node for a disconnect the subblock should have been removed from the
-    // list since it was over the limit, even though a disconnect was not issued.
-    RmanNodeState = rman_access.GetNodeState();
-    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 0);
-    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+        // Set the mocktime to beyond the download timeout and the node should disconnect.
+        nNewMocktime += ((rman.BlockDownloadTimeout() + 1000000) / 1000000);
+        SetMockTime(nNewMocktime);
+        nNow = nNewMocktime * 1000000;
+        rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+        BOOST_CHECK(dummyNodeNone.IsDisconnecting()); // node should now be disconnected
 
 
-    // Check disconnect timeout for a subblock followed by a full block
-    //
-    // make a new BLOCK request which follows the last subblock request. We should now have
-    // two items in the queued request list with the subblock coming first and the block second.
-    resetnode.ResetDisconnect(dummyNodeNone);
-    rman_access.ClearNodeState(dummyNodeNone.GetId());
-    rman.MapBlocksInFlightClear();
+        // Check disconnect timeout for a subblock only
+        CResetDisconnectForTest resetnode;
+        resetnode.ResetDisconnect(dummyNodeNone);
+        rman_access.ClearNodeState(dummyNodeNone.GetId());
+        rman.MapBlocksInFlightClear();
 
-    rman.AskFor(inv_block, &dummyNodeNone, objType::SUBBLOCK);
-    BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block, objType::SUBBLOCK) == true);
-    BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
-    RmanNodeState = rman_access.GetNodeState();
-    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
+        // make a new SUBBLOCK request and check for proper disconnect timeout
+        rman.AskFor(inv_block, &dummyNodeNone, objType::SUBBLOCK);
+        BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block, objType::SUBBLOCK) == true);
+        BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
 
-    uint256 hash_block2 = GetRandHash();
-    CInv inv_block2(MSG_BLOCK, hash_block2);
-    nNewMocktime += 10;
-    SetMockTime(nNewMocktime);
-    rman.AskFor(inv_block2, &dummyNodeNone, objType::BLOCK);
-    BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block2, objType::BLOCK) == true);
-    BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
+        nNow = GetStopwatchMicros();
+        nNewMocktime = nNow / 1000000;
+        SetMockTime(nNewMocktime);
+        rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+        BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
 
-    RmanNodeState = rman_access.GetNodeState();
-    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 2);
+        // Set the mocktime to the download timeout limit and the node should not disconnect.
+        nNewMocktime += (rman.BlockDownloadTimeout() / 1000000);
+        SetMockTime(nNewMocktime);
+        nNow = nNewMocktime * 1000000;
+        rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+        BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
+
+        // Set the mocktime to beyond the download timeout and the node should disconnect.
+        nNewMocktime += ((rman.BlockDownloadTimeout() + 1000000) / 1000000);
+        SetMockTime(nNewMocktime);
+        nNow = nNewMocktime * 1000000;
+        rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+        // After checking the node for a disconnect the subblock should have been removed from the
+        // list since it was over the limit, even though a disconnect was not issued.
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 0);
+        BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
 
 
-    // Set the mocktime to beyond the download timeout and the node should NOT disconnect because
-    // the first block in the list is a subblock. This subblock however, should now have been removed
-    // from the list so that the next time we check we'll get the BLOCK at the top of the list.
-    nNewMocktime +=
-        ((consensusParams.nPowTargetSpacing * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER) +
-             1000000 * 11) /
-            1000000);
-    SetMockTime(nNewMocktime);
-    nNow = nNewMocktime * 1000000;
-    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
-    // After checking the node for a disconnect the subblock should have been removed from the
-    // list since it was over the limit, even though a disconnect was not issued.
-    RmanNodeState = rman_access.GetNodeState();
-    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
-    BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+        // Check disconnect timeout for a subblock followed by a full block
+        //
+        // make a new BLOCK request which follows the last subblock request. We should now have
+        // two items in the queued request list with the subblock coming first and the block second.
+        resetnode.ResetDisconnect(dummyNodeNone);
+        rman_access.ClearNodeState(dummyNodeNone.GetId());
+        rman.MapBlocksInFlightClear();
 
-    // Run the disconnect logic the second time and we should trigger the disconnect
-    rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
-    RmanNodeState = rman_access.GetNodeState();
-    BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
-    BOOST_CHECK(dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+        rman.AskFor(inv_block, &dummyNodeNone, objType::SUBBLOCK);
+        BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block, objType::SUBBLOCK) == true);
+        BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
 
+        uint256 hash_block2 = GetRandHash();
+        CInv inv_block2(MSG_BLOCK, hash_block2);
+        nNewMocktime += 10;
+        SetMockTime(nNewMocktime);
+        rman.AskFor(inv_block2, &dummyNodeNone, objType::BLOCK);
+        BOOST_CHECK(rman.RequestBlock(&dummyNodeNone, inv_block2, objType::BLOCK) == true);
+        BOOST_CHECK(NetMessage(dummyNodeNone.vLowPrioritySendMsg) == "getdata");
+
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 2);
+
+
+        // Set the mocktime to beyond the download timeout and the node should NOT disconnect because
+        // the first block in the list is a subblock. This subblock however, should now have been removed
+        // from the list so that the next time we check we'll get the BLOCK at the top of the list.
+        nNewMocktime += ((rman.BlockDownloadTimeout() + (1000000 * 11)) / 1000000);
+        SetMockTime(nNewMocktime);
+        nNow = nNewMocktime * 1000000;
+        rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+        // After checking the node for a disconnect the subblock should have been removed from the
+        // list since it was over the limit, even though a disconnect was not issued.
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
+        BOOST_CHECK(!dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+
+        // Run the disconnect logic the second time and we should trigger the disconnect
+        rman.DisconnectOnDownloadTimeout(&dummyNodeNone, consensusParams, nNow);
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeNone.GetId()].vBlocksInFlight.size() == 1);
+        BOOST_CHECK(dummyNodeNone.IsDisconnecting()); // node should NOT be disconnected
+    }
+    /******************************
+     * Check for block download timeouts for Subblocks with graphene blocks enabled so we can check
+     * that all thinblock data gets cleared out but a disconnect does not happen.
+     */
+    {
+        // Chains IS sync'd: Graphene enabled, No Thinblock nodes, No Cmpct nodes, Thinblocks OFF, Graphene OFF, CMPCT
+        // OFF
+        IsChainNearlySyncdSet(true);
+        SetBoolArg("-use-grapheneblocks", true);
+        SetBoolArg("-use-thinblocks", false);
+        SetBoolArg("-use-compactblocks", false);
+        thinrelay.AddPeers(&dummyNodeGraphene);
+
+        CRequestManager rman;
+        CRequestManagerTest rman_access(&rman);
+        std::map<NodeId, CRequestManagerNodeState> RmanNodeState = rman_access.GetNodeState();
+
+        uint256 hash_block = GetRandHash();
+        CInv inv_block(MSG_BLOCK, hash_block);
+        rman.InitializeNodeState(dummyNodeGraphene.GetId());
+
+        // make a new block request and check for proper disconnect timeout
+
+        auto consensusParams = Params().GetConsensus();
+        int64_t nNow = GetStopwatchMicros();
+        int64_t nNewMocktime = nNow / 1000000;
+
+
+        // Set the mocktime to beyond the download timeout and the node should disconnect.
+        nNewMocktime += ((rman.BlockDownloadTimeout() + 1000000) / 1000000);
+        SetMockTime(nNewMocktime);
+        nNow = nNewMocktime * 1000000;
+
+        // Check disconnect timeout for a subblock only
+        CResetDisconnectForTest resetnode;
+        resetnode.ResetDisconnect(dummyNodeGraphene);
+        rman_access.ClearNodeState(dummyNodeGraphene.GetId());
+        rman.MapBlocksInFlightClear();
+
+        // make a new SUBBLOCK request and check for proper disconnect timeout
+        rman.AskFor(inv_block, &dummyNodeGraphene, objType::SUBBLOCK);
+        BOOST_CHECK(rman.RequestBlock(&dummyNodeGraphene, inv_block, objType::SUBBLOCK) == true);
+        BOOST_CHECK(NetMessage(dummyNodeGraphene.vSendMsg) == "get_grblk");
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeGraphene.GetId()].vBlocksInFlight.size() == 1);
+
+        nNow = GetStopwatchMicros();
+        nNewMocktime = nNow / 1000000;
+        SetMockTime(nNewMocktime);
+        rman.DisconnectOnDownloadTimeout(&dummyNodeGraphene, consensusParams, nNow);
+        BOOST_CHECK(!dummyNodeGraphene.IsDisconnecting()); // node should NOT be disconnected
+
+        // Set the mocktime to the download timeout limit and the node should not disconnect.
+        nNewMocktime += (rman.BlockDownloadTimeout() / 1000000);
+        SetMockTime(nNewMocktime);
+        nNow = nNewMocktime * 1000000;
+        rman.DisconnectOnDownloadTimeout(&dummyNodeGraphene, consensusParams, nNow);
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(!dummyNodeGraphene.IsDisconnecting()); // node should NOT be disconnected
+        BOOST_CHECK(RmanNodeState[dummyNodeGraphene.GetId()].vBlocksInFlight.size() == 1);
+
+        // Set the mocktime to beyond the download timeout and the node should disconnect.
+        nNewMocktime += ((rman.BlockDownloadTimeout() + 1000000) / 1000000);
+        SetMockTime(nNewMocktime);
+        nNow = nNewMocktime * 1000000;
+        rman.DisconnectOnDownloadTimeout(&dummyNodeGraphene, consensusParams, nNow);
+        // After checking the node for a disconnect the subblock should have been removed from the
+        // list since it was over the limit, even though a disconnect was not issued.
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeGraphene.GetId()].vBlocksInFlight.size() == 0);
+        BOOST_CHECK(!dummyNodeGraphene.IsDisconnecting()); // node should NOT be disconnected
+
+
+        // Check disconnect timeout (with graphene block enabled) for a subblock to make sure
+        // all the data structures get cleaned up for thinblocks.
+        //
+        // make a new BLOCK request which follows the last subblock request. We should now have
+        // two items in the queued request list with the subblock coming first and the block second.
+        resetnode.ResetDisconnect(dummyNodeGraphene);
+        rman_access.ClearNodeState(dummyNodeGraphene.GetId());
+        rman.MapBlocksInFlightClear();
+
+        rman.AskFor(inv_block, &dummyNodeGraphene, objType::SUBBLOCK);
+        BOOST_CHECK(rman.RequestBlock(&dummyNodeGraphene, inv_block, objType::SUBBLOCK) == true);
+        BOOST_CHECK(NetMessage(dummyNodeGraphene.vSendMsg) == "get_grblk");
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeGraphene.GetId()].vBlocksInFlight.size() == 1);
+
+        // thinblock is in flight
+        BOOST_CHECK(thinrelay.IsBlockInFlight(&dummyNodeGraphene, NetMsgType::GRAPHENEBLOCK, inv_block.hash));
+        thinrelay.SetBlockToReconstruct(&dummyNodeGraphene, inv_block.hash);
+        BOOST_CHECK(thinrelay.BlockToReconstructExists(dummyNodeGraphene.GetId(), inv_block.hash));
+
+        uint256 hash_block2 = GetRandHash();
+        CInv inv_block2(MSG_BLOCK, hash_block2);
+        nNewMocktime += 10;
+        SetMockTime(nNewMocktime);
+        rman.AskFor(inv_block2, &dummyNodeGraphene, objType::BLOCK);
+        BOOST_CHECK(rman.RequestBlock(&dummyNodeGraphene, inv_block2, objType::BLOCK) == true);
+        BOOST_CHECK(NetMessage(dummyNodeGraphene.vSendMsg) == "get_grblk");
+
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeGraphene.GetId()].vBlocksInFlight.size() == 2);
+
+
+        // Set the mocktime to beyond the download timeout and the node should NOT disconnect because
+        // the first block in the list is a subblock. This subblock however, should now have been removed
+        // from the list so that the next time we check we'll get the BLOCK at the top of the list.
+        nNewMocktime += ((rman.BlockDownloadTimeout() + (1000000 * 11)) / 1000000);
+        SetMockTime(nNewMocktime);
+        nNow = nNewMocktime * 1000000;
+        rman.DisconnectOnDownloadTimeout(&dummyNodeGraphene, consensusParams, nNow);
+        // After checking the node for a disconnect the subblock should have been removed from the
+        // list since it was over the limit, even though a disconnect was not issued.
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeGraphene.GetId()].vBlocksInFlight.size() == 1);
+        BOOST_CHECK(!dummyNodeGraphene.IsDisconnecting()); // node should NOT be disconnected
+
+        // thinblock not in flight
+        BOOST_CHECK(!thinrelay.IsBlockInFlight(&dummyNodeGraphene, NetMsgType::GRAPHENEBLOCK, inv_block.hash));
+        BOOST_CHECK(!thinrelay.BlockToReconstructExists(dummyNodeGraphene.GetId(), inv_block.hash));
+
+        // Run the disconnect logic the second time and we should trigger the disconnect
+        rman.DisconnectOnDownloadTimeout(&dummyNodeGraphene, consensusParams, nNow);
+        RmanNodeState = rman_access.GetNodeState();
+        BOOST_CHECK(RmanNodeState[dummyNodeGraphene.GetId()].vBlocksInFlight.size() == 1);
+        BOOST_CHECK(dummyNodeGraphene.IsDisconnecting()); // node should NOT be disconnected
+    }
 
     // Final cleanup: Unset mocktime
     SetMockTime(0);

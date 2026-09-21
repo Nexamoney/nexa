@@ -89,7 +89,6 @@ public:
     void SetSentGrapheneBlocks(NodeId id, CGrapheneBlock &grapheneBlock);
     std::shared_ptr<CGrapheneBlock> GetSentGrapheneBlocks(NodeId id);
     void ClearSentGrapheneBlocks(NodeId id);
-    void CheckForDownloadTimeout(CNode *pfrom);
     void RequestBlock(CNode *pfrom, const uint256 &hash);
 
     // Accessor methods to the blocks that we're reconstructing from thintype blocks such as
@@ -97,6 +96,7 @@ public:
     std::shared_ptr<CBlockThinRelay> SetBlockToReconstruct(CNode *pfrom, const uint256 &hash);
     std::shared_ptr<CBlockThinRelay> GetBlockToReconstruct(CNode *pfrom, const uint256 &hash);
     void ClearBlockToReconstruct(NodeId id, const uint256 &hash);
+    bool BlockToReconstructExists(NodeId id, const uint256 &hash);
     void ClearAllBlocksToReconstruct(NodeId id);
 
     // Accessor methods for tracking total block bytes for all blocks currently in the process

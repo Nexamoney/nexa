@@ -3607,12 +3607,6 @@ bool SendMessages(CNode *pto)
             pto->PushMessage(NetMsgType::PING, nonce);
         }
 
-        // Check to see if there are any thin type blocks in flight that have gone beyond the
-        // timeout interval. If so then we need to disconnect them so that the thintype data is nullified.
-        // We could null the associated data here but that would possibly cause a node to be banned later if
-        // the thin type block finally did show up, so instead we just disconnect this slow node.
-        thinrelay.CheckForDownloadTimeout(pto);
-
         // Check for block download timeout and disconnect node if necessary. Does not require cs_main.
         int64_t nNow = GetStopwatchMicros();
         requester.DisconnectOnDownloadTimeout(pto, consensusParams, nNow);

@@ -536,12 +536,17 @@ bool CXThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom, std::string st
             return true;
         }
 
-        // If this is an expedited block then add and entry to mapThinBlocksInFlight.
-        if (nHops > 0 && connmgr->IsExpeditedUpstream(pfrom))
+        // If this is an expedited block then add and entry to mapThinBlocksInFlight and also
+        // mark the block in flight in the request manager so we can track it and check for
+        // potential download timeouts.
+        if (strCommand == NetMsgType::XPEDITEDBLK && nHops > 0 && connmgr->IsExpeditedUpstream(pfrom))
         {
             // If we can't add this xthin then we've already requested it
             if (!thinrelay.AddBlockInFlight(pfrom, inv.hash, NetMsgType::XTHINBLOCK))
                 return true;
+
+            auto blockType = fSummaryBlock ? objType::BLOCK : objType::SUBBLOCK;
+            requester.MarkBlockAsInFlight(pfrom->GetId(), inv.hash, blockType);
 
             LOG(THIN, "Received new expedited %s %s from peer %s hop %d size %d bytes\n", strCommand,
                 inv.hash.ToString(), pfrom->GetLogName(), nHops, thinBlock->GetSize());
@@ -551,9 +556,9 @@ bool CXThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom, std::string st
             LOG(THIN, "Received %s %s from peer %s. Size %d bytes.\n", strCommand, inv.hash.ToString(),
                 pfrom->GetLogName(), thinBlock->GetSize());
 
-            // Do not process unrequested xthinblocks unless from an expedited node.
-            if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::XTHINBLOCK, inv.hash) &&
-                !connmgr->IsExpeditedUpstream(pfrom))
+            // Do not process unrequested xthinblocks even from expedited peers. An expedited peer
+            // would not send a request using the XThINBLOCK message type but rather an XPEDITEDBLK.
+            if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::XTHINBLOCK, inv.hash))
             {
                 return error(
                     "%s %s from peer %s but was unrequested\n", strCommand, inv.hash.ToString(), pfrom->GetLogName());
