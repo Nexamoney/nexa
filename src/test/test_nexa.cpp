@@ -73,12 +73,7 @@ BasicTestingSetup::BasicTestingSetup(const std::string &chainName)
         assert(false);
     }
 
-    // Set forktime here so that all tests have access to it.
-    // nMiningForkTime = Params().GetConsensus().nextForkActivationTime;
-
-    // Temporarily set mining fork time forward a few months so the unit tests will
-    // still function for a while after the fork is activated.
-    nMiningForkTime = 1789948805; // Sept 21, 2026, 12 Noon, GMT
+    nMiningForkTime = Params().GetConsensus().nextForkActivationTime;
 }
 
 BasicTestingSetup::~BasicTestingSetup() { ECC_Stop(); }

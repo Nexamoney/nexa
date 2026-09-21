@@ -27,12 +27,10 @@ rules.
 
 The activation time is held in the `consensus.fork2Time` tweak
 (`miningForkTime`), which defaults to `consensus.nextForkActivationTime` per
-network:
+network. All networks currently initialize that value from
+`NEXT_FORK_ACTIVATION_TIME` in `src/chainparams.cpp`:
 
-* mainnet and testnet: `1793495471` (Nov 1, 2026).  !835 moved this out
-  from June 21, 2026, "we can pull it in later", so the final date is not
-  yet decided.
-* regtest: `1789948805` (Sept 21, 2026)
+* mainnet, testnet and regtest: `4102488000` (Jan 1, 2100, 12:00 UTC)
 * stormtest: pending at height 2 and active from height 3, regardless of
   time
 
