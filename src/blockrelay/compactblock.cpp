@@ -128,7 +128,16 @@ bool CompactBlock::HandleMessage(CDataStream &vRecv, uint32_t msgCookie, CNode *
     // Deserialize compactblock and store a block to reconstruct
     CompactBlock tmp;
     vRecv >> tmp;
-    auto pblock = thinrelay.SetBlockToReconstruct(pfrom, tmp.header.GetHash());
+    std::shared_ptr<CBlockThinRelay> pblock;
+    {
+        // Keep admission and allocation atomic with timeout cleanup.
+        LOCK(thinrelay.cs_inflight);
+        if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::CMPCTBLOCK, tmp.header.GetHash()))
+        {
+            return error("unrequested compact block from peer %s", pfrom->GetLogName());
+        }
+        pblock = thinrelay.SetBlockToReconstruct(pfrom, tmp.header.GetHash());
+    }
     pblock->cmpctblock = std::make_shared<CompactBlock>(std::forward<CompactBlock>(tmp));
 
     std::shared_ptr<CompactBlock> compactBlock = pblock->cmpctblock;
@@ -161,12 +170,6 @@ bool CompactBlock::HandleMessage(CDataStream &vRecv, uint32_t msgCookie, CNode *
     requester.UpdateBlockAvailability(pfrom->GetId(), inv.hash);
     LOG(CMPCT, "received compact block %s from peer %s of %d bytes\n", inv.hash.ToString(), pfrom->GetLogName(),
         compactBlock->GetSize());
-
-    // Do not process unrequested compact blocks.
-    if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::CMPCTBLOCK, inv.hash))
-    {
-        return error("unrequested compact block from peer %s", pfrom->GetLogName());
-    }
 
     // Check if we've already received this block and have it on disk
     if (AlreadyHaveBlock(inv))
