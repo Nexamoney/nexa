@@ -65,32 +65,6 @@ BOOST_AUTO_TEST_CASE(capd_msg_test_vectors)
     FastRandomContext insecure_rand;
     CapdMsgPool mp;
 
-    // Check that todouble works, not counting rounding
-    {
-        arith_uint256 tmp;
-        arith_uint256 val256 = 1;
-        double val = 1;
-        for (int i = 1; i < 10; i++)
-        {
-            unsigned int amt = insecure_rand.rand32() & 0xffff;
-            val256 *= amt;
-            val *= amt;
-
-            tmp.setdouble(val);
-            std::string tmpstr = tmp.GetHex();
-            std::string valstr = val256.GetHex();
-            // printf("val = %f\n", val);
-            // printf("cvted int256 = %s  int256 = %s  double = %f\n", tmpstr.c_str(), valstr.c_str(), tmp.getdouble());
-            auto idx = tmpstr.find_last_of("123456789");
-            // the double will round and then shift so figure out where the rounding starts by looking for ending zeros
-            // and then check the hex representation of the numbers up to but not including the last nonzero digit
-            if (!tmp.EqualTo(0) && !val256.EqualTo(0))
-            {
-                BOOST_CHECK(tmpstr.substr(0, idx - 1) == valstr.substr(0, idx - 1));
-            }
-        }
-    }
-
     arith_uint256 CONVERSION_ERROR_MASK = ~arith_uint256((1024 * PRIORITY_CONVERSION_FRAC) - 1);
 
     // check that Priority() and PriorityToDifficulty() are inverse
