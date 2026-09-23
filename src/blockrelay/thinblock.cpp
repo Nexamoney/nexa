@@ -67,7 +67,16 @@ bool CThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom)
     // Deserialize and store thinblock
     CThinBlock tmp;
     vRecv >> tmp;
-    auto pblock = thinrelay.SetBlockToReconstruct(pfrom, tmp.header.GetHash());
+    std::shared_ptr<CBlockThinRelay> pblock;
+    {
+        // Keep admission and allocation atomic with timeout cleanup.
+        LOCK(thinrelay.cs_inflight);
+        if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::XTHINBLOCK, tmp.header.GetHash()))
+        {
+            return error("unrequested thinblock from peer %s", pfrom->GetLogName());
+        }
+        pblock = thinrelay.SetBlockToReconstruct(pfrom, tmp.header.GetHash());
+    }
     pblock->thinblock = std::make_shared<CThinBlock>(std::forward<CThinBlock>(tmp));
 
     std::shared_ptr<CThinBlock> thinBlock = pblock->thinblock;
@@ -100,12 +109,6 @@ bool CThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom)
     requester.UpdateBlockAvailability(pfrom->GetId(), inv.hash);
     LOG(THIN, "received thinblock %s from peer %s of %d bytes\n", inv.hash.ToString(), pfrom->GetLogName(),
         thinBlock->GetSize());
-
-    // Do not process unrequested xthinblocks unless from an expedited node.
-    if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::XTHINBLOCK, inv.hash) && !connmgr->IsExpeditedUpstream(pfrom))
-    {
-        return error("unrequested thinblock from peer %s", pfrom->GetLogName());
-    }
 
     // Check if we've already received this block and have it on disk
     if (AlreadyHaveBlock(inv))
@@ -467,7 +470,20 @@ bool CXThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom, std::string st
     // Deserialize xthinblock and store a block to reconstruct
     CXThinBlock tmp;
     vRecv >> tmp;
-    auto pblock = thinrelay.SetBlockToReconstruct(pfrom, tmp.header.GetHash());
+    // An expedited upstream can also send ordinary XTHINBLOCK messages.
+    // HandleExpeditedBlock passes hops + 1 for XPEDITEDBLK, so nHops is already positive on the network path.
+    const bool expedited = strCommand == NetMsgType::XPEDITEDBLK && connmgr->IsExpeditedUpstream(pfrom);
+    std::shared_ptr<CBlockThinRelay> pblock;
+    {
+        // Keep admission and allocation atomic with timeout cleanup.
+        LOCK(thinrelay.cs_inflight);
+        if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::XTHINBLOCK, tmp.header.GetHash()) && !expedited)
+        {
+            return error("%s %s from peer %s but was unrequested\n", strCommand, tmp.header.GetHash().ToString(),
+                pfrom->GetLogName());
+        }
+        pblock = thinrelay.SetBlockToReconstruct(pfrom, tmp.header.GetHash());
+    }
     pblock->xthinblock = std::make_shared<CXThinBlock>(std::forward<CXThinBlock>(tmp));
 
     std::shared_ptr<CXThinBlock> thinBlock = pblock->xthinblock;
@@ -536,10 +552,10 @@ bool CXThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom, std::string st
             return true;
         }
 
-        // If this is an expedited block then add and entry to mapThinBlocksInFlight and also
+        // If this is an expedited block then add and entry to mapThinBlocksInFlight.
         // mark the block in flight in the request manager so we can track it and check for
         // potential download timeouts.
-        if (strCommand == NetMsgType::XPEDITEDBLK && nHops > 0 && connmgr->IsExpeditedUpstream(pfrom))
+        if (expedited)
         {
             // If we can't add this xthin then we've already requested it
             if (!thinrelay.AddBlockInFlight(pfrom, inv.hash, NetMsgType::XTHINBLOCK))
@@ -555,14 +571,6 @@ bool CXThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom, std::string st
         {
             LOG(THIN, "Received %s %s from peer %s. Size %d bytes.\n", strCommand, inv.hash.ToString(),
                 pfrom->GetLogName(), thinBlock->GetSize());
-
-            // Do not process unrequested xthinblocks even from expedited peers. An expedited peer
-            // would not send a request using the XThINBLOCK message type but rather an XPEDITEDBLK.
-            if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::XTHINBLOCK, inv.hash))
-            {
-                return error(
-                    "%s %s from peer %s but was unrequested\n", strCommand, inv.hash.ToString(), pfrom->GetLogName());
-            }
         }
     }
 

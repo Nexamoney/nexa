@@ -439,7 +439,8 @@ uint64_t ThinTypeRelay::GetMaxAllowedBlockSize() { return GetMaxAllowedNetMessag
 
 void ThinTypeRelay::ClearAllBlockData(CNode *pnode, const uint256 &hash)
 {
-    // Clear the entries for block to reconstruct and block in flight
+    // Do not let admission recreate reconstruction state between these erases.
+    LOCK(cs_inflight);
     ClearBlockToReconstruct(pnode->GetId(), hash);
     ClearBlockInFlight(pnode->GetId(), hash);
 }

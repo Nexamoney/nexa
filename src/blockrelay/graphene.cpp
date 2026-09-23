@@ -349,7 +349,17 @@ bool CGrapheneBlock::HandleMessage(CDataStream &vRecv,
     // Deserialize grapheneblock and store a block to reconstruct
     CGrapheneBlock tmp(NegotiateGrapheneVersion(pfrom), NegotiateFastFilterSupport(pfrom));
     vRecv >> tmp;
-    auto pblock = thinrelay.SetBlockToReconstruct(pfrom, tmp.header.GetHash());
+    std::shared_ptr<CBlockThinRelay> pblock;
+    {
+        // Keep admission and allocation atomic with timeout cleanup.
+        LOCK(thinrelay.cs_inflight);
+        if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::GRAPHENEBLOCK, tmp.header.GetHash()))
+        {
+            return error("%s %s from peer %s but was unrequested\n", strCommand, tmp.header.GetHash().ToString(),
+                pfrom->GetLogName());
+        }
+        pblock = thinrelay.SetBlockToReconstruct(pfrom, tmp.header.GetHash());
+    }
     pblock->grapheneblock = std::make_shared<CGrapheneBlock>(std::forward<CGrapheneBlock>(tmp));
 
     std::shared_ptr<CGrapheneBlock> grapheneBlock = pblock->grapheneblock;
@@ -424,17 +434,8 @@ bool CGrapheneBlock::HandleMessage(CDataStream &vRecv,
             return true;
         }
 
-        {
-            LOG(GRAPHENE, "Received %s %s from peer %s. Size %d bytes.\n", strCommand, inv.hash.ToString(),
-                pfrom->GetLogName(), grapheneBlock->GetSize());
-
-            // Do not process unrequested grapheneblocks.
-            if (!thinrelay.IsBlockInFlight(pfrom, NetMsgType::GRAPHENEBLOCK, inv.hash))
-            {
-                return error(
-                    "%s %s from peer %s but was unrequested\n", strCommand, inv.hash.ToString(), pfrom->GetLogName());
-            }
-        }
+        LOG(GRAPHENE, "Received %s %s from peer %s. Size %d bytes.\n", strCommand, inv.hash.ToString(),
+            pfrom->GetLogName(), grapheneBlock->GetSize());
     }
 
     bool result = grapheneBlock->process(pfrom, strCommand, pblock);
