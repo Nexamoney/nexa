@@ -447,6 +447,65 @@ BOOST_AUTO_TEST_CASE(methods) // GetHex SetHex size() GetLow64 GetSerializeSize,
     }
 }
 
+BOOST_AUTO_TEST_CASE(setdouble)
+{
+    auto checkConversion = [](double value, const arith_uint256 &expected)
+    {
+        BOOST_TEST_CONTEXT("input: " << std::hexfloat << value)
+        {
+            arith_uint256 converted = MaxL;
+            converted.setdouble(value);
+            BOOST_CHECK_EQUAL(converted.GetHex(), expected.GetHex());
+        }
+    };
+
+    const struct
+    {
+        double value;
+        const char *expected;
+    } vectors[] = {
+        {0.0, "0"},
+        {-0.0, "0"},
+        {-0.75, "0"},
+        {-1.0, "0"},
+        {-std::numeric_limits<double>::max(), "0"},
+        {std::numeric_limits<double>::quiet_NaN(), "0"},
+        {std::numeric_limits<double>::infinity(), "0"},
+        {-std::numeric_limits<double>::infinity(), "0"},
+        {std::numeric_limits<double>::denorm_min(), "0"},
+        {std::numeric_limits<double>::min(), "0"},
+        {0.75, "0"},
+        {1.75, "1"},
+        {4294967295.5, "ffffffff"},
+        {0x1p+32, "100000000"},
+        {0x1.fffffffffffffp+52, "1fffffffffffff"},
+        {0x1.0000000000001p+53, "20000000000002"},
+        {0x1.fffffffffffffp+63, "fffffffffffff800"},
+        {0x1p+64, "10000000000000000"},
+        // Rounded product of 42510, 43395, 47986, 48198, 19598 and 42289.
+        {0x1.6d9d6a7b4d821p+91, "b6ceb53da6c108000000000"},
+        {0x1p+128, "100000000000000000000000000000000"},
+        {0x1.fffffffffffffp+255, "fffffffffffff800000000000000000000000000000000000000000000000000"},
+    };
+    for (const auto &vector : vectors)
+    {
+        checkConversion(vector.value, arith_uint256(vector.expected));
+    }
+
+    for (int bit = 0; bit < 256; ++bit)
+    {
+        const double value = std::ldexp(1.0, bit);
+        const arith_uint256 expected = OneL << bit;
+        const int precision = std::numeric_limits<double>::digits;
+        // Double spacing doubles at each power of two; fractional results truncate.
+        const arith_uint256 below = bit >= precision ? OneL << (bit - precision) : OneL;
+        const arith_uint256 above = bit >= precision - 1 ? OneL << (bit - precision + 1) : ZeroL;
+        checkConversion(std::nextafter(value, 0.0), expected - below);
+        checkConversion(value, expected);
+        checkConversion(std::nextafter(value, std::numeric_limits<double>::infinity()), expected + above);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(bignum_SetCompact)
 {
     arith_uint256 num;
