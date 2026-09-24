@@ -213,7 +213,7 @@ private:
     /** The maximum number of blocks we keep in the graphics scene (make it a little bigger than the view can hold) */
     const size_t DEFAULT_MAX_BLOCKS = (DEFAULT_WIDTH_OF_VIEW * 1.05) / (size_t)(subblockWidth + distance);
     /** Are QLabels enabled */
-    const bool fQLabelsEnabled = true;
+    const bool fQLabelsEnabled = false;
 
     QTimer *pollTimer;
     QTimer *pollTimer2;
