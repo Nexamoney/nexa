@@ -513,49 +513,26 @@ void DagWidget::AddItem(uint256 hash,
         // and so should not trigger a re-paint.
         for (auto &it : mapDag.begin()->second)
         {
-            if (fQLabelsEnabled)
+            // pass in widget or path to scene.removeItem
+            // nullptrs passed in are ignored by removeItem
+            scene->removeItem(it->itemText2);
+            delete it->itemText2;
+            it->itemText2 = nullptr;
+            scene->removeItem(it->itemText1);
+            delete it->itemText1;
+            it->itemText1 = nullptr;
+            scene->removeItem(it->itemText);
+            delete it->itemText;
+            it->itemText = nullptr;
+            scene->removeItem(it->item);
+            delete it->item;
+            it->item = nullptr;
+            for (QGraphicsLineItem *lineItem : it->setLineItems)
             {
-                if (it->itemText1)
-                {
-                    scene->removeItem(it->itemText1);
-                    delete it->itemText1;
-                    it->itemText1 = nullptr;
-                }
-                if (it->itemText2)
-                {
-                    scene->removeItem(it->itemText2);
-                    delete it->itemText2;
-                    it->itemText2 = nullptr;
-                }
-            }
-            else
-            {
-                if (it->itemText)
-                {
-                    scene->removeItem(it->itemText);
-                    delete it->itemText;
-                    it->itemText = nullptr;
-                }
-            }
-
-            if (it->item)
-            {
-                scene->removeItem(it->item);
-                delete it->item;
-                it->item = nullptr;
-            }
-
-            for (auto litem : it->setLineItems)
-            {
-                if (litem)
-                {
-                    scene->removeItem(litem);
-                    delete litem;
-                    litem = nullptr;
-                }
+                scene->removeItem(lineItem);
+                delete lineItem;
             }
             it->setLineItems.clear();
-
             // now trim the block from the tracking maps
             mapInfo.erase(it->blockhash);
             mapOrphanInfo.erase(it->blockhash);
@@ -1406,35 +1383,48 @@ void DagWidget::AddText(uint256 hash, QPen pen, qreal x, qreal y, uint8_t blockT
                       and looks quite good on Linux.  So for now we can leave things as they are
                       but also keep this section of code commented out for future research and experimentation.
             */
-            QLabel *label = new QLabel();
-            label->setStyleSheet("QLabel { background-color : rgba(143, 188, 143, 0); color: black}");
 
-            label->setText(strPartHash1.c_str());
-            label->setFont(font);
-            label->move(x + 12, y - 7);
-            QGraphicsProxyWidget *itemText1 = scene->addWidget(label);
-            if (itemText1)
-            {
-                itemText1->setZValue(1);
-                itemText1->update();
-            }
-
-            QLabel *label2 = new QLabel();
-            label2->setStyleSheet("QLabel { background-color : rgba(143, 188, 143, 0); color: black}");
-            label2->setText(strPartHash2.c_str());
-            label2->setFont(font);
-            label2->move(x + 12, y + 13);
-            QGraphicsProxyWidget *itemText2 = scene->addWidget(label2);
-            if (itemText2)
-            {
-                itemText2->setZValue(2);
-                itemText2->update();
-            }
-
+            // if we dont have the hash in mapInfo then do not create the labels for it
             if (mapInfo.count(hash))
             {
-                mapInfo[hash]->itemText1 = itemText1;
-                mapInfo[hash]->itemText2 = itemText2;
+                QLabel *label = new QLabel();
+                label->setStyleSheet("QLabel { background-color : rgba(143, 188, 143, 0); color: black}");
+
+                label->setText(strPartHash1.c_str());
+                label->setFont(font);
+                label->move(x + 12, y - 7);
+                QGraphicsProxyWidget *itemText1 = scene->addWidget(label);
+                if (itemText1)
+                {
+                    itemText1->setZValue(1);
+                    itemText1->update();
+                    mapInfo[hash]->itemText1 = itemText1;
+                }
+                else
+                {
+                    // itemText1 is a nullptr which means addWidget had a failure, delete the
+                    // QLabel because its no longer used
+                    delete label;
+                }
+
+                QLabel *label2 = new QLabel();
+                label2->setStyleSheet("QLabel { background-color : rgba(143, 188, 143, 0); color: black}");
+                label2->setText(strPartHash2.c_str());
+                label2->setFont(font);
+                label2->move(x + 12, y + 13);
+                QGraphicsProxyWidget *itemText2 = scene->addWidget(label2);
+                if (itemText2)
+                {
+                    itemText2->setZValue(2);
+                    itemText2->update();
+                    mapInfo[hash]->itemText2 = itemText2;
+                }
+                else
+                {
+                    // itemText2 is a nullptr which means addWidget had a failure, delete the
+                    // QLabel because its no longer used
+                    delete label2;
+                }
             }
         }
     }
