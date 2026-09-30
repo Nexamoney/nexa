@@ -26,6 +26,8 @@ extern std::atomic<bool> fReindex;
 
 BlockDescDialog::BlockDescDialog(QString *desc, QWidget *parent, DagWidget *dagwidget) : ui(new Ui::BlockDescDialog)
 {
+    setAttribute(Qt::WA_DeleteOnClose);
+
     ui->setupUi(this);
     ui->detailText->setHtml(*desc);
 
