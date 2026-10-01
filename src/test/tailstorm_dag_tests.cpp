@@ -893,16 +893,9 @@ BOOST_AUTO_TEST_CASE(regeneration_retries_cross_branch_spend)
     }
 }
 
-BOOST_AUTO_TEST_CASE(regeneration_retries_longer_branches)
+static void CheckCrossBranchRegeneration(CCoinsViewCache &coinsCache, size_t spenderBranchLength)
 {
-    // Subblock ancestry (parent -> child):
-    //             +--> A1 --> A2[P] --> A3
-    // Summary ----+
-    //             +--> B1 --> B2[C] --> B3[D]
-    // Transactions: P -> C -> D (each spends the preceding transaction's output).
-    //
-    // Transactions P -> C -> D must apply in every ancestor-preserving replay order.
-    // Regtest's default K is too small, so this scope sets K=8 (up to seven subblocks).
+    // Temporarily set K=8 so both cases fit; the unequal branches fill all seven slots.
     // The destructor restores the saved value on scope exit, including test failures.
     struct ScopedTailstormK
     {
@@ -928,45 +921,60 @@ BOOST_AUTO_TEST_CASE(regeneration_retries_longer_branches)
     };
 
     // Insert C and D before P so setup also exercises chained missing-input retries.
-    const CTreeNodeRef b1 = insert({}, 95, {});
-    const CTreeNodeRef b2 = insert({b1}, 96, {child});
-    const CTreeNodeRef b3 = insert({b2}, 97, {grandchild});
-    const CTreeNodeRef a1 = insert({}, 98, {});
-    const CTreeNodeRef a2 = insert({a1}, 99, {provider});
-    const CTreeNodeRef a3 = insert({a2}, 100, {});
+    unsigned char nonce = 95;
+    std::vector<CTreeNodeRef> branchB;
+    for (size_t i = 0; i < spenderBranchLength; ++i)
+    {
+        std::set<CTreeNodeRef> parents;
+        if (!branchB.empty())
+            parents.insert(branchB.back());
+        std::vector<CTransactionRef> txs;
+        if (i == 1)
+            txs.push_back(child);
+        // Put D at the branch tip so the unequal case spans an extra subblock.
+        if (i + 1 == spenderBranchLength)
+            txs.push_back(grandchild);
+        branchB.push_back(insert(parents, nonce++, txs));
+    }
+    const CTreeNodeRef a1 = insert({}, nonce++, {});
+    const CTreeNodeRef a2 = insert({a1}, nonce++, {provider});
+    const CTreeNodeRef a3 = insert({a2}, nonce++, {});
+    const std::vector<CTreeNodeRef> branchA{a1, a2, a3};
     CTailstormGroveRef grove;
     BOOST_REQUIRE(tailstormForest.GetGrove(coin.chain.previousHash, grove));
     std::set<CTreeNodeRef> dag;
     CTailstormTreeRef tree;
     BOOST_REQUIRE(tailstormForest.GetBestDagFor(coin.chain.previousHash, dag, &tree));
-    BOOST_REQUIRE_EQUAL(dag.size(), 6u);
+    BOOST_REQUIRE_EQUAL(dag.size(), branchA.size() + branchB.size());
 
     LOCK(tailstormForest.cs_forest);
     TxAdmissionPause pause;
-    const std::vector<CTreeNodeRef> branchA{a1, a2, a3};
-    const std::vector<CTreeNodeRef> branchB{b1, b2, b3};
     // Each node names only its direct parent; the two branches must stay separate.
-    for (size_t i = 0; i < branchA.size(); ++i)
+    for (const auto &branch : {branchA, branchB})
     {
-        BOOST_CHECK_EQUAL(branchA[i]->dagHeight, i + 1);
-        BOOST_CHECK_EQUAL(branchB[i]->dagHeight, i + 1);
-        BOOST_CHECK_EQUAL(branchA[i]->setAncestors.size(), i == 0 ? 0u : 1u);
-        BOOST_CHECK_EQUAL(branchB[i]->setAncestors.size(), i == 0 ? 0u : 1u);
-        if (i > 0)
+        for (size_t i = 0; i < branch.size(); ++i)
         {
-            BOOST_CHECK(branchA[i]->setAncestors.count(branchA[i - 1]));
-            BOOST_CHECK(branchB[i]->setAncestors.count(branchB[i - 1]));
+            BOOST_CHECK_EQUAL(branch[i]->dagHeight, i + 1);
+            BOOST_CHECK_EQUAL(branch[i]->setAncestors.size(), i == 0 ? 0u : 1u);
+            if (i > 0)
+                BOOST_CHECK(branch[i]->setAncestors.count(branch[i - 1]));
         }
     }
     for (const auto &tx : {provider, child, grandchild})
         BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, tx->GetId()));
 
     // Keep subblock ancestors first, even when transaction providers come later.
-    const std::vector<std::vector<CTreeNodeRef> > orders{
-        {a1, a2, a3, b1, b2, b3},
-        {b1, b2, b3, a1, a2, a3},
-        {b1, a1, b2, a2, b3, a3},
-    };
+    std::vector<std::vector<CTreeNodeRef> > orders{branchA, branchB, {}};
+    orders[0].insert(orders[0].end(), branchB.begin(), branchB.end());
+    orders[1].insert(orders[1].end(), branchA.begin(), branchA.end());
+    // Alternate branches, then finish the longer one without dropping its final node.
+    for (size_t i = 0; i < std::max(branchA.size(), branchB.size()); ++i)
+    {
+        if (i < branchB.size())
+            orders[2].push_back(branchB[i]);
+        if (i < branchA.size())
+            orders[2].push_back(branchA[i]);
+    }
     Coin providerFirstCoin;
     for (size_t order = 0; order < orders.size(); ++order)
     {
@@ -1006,6 +1014,30 @@ BOOST_AUTO_TEST_CASE(regeneration_retries_longer_branches)
                 BOOST_CHECK(!coinsCache.HaveCoin(tx->OutpointAt(0)));
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(regeneration_retries_longer_branches)
+{
+    // Subblock ancestry (parent -> child):
+    //             +--> A1 --> A2[P] --> A3
+    // Summary ----+
+    //             +--> B1 --> B2[C] --> B3[D]
+    // Transactions: P -> C -> D (each spends the preceding transaction's output).
+    //
+    // Transactions P -> C -> D must apply in every tested replay order.
+    CheckCrossBranchRegeneration(coinsCache, 3);
+}
+
+BOOST_AUTO_TEST_CASE(regeneration_retries_unequal_branches)
+{
+    // Subblock ancestry (parent -> child):
+    //             +--> A1 --> A2[P] --> A3
+    // Summary ----+
+    //             +--> B1 --> B2[C] --> B3 --> B4[D]
+    // Transactions: P -> C -> D (each spends the preceding transaction's output).
+    //
+    // Replaying the longer branch first must still recover both dependent transactions.
+    CheckCrossBranchRegeneration(coinsCache, 4);
 }
 
 BOOST_AUTO_TEST_CASE(winner_flip_evicts_pool_dependents_at_regeneration)
