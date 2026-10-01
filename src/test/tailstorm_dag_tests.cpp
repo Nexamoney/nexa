@@ -36,6 +36,8 @@ public:
 
     static bool HasDagTx(const CTailstormTree &tree, const uint256 &txid) { return tree.mapDagTxns.count(txid) != 0; }
 
+    static CCoinsViewCache &CoinsView(CTailstormTree &tree) { return *tree.view; }
+
     static void SetRecheckPending(CTailstormForest &forest, bool fPending) { forest.fRecheckReorg = fPending; }
 
     static size_t SummaryOrphanCount(CTailstormForest &forest)
@@ -801,6 +803,94 @@ static ConstCBlockRef MakeLowerHashSubblock(
     }
     BOOST_FAIL("no nonce gives a lower hash");
     return nullptr;
+}
+
+BOOST_AUTO_TEST_CASE(regeneration_retries_cross_branch_spend)
+{
+    // Subblock ancestry (parent -> child):
+    //             +--> A[P]
+    // Summary ----+
+    //             +--> B[C]
+    // Transactions: P -> C (C spends P's output).
+    //
+    // Unrelated subblocks can carry dependent transactions. Rebuilding either sequence order
+    // must apply both transactions and leave the same coins, including child-first replay.
+    DoubleSpendTestCoin coin(coinsCache);
+    const CBlockIndex &summary = coin.chain.previousSummary;
+    const CTransactionRef provider = coin.SpendCoin(800);
+    const CTransactionRef spender = coin.Spend(provider->OutpointAt(0), 800, 400);
+    const ConstCBlockRef providerBlock = MakeTestSubblock(summary, {}, 95, {provider});
+    const ConstCBlockRef spenderBlock = MakeTestSubblock(summary, {}, 96, {spender});
+
+    // Accept the spender's subblock before its input exists; the transaction must wait.
+    BOOST_REQUIRE(tailstormForest.Insert(spenderBlock));
+    std::set<CTreeNodeRef> bestDag;
+    CTailstormTreeRef tree;
+    BOOST_REQUIRE(tailstormForest.GetBestDagFor(coin.chain.previousHash, bestDag, &tree));
+    {
+        LOCK(tailstormForest.cs_forest);
+        BOOST_CHECK(!CTailstormForestTest::HasDagTx(*tree, spender->GetId()));
+    }
+    BOOST_REQUIRE(tailstormForest.Insert(providerBlock));
+
+    std::set<CTreeNodeRef> fullDag;
+    BOOST_REQUIRE(tailstormForest.GetFullDagFor(coin.chain.previousHash, fullDag));
+    BOOST_REQUIRE_EQUAL(fullDag.size(), 2u);
+    const CTreeNodeRef providerNode = FindTestNode(fullDag, providerBlock->GetHash());
+    const CTreeNodeRef spenderNode = FindTestNode(fullDag, spenderBlock->GetHash());
+    BOOST_REQUIRE(providerNode);
+    BOOST_REQUIRE(spenderNode);
+    CTailstormGroveRef grove;
+    BOOST_REQUIRE(tailstormForest.GetGrove(coin.chain.previousHash, grove));
+
+    LOCK(tailstormForest.cs_forest);
+    TxAdmissionPause pause;
+    // The dependency is between transactions, not between subblock headers.
+    BOOST_CHECK(providerNode->setAncestors.empty());
+    BOOST_CHECK(spenderNode->setAncestors.empty());
+    BOOST_CHECK_EQUAL(providerNode->dagHeight, 1u);
+    BOOST_CHECK_EQUAL(spenderNode->dagHeight, 1u);
+    BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, provider->GetId()));
+    BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, spender->GetId()));
+
+    // Regeneration clears the DAG view, so neither order can reuse the insertion result.
+    Coin parentFirstCoin;
+    for (const bool childFirst : {false, true})
+    {
+        BOOST_TEST_CONTEXT("child first=" << childFirst)
+        {
+            providerNode->nSequenceId = childFirst ? 2 : 1;
+            spenderNode->nSequenceId = childFirst ? 1 : 2;
+            tailstormForest.ReGenerateDagData(grove);
+
+            BOOST_CHECK(providerNode->fProcessed);
+            BOOST_CHECK(spenderNode->fProcessed);
+            // Recover the spend by retrying, not by changing the requested sequence order.
+            BOOST_CHECK_EQUAL(providerNode->nSequenceId, childFirst ? 2u : 1u);
+            BOOST_CHECK_EQUAL(spenderNode->nSequenceId, childFirst ? 1u : 2u);
+            BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, provider->GetId()));
+            BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, spender->GetId()));
+            // Both inputs must be spent; only the spender's output should remain.
+            CCoinsViewCache &view = CTailstormForestTest::CoinsView(*tree);
+            BOOST_CHECK(!view.HaveCoin(coin.parentTx->OutpointAt(0)));
+            BOOST_CHECK(!view.HaveCoin(provider->OutpointAt(0)));
+            Coin result;
+            BOOST_REQUIRE(view.GetCoin(spender->OutpointAt(0), result));
+            BOOST_CHECK(result.out == spender->vout[0]);
+            BOOST_CHECK_EQUAL(result.height(), coin.height);
+            if (!childFirst)
+                parentFirstCoin = result;
+            else
+            {
+                BOOST_CHECK(result.out == parentFirstCoin.out);
+                BOOST_CHECK_EQUAL(result.height(), parentFirstCoin.height());
+            }
+            // Applying DAG transactions must not change the summary-root coins.
+            BOOST_CHECK(coinsCache.HaveCoin(coin.parentTx->OutpointAt(0)));
+            BOOST_CHECK(!coinsCache.HaveCoin(provider->OutpointAt(0)));
+            BOOST_CHECK(!coinsCache.HaveCoin(spender->OutpointAt(0)));
+        }
+    }
 }
 
 BOOST_AUTO_TEST_CASE(winner_flip_evicts_pool_dependents_at_regeneration)
