@@ -940,7 +940,6 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
                             newNode->hash.ToString());
                         fHavePrevSubblocks = false;
                         break;
-                        ;
                     }
                     LOG(DAG, "%s(): Found prevhash  %s in dag for %s", __func__, prevhash.ToString(),
                         newNode->hash.ToString());
@@ -1036,6 +1035,9 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
                 !IsInitialSyncComplete(), nDagHeight, 0, mi.second->subblock->GetBlockHeader(), mi.second->roothash);
         }
     }
+
+    // push uncles to the next epoch if it already exists.
+    auto setUncles = tailstormForest.PushUncles(newNode);
 
     if (fAddedSubblock)
         return newNode;
@@ -1283,6 +1285,7 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
     }
 
     // Insert elements into a new grove or an already existing grove.
+    auto consensusParams = Params().GetConsensus();
     {
         // At this point we need to know if this block connects to a past
         // Summary Block or if it really is an orphan.
@@ -1309,7 +1312,11 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
                 fIsLinked = pindex->IsLinked();
             }
         }
-        if (pindex && (pindex->height() == chainActive.Height()))
+
+        // Create groves at the chain height and at least one epoch back.  This is because
+        // at startup when we sync the chain we need to get the current chaintip's dag and
+        // the prev epochs dag so we can pull in any potential uncles from the previous epoch.
+        if (pindex && (pindex->height() >= chainActive.Height() - consensusParams.tailstormEnforceDepth))
             shouldCreateOrHasPrevGrove = true;
 
         if (pindex && GetGrove(*(pindex->phashBlock), grove))
@@ -1328,7 +1335,7 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
             }
 
             // Check the chainwork when the subblock gets connected to a grove
-            auto expectedNbits = GetNextWorkRequired(pindex, &(*subblock), Params().GetConsensus());
+            auto expectedNbits = GetNextWorkRequired(pindex, &(*subblock), consensusParams);
             auto expectedChainWork = ArithToUint256(pindex->chainWork() + GetWorkForDifficultyBits(expectedNbits));
             if (subblock->chainWork != expectedChainWork)
             {
@@ -1427,7 +1434,7 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
         {
             SetDagActiveTip(bestnode);
             // We have enough subblocks to make a summary block so signal to check the summary block orphans
-            if (dag.size() >= Params().GetConsensus().tailstorm_k - 1)
+            if (dag.size() >= consensusParams.tailstorm_k - 1)
             {
                 checkSummaryBlockOrphans++;
             }
@@ -1827,16 +1834,15 @@ bool CTailstormForest::GetDagForReorg(const uint256 &hash, std::vector<CTreeNode
     return false;
 }
 
-
 bool CTailstormForest::GetDagForBlock(ConstCBlockRef &pblock, std::vector<CTreeNodeRef> &dag, CTailstormTreeRef *ptree)
 {
     LOCK(cs_forest);
-    DbgAssert(IsSummaryBlock(*pblock), );
+    DbgAssert(IsSummaryBlock(pblock), );
 
     bool fMatch = false;
     CTailstormGroveRef grove = nullptr;
     dag.clear();
-    if (GetGrove(pblock->hashPrevBlock, grove))
+    if (GetGrove(pblock.hashPrevBlock, grove))
     {
         // Check the dag tree for a full set of treenodes that match the block. If we find
         // a match then break and return a positive result. If we don't match then keep
@@ -2869,6 +2875,79 @@ std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTailstormGroveRef g
     // Find and include summary block uncles
 
     return mapUncles;
+}
+
+std::set<CTreeNodeRef> CTailstormForest::PushUncles(CTreeNodeRef treenode)
+{
+    CTailstormGroveRef mygrove = nullptr;
+    if (!GetGrove(treenode->hash, mygrove))
+    {
+        return {};
+    }
+
+    // Find if there are any groves with a "one" greater block height than our own.
+    // These blocks, if any, will be our potential targets for uncle insertion.
+    std::set<CTailstormGroveRef> potentialGroves;
+    auto targetHeight = treenode->subblock->height + 1;
+    for (auto &mi : mapAllNodes)
+    {
+        if (mi.second->subblock->height == targetHeight)
+        {
+            CTailstormGroveRef grove = nullptr;
+            if (GetGrove(mi.second->hash, grove))
+            {
+                potentialGroves.insert(grove);
+            }
+        }
+    }
+
+    // Find out if any of the potential descendant summary blocks have groves already
+    // and return their groves.
+    std::set<CTailstormGroveRef> targetGroves;
+    for (auto &grove : potentialGroves)
+    {
+        // for each grove get the pindex, then check the pindex->prev matches the potential grove
+        // if not then delete the potential
+        if (grove->tree->pindexSummaryRoot &&
+            (*(grove->tree->pindexSummaryRoot->pprev->phashBlock) == treenode->subblock->hashPrevBlock))
+        {
+            targetGroves.insert(grove);
+        }
+    }
+    if (targetGroves.empty())
+        return {};
+
+    // Find the uncles that would be specific for each grove (if any) and push them into those groves
+    std::set<CTreeNodeRef> setPushedUncles;
+    for (auto &grove : targetGroves)
+    {
+        // Get the dag for the target groves summary block
+        const CBlockHeader &header = grove->tree->pindexSummaryRoot->GetBlockHeader();
+        std::set<CTreeNodeRef> setDag;
+        CTailstormTreeRef dagTree = nullptr;
+        if (!GetDagForBlock(header, setDag, &dagTree))
+        {
+            continue;
+        }
+
+        // compare the the target dag with our current grove to find which uncles need to be pushed
+        // if any.
+        for (auto &mi : mygrove->tree->dag)
+        {
+            if (!setDag.count(mi.second) && !mi.second->fUncle)
+            {
+                // If it's an uncle then push it to the target grove.
+                CTreeNodeRef orphan = MakeTreeNodeRef(*mi.second);
+                orphan->roothash = grove->roothash;
+                orphan->fUncle = true;
+                grove->tree->mapUncles.emplace(mi.first, orphan);
+                setPushedUncles.insert(orphan);
+                LOG(DAG, "%s: pushed uncle %s", __func__, mi.first.ToString());
+            }
+        }
+    }
+
+    return setPushedUncles;
 }
 
 bool CTailstormForest::Remove(uint256 &hash)

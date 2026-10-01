@@ -557,6 +557,14 @@ public:
     //! As above, but for a grove that is already resolved.
     std::map<uint256, CTreeNodeRef> GetUncles(CTailstormGroveRef grove);
 
+    /** Push any Uncles for this node's NEXT epoch block(s) if it exists already. And
+     *  return them by hash of epoch they belong to so we can notify the
+     *  dagviewer about them. This is needed when the next epoch arrives and connects
+     *  before the previous epochs subblocks have arrived, such as when initial sync
+     *  has completed and subblocks arrive out of order.
+     */
+    std::set<CTreeNodeRef> PushUncles(CTreeNodeRef node);
+
     //! Remove a node and any descendants from the forest
     bool Remove(uint256 &hash);
 
