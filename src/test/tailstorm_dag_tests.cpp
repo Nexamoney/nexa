@@ -893,6 +893,121 @@ BOOST_AUTO_TEST_CASE(regeneration_retries_cross_branch_spend)
     }
 }
 
+BOOST_AUTO_TEST_CASE(regeneration_retries_longer_branches)
+{
+    // Subblock ancestry (parent -> child):
+    //             +--> A1 --> A2[P] --> A3
+    // Summary ----+
+    //             +--> B1 --> B2[C] --> B3[D]
+    // Transactions: P -> C -> D (each spends the preceding transaction's output).
+    //
+    // Transactions P -> C -> D must apply in every ancestor-preserving replay order.
+    // Regtest's default K is too small, so this scope sets K=8 (up to seven subblocks).
+    // The destructor restores the saved value on scope exit, including test failures.
+    struct ScopedTailstormK
+    {
+        uint32_t &value = ModifiableParams().GetModifiableConsensus().tailstorm_k;
+        const uint32_t saved = value;
+        ScopedTailstormK() { value = 8; }
+        ~ScopedTailstormK() { value = saved; }
+    } tailstormK;
+    DoubleSpendTestCoin coin(coinsCache);
+    const CTransactionRef provider = coin.SpendCoin(800);
+    const CTransactionRef child = coin.Spend(provider->OutpointAt(0), 800, 600);
+    const CTransactionRef grandchild = coin.Spend(child->OutpointAt(0), 600, 400);
+    const auto insert =
+        [&](const std::set<CTreeNodeRef> &parents, unsigned char nonce, const std::vector<CTransactionRef> &txs)
+    {
+        const ConstCBlockRef block = MakeTestSubblock(coin.chain.previousSummary, parents, nonce, txs);
+        BOOST_REQUIRE(tailstormForest.Insert(block));
+        std::set<CTreeNodeRef> dag;
+        BOOST_REQUIRE(tailstormForest.GetFullDagFor(coin.chain.previousHash, dag));
+        const CTreeNodeRef node = FindTestNode(dag, block->GetHash());
+        BOOST_REQUIRE(node);
+        return node;
+    };
+
+    // Insert C and D before P so setup also exercises chained missing-input retries.
+    const CTreeNodeRef b1 = insert({}, 95, {});
+    const CTreeNodeRef b2 = insert({b1}, 96, {child});
+    const CTreeNodeRef b3 = insert({b2}, 97, {grandchild});
+    const CTreeNodeRef a1 = insert({}, 98, {});
+    const CTreeNodeRef a2 = insert({a1}, 99, {provider});
+    const CTreeNodeRef a3 = insert({a2}, 100, {});
+    CTailstormGroveRef grove;
+    BOOST_REQUIRE(tailstormForest.GetGrove(coin.chain.previousHash, grove));
+    std::set<CTreeNodeRef> dag;
+    CTailstormTreeRef tree;
+    BOOST_REQUIRE(tailstormForest.GetBestDagFor(coin.chain.previousHash, dag, &tree));
+    BOOST_REQUIRE_EQUAL(dag.size(), 6u);
+
+    LOCK(tailstormForest.cs_forest);
+    TxAdmissionPause pause;
+    const std::vector<CTreeNodeRef> branchA{a1, a2, a3};
+    const std::vector<CTreeNodeRef> branchB{b1, b2, b3};
+    // Each node names only its direct parent; the two branches must stay separate.
+    for (size_t i = 0; i < branchA.size(); ++i)
+    {
+        BOOST_CHECK_EQUAL(branchA[i]->dagHeight, i + 1);
+        BOOST_CHECK_EQUAL(branchB[i]->dagHeight, i + 1);
+        BOOST_CHECK_EQUAL(branchA[i]->setAncestors.size(), i == 0 ? 0u : 1u);
+        BOOST_CHECK_EQUAL(branchB[i]->setAncestors.size(), i == 0 ? 0u : 1u);
+        if (i > 0)
+        {
+            BOOST_CHECK(branchA[i]->setAncestors.count(branchA[i - 1]));
+            BOOST_CHECK(branchB[i]->setAncestors.count(branchB[i - 1]));
+        }
+    }
+    for (const auto &tx : {provider, child, grandchild})
+        BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, tx->GetId()));
+
+    // Keep subblock ancestors first, even when transaction providers come later.
+    const std::vector<std::vector<CTreeNodeRef> > orders{
+        {a1, a2, a3, b1, b2, b3},
+        {b1, b2, b3, a1, a2, a3},
+        {b1, a1, b2, a2, b3, a3},
+    };
+    Coin providerFirstCoin;
+    for (size_t order = 0; order < orders.size(); ++order)
+    {
+        BOOST_TEST_CONTEXT("replay order=" << order)
+        {
+            const auto &nodes = orders[order];
+            for (size_t i = 0; i < nodes.size(); ++i)
+                nodes[i]->nSequenceId = i + 1;
+            // Rebuild from summary-root coins rather than reusing the insertion view.
+            tailstormForest.ReGenerateDagData(grove);
+
+            for (size_t i = 0; i < nodes.size(); ++i)
+            {
+                BOOST_CHECK(nodes[i]->fProcessed);
+                BOOST_CHECK_EQUAL(nodes[i]->nSequenceId, i + 1);
+            }
+            for (const auto &tx : {provider, child, grandchild})
+                BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, tx->GetId()));
+            // Only D's output survives once P, C and D have all been applied.
+            CCoinsViewCache &view = CTailstormForestTest::CoinsView(*tree);
+            for (const auto &tx : {coin.parentTx, provider, child})
+                BOOST_CHECK(!view.HaveCoin(tx->OutpointAt(0)));
+            Coin result;
+            BOOST_REQUIRE(view.GetCoin(grandchild->OutpointAt(0), result));
+            BOOST_CHECK(result.out == grandchild->vout[0]);
+            BOOST_CHECK_EQUAL(result.height(), coin.height);
+            if (order == 0)
+                providerFirstCoin = result;
+            else
+            {
+                BOOST_CHECK(result.out == providerFirstCoin.out);
+                BOOST_CHECK_EQUAL(result.height(), providerFirstCoin.height());
+            }
+            // The rebuilt DAG must not spend coins in its summary-root backend.
+            BOOST_CHECK(coinsCache.HaveCoin(coin.parentTx->OutpointAt(0)));
+            for (const auto &tx : {provider, child, grandchild})
+                BOOST_CHECK(!coinsCache.HaveCoin(tx->OutpointAt(0)));
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(winner_flip_evicts_pool_dependents_at_regeneration)
 {
     // Two subblocks spend the same coin. With equal scores the lower-hash subblock wins and its
