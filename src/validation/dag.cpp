@@ -2383,6 +2383,7 @@ bool CTailstormForest::GetDagForBlock(ConstCBlockRef &pblock, std::set<CTreeNode
 
     return fMatch;
 }
+
 bool CTailstormForest::GetBestTipHashFor(const uint256 &hash, uint256 &tiphash)
 {
     LOCK(cs_forest);

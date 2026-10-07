@@ -1438,7 +1438,7 @@ bool ProcessMessage(CNode *pfrom,
         for (int i = 0; i < 2; i++) // TEST: only provide the tip: subblockConsensusEnforcement + 1; i++)
         {
             tailstormForest.GetBestDagFor(sumblk->GetBlockHash(), dag);
-            LOG(NET, "Responding to DAG request from node %s, for sumblk %d:%s with %d subblocks",
+            LOG(NET, "Responding to DAG request from node %s, for sumblk %ld:%s with %ld subblocks",
                 pfrom ? pfrom->GetLogName() : "nullptr", sumblk->height(), sumblk->GetBlockHash().ToString(),
                 dag.size());
 
@@ -1447,7 +1447,7 @@ bool ProcessMessage(CNode *pfrom,
                 if (!setDagFromPeer.count(treenode->subblock->GetHash()))
                 {
                     LOG(NET, "Responding to DAG request from node %s with subblock %s",
-                        treenode->subblock->GetHash().ToString());
+                        pfrom ? pfrom->GetLogName() : "nullptr", treenode->subblock->GetHash().ToString());
                     pfrom->PushMessage(NetMsgType::BLOCK, *(treenode->subblock));
                 }
             }
