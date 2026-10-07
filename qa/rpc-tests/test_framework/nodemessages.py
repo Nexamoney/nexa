@@ -1648,7 +1648,7 @@ class CBlock(CBlockHeader):
             return False
         return True
 
-    def solve(self):
+    def solve(self, prevhash=0):
 
         assert self.txCount == len(self.vtx)
         assert self.size == len(self.serialize()) - (len(self.nonce) + 1)
@@ -1663,6 +1663,9 @@ class CBlock(CBlockHeader):
             r += ser_string(self.nonce)
             miningHash = hash256(r)
             sha256ofMh = sha256(miningHash)
+            # Tailstorm subblock work is bound to its previous summary hash.
+            if prevhash:
+                sha256ofMh = sha256(sha256(miningHash + ser_uint256(prevhash)))
 
             # create a private key from the blockhash
             private_key = miningHash
