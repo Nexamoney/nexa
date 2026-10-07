@@ -1104,7 +1104,7 @@ static void GetInitialTailstormSubblocks(CNode *pfrom)
         // Construct the GET_DAG message by sending all the subblock hashes
         // that we already have in our best dag. This way the sender can
         // send us only what we still need.
-        std::set<CTreeNodeRef> setBestDag;
+        std::vector<CTreeNodeRef> setBestDag;
         tailstormForest.GetBestDagFor(*(chainActive.Tip()->phashBlock), setBestDag);
 
         std::set<uint256> setDagToSend;
@@ -1432,7 +1432,7 @@ bool ProcessMessage(CNode *pfrom,
         std::set<uint256> setDagFromPeer;
         vRecv >> setDagFromPeer;
 
-        std::set<CTreeNodeRef> dag;
+        std::vector<CTreeNodeRef> dag;
         auto sumblk = chainActive.Tip();
         // int subblockConsensusEnforcement = Params().GetConsensus().tailstormEnforceDepth;
         for (int i = 0; i < 2; i++) // TEST: only provide the tip: subblockConsensusEnforcement + 1; i++)

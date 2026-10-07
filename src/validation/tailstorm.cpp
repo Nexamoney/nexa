@@ -124,8 +124,6 @@ void AcceptSubblock(ConstCBlockRef pblock)
         // Insert new subblock into dag
         if (tailstormForest._Insert(pblock))
         {
-            // If insertion was successful, this block is not an orphan (not unlinked).
-            tailstormForest.RemoveSubblockOrphan(pblock);
             // Process Orphans
             setToAnnounce = tailstormForest.ProcessOrphans();
             setToAnnounce.insert(pblock->GetHash());
@@ -169,7 +167,7 @@ void AcceptSubblock(ConstCBlockRef pblock)
 }
 
 std::vector<uint8_t> GenerateMinerData(const uint32_t tailstorm_k,
-    const std::set<CTreeNodeRef> &setBestDag,
+    const std::vector<CTreeNodeRef> &setBestDag,
     const uint256 &prevOfprevhash)
 {
     CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);

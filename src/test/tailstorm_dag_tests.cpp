@@ -8,9 +8,11 @@
 #include "coins.h"
 #include "daa.h"
 #include "main.h"
+#include "miner.h"
 #include "pow.h"
 #include "test/test_nexa.h"
 #include "txadmission.h"
+#include "unlimited.h"
 #include "validation/tailstorm.h"
 #include "validation/validation.h"
 
@@ -21,6 +23,8 @@
 #include <thread>
 
 using namespace std;
+
+extern std::atomic<bool> forceTemplateRecalc;
 
 class CTailstormForestTest
 {
@@ -53,7 +57,6 @@ public:
     }
 
     // Files a subblock as the retry verdict does, for removal at the next regeneration.
-    static void MarkSubblockBad(CTailstormTree &tree, const uint256 &hash) { tree.setBadSubblocks.insert(hash); }
 
     static void Reset(CTailstormForest &forest)
     {
@@ -86,17 +89,6 @@ public:
     void AddNode(const CTreeNodeRef &node) { dag.emplace(node->hash, node); }
     CTreeNodeRef InsertNode(CTreeNodeRef node) { return Insert(node); }
     size_t Size() const { return dag.size(); }
-    void IndexMissing(const CTransactionRef &tx, const uint256 &subblock) { missingInputs.Add(tx, subblock); }
-    std::vector<std::pair<CTransactionRef, std::set<uint256> > > TakeWaiting(const COutPoint &outpoint)
-    {
-        return missingInputs.RemoveFor(outpoint);
-    }
-    void Retry(const CTransactionRef &tx, CCoinsViewCache &coins)
-    {
-        ConnectDependentTxs(tx, coins, {});
-    }
-    const std::set<uint256> &BadSubblocks() const { return setBadSubblocks; }
-    bool HasDagTx(const uint256 &txid) const { return mapDagTxns.count(txid) != 0; }
 };
 
 class ScopedChainTip
@@ -260,7 +252,7 @@ public:
 };
 
 ConstCBlockRef MakeTestSubblock(const CBlockIndex &summaryRoot,
-    const std::set<CTreeNodeRef> &parents,
+    const std::vector<CTreeNodeRef> &parents,
     const unsigned char nonce,
     const std::vector<CTransactionRef> &txs = {})
 {
@@ -283,11 +275,22 @@ ConstCBlockRef MakeTestSubblock(const CBlockIndex &summaryRoot,
     return ConstCBlockRef(block);
 }
 
-CTreeNodeRef FindTestNode(const std::set<CTreeNodeRef> &dag, const uint256 &hash)
+CTreeNodeRef FindTestNode(const std::vector<CTreeNodeRef> &dag, const uint256 &hash)
 {
     auto iter =
         std::find_if(dag.begin(), dag.end(), [&hash](const CTreeNodeRef &node) { return node->hash == hash; });
     return iter == dag.end() ? CTreeNodeRef{} : *iter;
+}
+
+// The nodes in dag order, as the dag getters return them and GetTxnExclusionSet requires.
+std::vector<CTreeNodeRef> SortTestDag(const std::vector<CTreeNodeRef> &nodes)
+{
+    LOCK(tailstormForest.cs_forest);
+    TestTailstormTree tree;
+    for (const auto &node : nodes)
+        tree.AddNode(node);
+    tailstormForest.RenumberDag(tree);
+    return tree.SortedDag();
 }
 } // namespace
 
@@ -311,7 +314,7 @@ BOOST_AUTO_TEST_CASE(double_spend_prefers_dag_score)
     scoreWinner->dagHeight = 1;
     scoreLoser->dagHeight = 1;
     LinkTestTreeNodes(scoreWinner, child);
-    const std::set<CTreeNodeRef> dag{scoreWinner, scoreLoser, child};
+    const std::vector<CTreeNodeRef> dag{scoreWinner, scoreLoser, child};
     const auto scores = GetDagScores(dag);
     BOOST_REQUIRE(scoreWinner->hash > scoreLoser->hash);
     BOOST_REQUIRE(scores.at(scoreWinner) > scores.at(scoreLoser));
@@ -320,9 +323,8 @@ BOOST_AUTO_TEST_CASE(double_spend_prefers_dag_score)
     CDagConflictRegistry registry;
     BOOST_CHECK(!registry.ScanSpends(scoreWinner, true));
     BOOST_CHECK(!registry.ScanSpends(scoreLoser, true));
-    BOOST_REQUIRE_EQUAL(registry.GroupCount(), 1);
     std::set<uint256> losers;
-    const std::set<uint256> exclusions = GetTxnExclusionSet(dag, registry, nullptr, &losers);
+    const std::set<uint256> exclusions = GetTxnExclusionSet(SortTestDag(dag), nullptr, &losers);
 
     BOOST_CHECK_EQUAL(losers.count(winnerTx->GetId()), 0);
     BOOST_CHECK_EQUAL(losers.count(loserTx->GetId()), 1);
@@ -360,7 +362,7 @@ BOOST_AUTO_TEST_CASE(double_spend_changes_after_join)
     nodeB->dagHeight = 1;
     LinkTestTreeNodes(nodeA, join);
     LinkTestTreeNodes(nodeB, join);
-    std::set<CTreeNodeRef> dag{nodeA, nodeB, join};
+    std::vector<CTreeNodeRef> dag{nodeA, nodeB, join};
     const auto before = GetDagScores(dag);
     BOOST_REQUIRE_EQUAL(before.at(initialWinner), 2);
     BOOST_REQUIRE_EQUAL(before.at(initialLoser), 2);
@@ -369,18 +371,17 @@ BOOST_AUTO_TEST_CASE(double_spend_changes_after_join)
     CDagConflictRegistry registry;
     BOOST_CHECK(!registry.ScanSpends(nodeA, true));
     BOOST_CHECK(!registry.ScanSpends(nodeB, true));
-    BOOST_REQUIRE_EQUAL(registry.GroupCount(), 1);
-    const auto initialExclusions = GetTxnExclusionSet(dag, registry);
+    const auto initialExclusions = GetTxnExclusionSet(SortTestDag(dag));
     BOOST_CHECK_EQUAL(initialExclusions.size(), 1);
     BOOST_CHECK_EQUAL(initialExclusions.count(winnerTx->GetId()), 0);
     BOOST_CHECK_EQUAL(initialExclusions.count(loserTx->GetId()), 1);
 
     LinkTestTreeNodes(initialLoser, side);
-    dag.insert(side);
+    dag.push_back(side);
     const auto after = GetDagScores(dag);
     BOOST_REQUIRE_EQUAL(after.at(initialWinner), 2);
     BOOST_REQUIRE_EQUAL(after.at(initialLoser), 3);
-    const auto finalExclusions = GetTxnExclusionSet(dag, registry);
+    const auto finalExclusions = GetTxnExclusionSet(SortTestDag(dag));
     BOOST_CHECK_EQUAL(finalExclusions.size(), 1);
     BOOST_CHECK_EQUAL(finalExclusions.count(winnerTx->GetId()), 1);
     BOOST_CHECK_EQUAL(finalExclusions.count(loserTx->GetId()), 0);
@@ -402,7 +403,7 @@ BOOST_AUTO_TEST_CASE(double_spend_uses_hash_tiebreak)
     const CTreeNodeRef loser = winner == nodeA ? nodeB : nodeA;
     const CTransactionRef winnerTx = winner == nodeA ? txA : txB;
     const CTransactionRef loserTx = winner == nodeA ? txB : txA;
-    const std::set<CTreeNodeRef> dag{nodeA, nodeB};
+    const std::vector<CTreeNodeRef> dag{nodeA, nodeB};
     const auto scores = GetDagScores(dag);
     BOOST_REQUIRE_EQUAL(scores.at(nodeA), scores.at(nodeB));
 
@@ -410,9 +411,8 @@ BOOST_AUTO_TEST_CASE(double_spend_uses_hash_tiebreak)
     CDagConflictRegistry registry;
     BOOST_CHECK(!registry.ScanSpends(winner, true));
     BOOST_CHECK(!registry.ScanSpends(loser, true));
-    BOOST_REQUIRE_EQUAL(registry.GroupCount(), 1);
     std::set<uint256> losers;
-    const std::set<uint256> exclusions = GetTxnExclusionSet(dag, registry, nullptr, &losers);
+    const std::set<uint256> exclusions = GetTxnExclusionSet(SortTestDag(dag), nullptr, &losers);
 
     BOOST_CHECK_EQUAL(losers.count(winnerTx->GetId()), 0);
     BOOST_CHECK_EQUAL(losers.count(loserTx->GetId()), 1);
@@ -433,7 +433,7 @@ BOOST_AUTO_TEST_CASE(double_spend_uses_max_subblock_score)
     const CTreeNodeRef repeatedTxGrandchild = MakeTestTreeNode(9);
     const CTreeNodeRef competingTxNode = MakeTestTransactionNode(competingTx, 10);
     const CTreeNodeRef competingTxChild = MakeTestTreeNode(11);
-    const std::set<CTreeNodeRef> dag{repeatedTxNodeA, repeatedTxNodeB, repeatedTxChild, repeatedTxGrandchild,
+    const std::vector<CTreeNodeRef> dag{repeatedTxNodeA, repeatedTxNodeB, repeatedTxChild, repeatedTxGrandchild,
         competingTxNode, competingTxChild};
     const std::set<CTreeNodeRef> repeatedTxNodes{repeatedTxNodeA, repeatedTxNodeB};
     const CTreeNodeRef firstRepeatedTxNode = *repeatedTxNodes.begin();
@@ -462,9 +462,8 @@ BOOST_AUTO_TEST_CASE(double_spend_uses_max_subblock_score)
         BOOST_CHECK(!registry.ScanSpends(repeatedTxNodeA, true));
         BOOST_CHECK(!registry.ScanSpends(repeatedTxNodeB, true));
         BOOST_CHECK(!registry.ScanSpends(competingTxNode, true));
-        BOOST_REQUIRE_EQUAL(registry.GroupCount(), 1);
         std::set<uint256> losers;
-        const std::set<uint256> exclusions = GetTxnExclusionSet(dag, registry, nullptr, &losers);
+        const std::set<uint256> exclusions = GetTxnExclusionSet(SortTestDag(dag), nullptr, &losers);
 
         BOOST_CHECK_EQUAL(losers.count(repeatedTx->GetId()), 0);
         BOOST_CHECK_EQUAL(losers.count(competingTx->GetId()), 1);
@@ -494,7 +493,7 @@ BOOST_AUTO_TEST_CASE(exclusion_set_excludes_loser_descendants)
     nodeLose->dagHeight = 1;
     nodeLoseChild->dagHeight = 1;
     LinkTestTreeNodes(nodeWin, nodeWinChild);
-    const std::set<CTreeNodeRef> dag{nodeWin, nodeLose, nodeWinChild, nodeLoseChild};
+    const std::vector<CTreeNodeRef> dag{nodeWin, nodeLose, nodeWinChild, nodeLoseChild};
     const auto scores = GetDagScores(dag);
     BOOST_REQUIRE(scores.at(nodeWin) > scores.at(nodeLose));
 
@@ -504,9 +503,8 @@ BOOST_AUTO_TEST_CASE(exclusion_set_excludes_loser_descendants)
     BOOST_CHECK(!registry.ScanSpends(nodeLose, true));
     BOOST_CHECK(!registry.ScanSpends(nodeWinChild, true));
     BOOST_CHECK(!registry.ScanSpends(nodeLoseChild, true));
-    BOOST_REQUIRE_EQUAL(registry.GroupCount(), 1);
     std::set<uint256> losers;
-    const std::set<uint256> exclusions = GetTxnExclusionSet(dag, registry, nullptr, &losers);
+    const std::set<uint256> exclusions = GetTxnExclusionSet(SortTestDag(dag), nullptr, &losers);
 
     BOOST_CHECK_EQUAL(losers.size(), 1);
     BOOST_CHECK_EQUAL(losers.count(txLose->GetId()), 1);
@@ -529,172 +527,24 @@ BOOST_AUTO_TEST_CASE(exclusion_set_ignores_sequence_order)
     nodeChild->dagHeight = 1;
     nodeChild->nSequenceId = 1;
     nodeParent->nSequenceId = 2;
-    const std::set<CTreeNodeRef> dag{nodeParent, nodeChild};
+    const std::vector<CTreeNodeRef> dag{nodeParent, nodeChild};
 
     LOCK(tailstormForest.cs_forest);
     CDagConflictRegistry registry;
     BOOST_CHECK(!registry.ScanSpends(nodeParent, true));
     BOOST_CHECK(!registry.ScanSpends(nodeChild, true));
-    BOOST_REQUIRE_EQUAL(registry.GroupCount(), 0);
     std::set<uint256> losers;
-    const std::set<uint256> exclusions = GetTxnExclusionSet(dag, registry, nullptr, &losers);
+    const std::set<uint256> exclusions = GetTxnExclusionSet(SortTestDag(dag), nullptr, &losers);
 
     BOOST_CHECK(losers.empty());
     BOOST_CHECK(exclusions.empty());
 }
 
-BOOST_AUTO_TEST_CASE(retry_verdict_marks_subblocks_bad)
-{
-    // A transaction omitted at insert for a missing input is validated when that input is
-    // applied. An invalid one marks every subblock containing it for removal and leaves the
-    // index; a valid one is applied; one still short of another input goes back on the index
-    // under its subblock.
-    PreviousEpochTestChain chain(&coinsCache, 60, 61);
-    TestTailstormTree tree;
-    tree.SetSummaryRoot(&chain.previousSummary);
-    tree.SetSummaryRootCoins(&coinsCache);
-    CCoinsViewCache tcoins(&coinsCache);
-    const int height = chain.previousSummary.height() + 1;
-
-    // The parent creates three outputs. A bare script that OP_0 satisfies keeps the valid
-    // spend free of signatures.
-    const CScript spendable = CScript() << 2 << OP_ADD << 0 << OP_GREATERTHAN;
-    CMutableTransaction parent;
-    parent.vin.emplace_back(COutPoint(MakeTestTreeNode(62)->hash, 0), 3000);
-    for (int i = 0; i < 3; i++)
-        parent.vout.emplace_back(1000, spendable);
-    const CTransactionRef parentTx = MakeTransactionRef(parent);
-    AddCoins(tcoins, *parentTx, height);
-
-    auto makeChild = [&](unsigned int parentOutput, CAmount claimed, unsigned char tag, bool extraInput)
-    {
-        CMutableTransaction tx;
-        tx.vin.emplace_back(parentTx->OutpointAt(parentOutput), claimed);
-        tx.vin.back().scriptSig = CScript() << OP_0;
-        if (extraInput)
-            tx.vin.emplace_back(COutPoint(MakeTestTreeNode(tag)->hash, 0), 1);
-        tx.vout.emplace_back(500, CScript() << OP_RETURN << tag);
-        return MakeTransactionRef(tx);
-    };
-    // Claims more than the output holds: input-amount-mismatch, REJECT_INVALID.
-    const CTransactionRef invalidTx = makeChild(0, 1001, 70, false);
-    const CTransactionRef validTx = makeChild(1, 1000, 71, false);
-    const CTransactionRef waitingTx = makeChild(2, 1000, 72, true);
-
-    const uint256 subblockA = MakeTestTreeNode(63)->hash;
-    const uint256 subblockB = MakeTestTreeNode(64)->hash;
-
-    LOCK(tailstormForest.cs_forest);
-    tree.IndexMissing(invalidTx, subblockA);
-    tree.IndexMissing(invalidTx, subblockB);
-    tree.IndexMissing(validTx, subblockA);
-    tree.IndexMissing(waitingTx, subblockB);
-
-    tree.Retry(parentTx, tcoins);
-
-    // Invalid: both subblocks marked, not applied, not re-indexed, output untouched.
-    BOOST_CHECK_EQUAL(tree.BadSubblocks().size(), 2);
-    BOOST_CHECK_EQUAL(tree.BadSubblocks().count(subblockA), 1);
-    BOOST_CHECK_EQUAL(tree.BadSubblocks().count(subblockB), 1);
-    BOOST_CHECK(!tree.HasDagTx(invalidTx->GetId()));
-    BOOST_CHECK(tcoins.HaveCoin(parentTx->OutpointAt(0)));
-    BOOST_CHECK(tree.TakeWaiting(parentTx->OutpointAt(0)).empty());
-
-    // Valid: applied.
-    BOOST_CHECK(tree.HasDagTx(validTx->GetId()));
-    BOOST_CHECK(!tcoins.HaveCoin(parentTx->OutpointAt(1)));
-
-    // Waiting: back on the index under its subblock, nothing applied.
-    BOOST_CHECK(!tree.HasDagTx(waitingTx->GetId()));
-    BOOST_CHECK(tcoins.HaveCoin(parentTx->OutpointAt(2)));
-    const auto waiting = tree.TakeWaiting(parentTx->OutpointAt(2));
-    BOOST_REQUIRE_EQUAL(waiting.size(), 1);
-    BOOST_CHECK(waiting[0].first->GetId() == waitingTx->GetId());
-    BOOST_CHECK_EQUAL(waiting[0].second.count(subblockB), 1);
-}
-
-BOOST_AUTO_TEST_CASE(retry_uses_epoch_height)
-{
-    // Child-first replay must accept sequence-zero spends at H+1 and record outputs there,
-    // just like parent-first validation, including recursively retried descendants.
-    PreviousEpochTestChain chain(&coinsCache, 73, 74);
-    TestTailstormTree tree;
-    tree.SetSummaryRoot(&chain.previousSummary);
-    tree.SetSummaryRootCoins(&coinsCache);
-    CCoinsViewCache replayCoins(&coinsCache);
-    const int height = chain.previousSummary.height() + 1;
-    const CScript spendable = CScript() << 2 << OP_ADD << 0 << OP_GREATERTHAN;
-
-    CMutableTransaction parent;
-    parent.vin.emplace_back(COutPoint(MakeTestTreeNode(75)->hash, 0), 1000);
-    parent.vout.emplace_back(1000, spendable);
-    const CTransactionRef parentTx = MakeTransactionRef(parent);
-
-    CMutableTransaction child;
-    child.vin.emplace_back(parentTx->OutpointAt(0), 1000);
-    child.vin[0].scriptSig = CScript() << OP_0;
-    child.vin[0].nSequence = 0;
-    child.vout.emplace_back(450, spendable);
-    child.vout.emplace_back(450, spendable);
-    const CTransactionRef childTx = MakeTransactionRef(child);
-
-    CMutableTransaction grandchild;
-    grandchild.vin.emplace_back(childTx->OutpointAt(0), 450);
-    grandchild.vin[0].scriptSig = CScript() << OP_0;
-    grandchild.vin[0].nSequence = 0;
-    grandchild.vout.emplace_back(400, spendable);
-    const CTransactionRef grandchildTx = MakeTransactionRef(grandchild);
-
-    LOCK(tailstormForest.cs_forest);
-    tree.IndexMissing(grandchildTx, MakeTestTreeNode(76)->hash);
-    tree.IndexMissing(childTx, MakeTestTreeNode(77)->hash);
-    tree.Retry(parentTx, replayCoins);
-    BOOST_CHECK(!tree.HasDagTx(childTx->GetId()));
-    BOOST_CHECK(!tree.HasDagTx(grandchildTx->GetId()));
-    BOOST_CHECK(tree.BadSubblocks().empty());
-
-    // Establish the parent-first result with both spends validated in the same epoch.
-    CCoinsViewCache orderedCoins(&coinsCache);
-    AddCoins(orderedCoins, *parentTx, height);
-    CBlockHeader epochHeader;
-    epochHeader.height = height;
-    CBlockIndex epoch(epochHeader);
-    epoch.pprev = &chain.previousSummary;
-    for (const auto &tx : {childTx, grandchildTx})
-    {
-        CValidationState state;
-        BOOST_REQUIRE(CheckTxFinalAndInputs(tx, state, orderedCoins, coinsCache, epoch, Params(), true, true, false));
-        UpdateCoins(*tx, orderedCoins, height);
-    }
-
-    AddCoins(replayCoins, *parentTx, height);
-    tree.Retry(parentTx, replayCoins);
-    BOOST_CHECK(tree.BadSubblocks().empty());
-    BOOST_REQUIRE(tree.HasDagTx(childTx->GetId()));
-    BOOST_REQUIRE(tree.HasDagTx(grandchildTx->GetId()));
-    BOOST_CHECK(tree.TakeWaiting(parentTx->OutpointAt(0)).empty());
-    BOOST_CHECK(tree.TakeWaiting(childTx->OutpointAt(0)).empty());
-    BOOST_CHECK(!replayCoins.HaveCoin(parentTx->OutpointAt(0)));
-    BOOST_CHECK(!replayCoins.HaveCoin(childTx->OutpointAt(0)));
-
-    for (const auto &outpoint : {childTx->OutpointAt(1), grandchildTx->OutpointAt(0)})
-    {
-        Coin replayCoin;
-        Coin orderedCoin;
-        BOOST_REQUIRE(replayCoins.GetCoin(outpoint, replayCoin));
-        BOOST_REQUIRE(orderedCoins.GetCoin(outpoint, orderedCoin));
-        BOOST_CHECK(replayCoin.out == orderedCoin.out);
-        BOOST_CHECK_EQUAL(replayCoin.height(), height);
-        BOOST_CHECK_EQUAL(replayCoin.height(), orderedCoin.height());
-        BOOST_CHECK(!coinsCache.HaveCoin(outpoint));
-    }
-}
-
 BOOST_AUTO_TEST_CASE(regeneration_renumbers_after_bad_subblock_removal)
 {
     // k+1 subblocks against k-1 slots: the first k-1 are processed, the last two are held past
-    // the cap. Removing a bad subblock at regeneration must leave the remaining sequence ids
-    // dense across processed and held nodes alike, which Check() asserts.
+    // the cap. Removing a bad subblock, and the regeneration that follows, must leave the remaining
+    // sequence ids dense across processed and held nodes alike, which Check() asserts.
     const uint32_t tailstormK = Params().GetConsensus().tailstorm_k;
     BOOST_REQUIRE(tailstormK >= 3);
     PreviousEpochTestChain chain(&coinsCache, 90, 91);
@@ -707,21 +557,23 @@ BOOST_AUTO_TEST_CASE(regeneration_renumbers_after_bad_subblock_removal)
         BOOST_REQUIRE(tailstormForest.Insert(subblocks.back()));
     }
 
-    std::set<CTreeNodeRef> bestDag;
+    std::vector<CTreeNodeRef> bestDag;
     CTailstormTreeRef tree;
     BOOST_REQUIRE(tailstormForest.GetBestDagFor(chain.previousHash, bestDag, &tree));
     BOOST_REQUIRE(tree);
     BOOST_REQUIRE_EQUAL(bestDag.size(), tailstormK - 1);
-    std::set<CTreeNodeRef> fullDag;
+    std::vector<CTreeNodeRef> fullDag;
     BOOST_REQUIRE(tailstormForest.GetFullDagFor(chain.previousHash, fullDag));
     BOOST_REQUIRE_EQUAL(fullDag.size(), tailstormK + 1);
 
     CTailstormGroveRef grove;
     BOOST_REQUIRE(tailstormForest.GetGrove(subblocks[0]->GetHash(), grove));
-    CTailstormForestTest::MarkSubblockBad(*tree, subblocks[0]->GetHash());
+    // A subblock found bad is removed from the grove, and the dag regenerated.
     {
         LOCK(tailstormForest.cs_forest);
         TxAdmissionPause pause;
+        uint256 badHash = subblocks[0]->GetHash();
+        BOOST_REQUIRE(tailstormForest.Remove(badHash));
         tailstormForest.ReGenerateDagData(grove);
     }
 
@@ -730,16 +582,16 @@ BOOST_AUTO_TEST_CASE(regeneration_renumbers_after_bad_subblock_removal)
     BOOST_CHECK_EQUAL(fullDag.size(), tailstormK);
     BOOST_CHECK(!FindTestNode(fullDag, subblocks[0]->GetHash()));
 
-    std::vector<CTreeNodeRef> bySequence(fullDag.begin(), fullDag.end());
-    std::sort(bySequence.begin(), bySequence.end(),
-        [](const CTreeNodeRef &a, const CTreeNodeRef &b) { return a->nSequenceId < b->nSequenceId; });
+    // The full dag comes back in nSequenceId order. None of these subblocks has a parent or child,
+    // so they score the same and dag order is hash order; the first tailstorm_k - 1 are processed.
+    const std::vector<CTreeNodeRef> &bySequence = fullDag;
     for (size_t i = 0; i < bySequence.size(); ++i)
     {
         BOOST_CHECK_EQUAL(bySequence[i]->nSequenceId, i + 1);
         BOOST_CHECK_EQUAL(bySequence[i]->fProcessed, i < tailstormK - 1);
+        if (i > 0)
+            BOOST_CHECK(bySequence[i - 1]->hash < bySequence[i]->hash);
     }
-    // Arrival order is kept: the node that was held past the cap is now the last processed one.
-    BOOST_CHECK(bySequence[tailstormK - 2]->hash == subblocks[tailstormK - 1]->GetHash());
 
     // The predecessor lookup has no grove behind it; Check() walks real groves only.
     CTailstormForestTest::RemoveGroveLookup(tailstormForest, chain.olderHash);
@@ -805,249 +657,18 @@ static ConstCBlockRef MakeLowerHashSubblock(
     return nullptr;
 }
 
-BOOST_AUTO_TEST_CASE(regeneration_retries_cross_branch_spend)
+// A subblock carrying txs whose hash is above that of rival, so it loses a tie on score.
+static ConstCBlockRef MakeHigherHashSubblock(
+    const CBlockIndex &summaryRoot, const ConstCBlockRef &rival, const std::vector<CTransactionRef> &txs)
 {
-    // Subblock ancestry (parent -> child):
-    //             +--> A[p]
-    // Summary ----+
-    //             +--> B[c]
-    // Uppercase names are subblocks; lowercase names in brackets are transactions.
-    //
-    // A carries p, which spends a summary-root coin. B carries c, which spends p's
-    // output, but B does not reference A. Insert B first, then A, and regenerate
-    // in both sequence orders. Both transactions must apply, leaving only c's output.
-    DoubleSpendTestCoin coin(coinsCache);
-    const CBlockIndex &summary = coin.chain.previousSummary;
-    const CTransactionRef provider = coin.SpendCoin(800);
-    const CTransactionRef spender = coin.Spend(provider->OutpointAt(0), 800, 400);
-    const ConstCBlockRef providerBlock = MakeTestSubblock(summary, {}, 95, {provider});
-    const ConstCBlockRef spenderBlock = MakeTestSubblock(summary, {}, 96, {spender});
-
-    // Accept the spender's subblock before its input exists; the transaction must wait.
-    BOOST_REQUIRE(tailstormForest.Insert(spenderBlock));
-    std::set<CTreeNodeRef> bestDag;
-    CTailstormTreeRef tree;
-    BOOST_REQUIRE(tailstormForest.GetBestDagFor(coin.chain.previousHash, bestDag, &tree));
+    for (unsigned nonce = 96; nonce < 256; nonce++)
     {
-        LOCK(tailstormForest.cs_forest);
-        BOOST_CHECK(!CTailstormForestTest::HasDagTx(*tree, spender->GetId()));
+        ConstCBlockRef block = MakeTestSubblock(summaryRoot, {}, (unsigned char)nonce, txs);
+        if (rival->GetHash() < block->GetHash())
+            return block;
     }
-    BOOST_REQUIRE(tailstormForest.Insert(providerBlock));
-
-    std::set<CTreeNodeRef> fullDag;
-    BOOST_REQUIRE(tailstormForest.GetFullDagFor(coin.chain.previousHash, fullDag));
-    BOOST_REQUIRE_EQUAL(fullDag.size(), 2u);
-    const CTreeNodeRef providerNode = FindTestNode(fullDag, providerBlock->GetHash());
-    const CTreeNodeRef spenderNode = FindTestNode(fullDag, spenderBlock->GetHash());
-    BOOST_REQUIRE(providerNode);
-    BOOST_REQUIRE(spenderNode);
-    CTailstormGroveRef grove;
-    BOOST_REQUIRE(tailstormForest.GetGrove(coin.chain.previousHash, grove));
-
-    LOCK(tailstormForest.cs_forest);
-    TxAdmissionPause pause;
-    // The dependency is between transactions, not between subblock headers.
-    BOOST_CHECK(providerNode->setAncestors.empty());
-    BOOST_CHECK(spenderNode->setAncestors.empty());
-    BOOST_CHECK_EQUAL(providerNode->dagHeight, 1u);
-    BOOST_CHECK_EQUAL(spenderNode->dagHeight, 1u);
-    BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, provider->GetId()));
-    BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, spender->GetId()));
-
-    // Regeneration clears the DAG view, so neither order can reuse the insertion result.
-    Coin parentFirstCoin;
-    for (const bool childFirst : {false, true})
-    {
-        BOOST_TEST_CONTEXT("child first=" << childFirst)
-        {
-            providerNode->nSequenceId = childFirst ? 2 : 1;
-            spenderNode->nSequenceId = childFirst ? 1 : 2;
-            tailstormForest.ReGenerateDagData(grove);
-
-            BOOST_CHECK(providerNode->fProcessed);
-            BOOST_CHECK(spenderNode->fProcessed);
-            // Recover the spend by retrying, not by changing the requested sequence order.
-            BOOST_CHECK_EQUAL(providerNode->nSequenceId, childFirst ? 2u : 1u);
-            BOOST_CHECK_EQUAL(spenderNode->nSequenceId, childFirst ? 1u : 2u);
-            BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, provider->GetId()));
-            BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, spender->GetId()));
-            // Both inputs must be spent; only the spender's output should remain.
-            CCoinsViewCache &view = CTailstormForestTest::CoinsView(*tree);
-            BOOST_CHECK(!view.HaveCoin(coin.parentTx->OutpointAt(0)));
-            BOOST_CHECK(!view.HaveCoin(provider->OutpointAt(0)));
-            Coin result;
-            BOOST_REQUIRE(view.GetCoin(spender->OutpointAt(0), result));
-            BOOST_CHECK(result.out == spender->vout[0]);
-            BOOST_CHECK_EQUAL(result.height(), coin.height);
-            if (!childFirst)
-                parentFirstCoin = result;
-            else
-            {
-                BOOST_CHECK(result.out == parentFirstCoin.out);
-                BOOST_CHECK_EQUAL(result.height(), parentFirstCoin.height());
-            }
-            // Applying DAG transactions must not change the summary-root coins.
-            BOOST_CHECK(coinsCache.HaveCoin(coin.parentTx->OutpointAt(0)));
-            BOOST_CHECK(!coinsCache.HaveCoin(provider->OutpointAt(0)));
-            BOOST_CHECK(!coinsCache.HaveCoin(spender->OutpointAt(0)));
-        }
-    }
-}
-
-static void CheckCrossBranchRegeneration(CCoinsViewCache &coinsCache, size_t spenderBranchLength)
-{
-    // Temporarily set K=8 so both cases fit; the unequal branches fill all seven slots.
-    // The destructor restores the saved value on scope exit, including test failures.
-    struct ScopedTailstormK
-    {
-        uint32_t &value = ModifiableParams().GetModifiableConsensus().tailstorm_k;
-        const uint32_t saved = value;
-        ScopedTailstormK() { value = 8; }
-        ~ScopedTailstormK() { value = saved; }
-    } tailstormK;
-    DoubleSpendTestCoin coin(coinsCache);
-    // p spends a summary-root coin, c spends p's output, and d spends c's.
-    // A2 carries p; B2 carries c; the last subblock on branch B carries d.
-    const CTransactionRef provider = coin.SpendCoin(800);
-    const CTransactionRef child = coin.Spend(provider->OutpointAt(0), 800, 600);
-    const CTransactionRef grandchild = coin.Spend(child->OutpointAt(0), 600, 400);
-    const auto insert =
-        [&](const std::set<CTreeNodeRef> &parents, unsigned char nonce, const std::vector<CTransactionRef> &txs)
-    {
-        const ConstCBlockRef block = MakeTestSubblock(coin.chain.previousSummary, parents, nonce, txs);
-        BOOST_REQUIRE(tailstormForest.Insert(block));
-        std::set<CTreeNodeRef> dag;
-        BOOST_REQUIRE(tailstormForest.GetFullDagFor(coin.chain.previousHash, dag));
-        const CTreeNodeRef node = FindTestNode(dag, block->GetHash());
-        BOOST_REQUIRE(node);
-        return node;
-    };
-
-    // Insert the subblocks carrying c and d before p's, exercising chained missing-input retries.
-    unsigned char nonce = 95;
-    std::vector<CTreeNodeRef> branchB;
-    for (size_t i = 0; i < spenderBranchLength; ++i)
-    {
-        std::set<CTreeNodeRef> parents;
-        if (!branchB.empty())
-            parents.insert(branchB.back());
-        std::vector<CTransactionRef> txs;
-        if (i == 1)
-            txs.push_back(child);
-        // Put d at the branch tip so the unequal case spans an extra subblock.
-        if (i + 1 == spenderBranchLength)
-            txs.push_back(grandchild);
-        branchB.push_back(insert(parents, nonce++, txs));
-    }
-    const CTreeNodeRef a1 = insert({}, nonce++, {});
-    const CTreeNodeRef a2 = insert({a1}, nonce++, {provider});
-    const CTreeNodeRef a3 = insert({a2}, nonce++, {});
-    const std::vector<CTreeNodeRef> branchA{a1, a2, a3};
-    CTailstormGroveRef grove;
-    BOOST_REQUIRE(tailstormForest.GetGrove(coin.chain.previousHash, grove));
-    std::set<CTreeNodeRef> dag;
-    CTailstormTreeRef tree;
-    BOOST_REQUIRE(tailstormForest.GetBestDagFor(coin.chain.previousHash, dag, &tree));
-    BOOST_REQUIRE_EQUAL(dag.size(), branchA.size() + branchB.size());
-
-    LOCK(tailstormForest.cs_forest);
-    TxAdmissionPause pause;
-    // Each node names only its direct parent; the two branches must stay separate.
-    for (const auto &branch : {branchA, branchB})
-    {
-        for (size_t i = 0; i < branch.size(); ++i)
-        {
-            BOOST_CHECK_EQUAL(branch[i]->dagHeight, i + 1);
-            BOOST_CHECK_EQUAL(branch[i]->setAncestors.size(), i == 0 ? 0u : 1u);
-            if (i > 0)
-                BOOST_CHECK(branch[i]->setAncestors.count(branch[i - 1]));
-        }
-    }
-    for (const auto &tx : {provider, child, grandchild})
-        BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, tx->GetId()));
-
-    // Keep subblock ancestors first, even when transaction providers come later.
-    std::vector<std::vector<CTreeNodeRef> > orders{branchA, branchB, {}};
-    orders[0].insert(orders[0].end(), branchB.begin(), branchB.end());
-    orders[1].insert(orders[1].end(), branchA.begin(), branchA.end());
-    // Alternate branches, then finish the longer one without dropping its final node.
-    for (size_t i = 0; i < std::max(branchA.size(), branchB.size()); ++i)
-    {
-        if (i < branchB.size())
-            orders[2].push_back(branchB[i]);
-        if (i < branchA.size())
-            orders[2].push_back(branchA[i]);
-    }
-    Coin providerFirstCoin;
-    for (size_t order = 0; order < orders.size(); ++order)
-    {
-        BOOST_TEST_CONTEXT("replay order=" << order)
-        {
-            const auto &nodes = orders[order];
-            for (size_t i = 0; i < nodes.size(); ++i)
-                nodes[i]->nSequenceId = i + 1;
-            // Rebuild from summary-root coins rather than reusing the insertion view.
-            tailstormForest.ReGenerateDagData(grove);
-
-            for (size_t i = 0; i < nodes.size(); ++i)
-            {
-                BOOST_CHECK(nodes[i]->fProcessed);
-                BOOST_CHECK_EQUAL(nodes[i]->nSequenceId, i + 1);
-            }
-            for (const auto &tx : {provider, child, grandchild})
-                BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, tx->GetId()));
-            // Only d's output survives once p, c and d have all been applied.
-            CCoinsViewCache &view = CTailstormForestTest::CoinsView(*tree);
-            for (const auto &tx : {coin.parentTx, provider, child})
-                BOOST_CHECK(!view.HaveCoin(tx->OutpointAt(0)));
-            Coin result;
-            BOOST_REQUIRE(view.GetCoin(grandchild->OutpointAt(0), result));
-            BOOST_CHECK(result.out == grandchild->vout[0]);
-            BOOST_CHECK_EQUAL(result.height(), coin.height);
-            if (order == 0)
-                providerFirstCoin = result;
-            else
-            {
-                BOOST_CHECK(result.out == providerFirstCoin.out);
-                BOOST_CHECK_EQUAL(result.height(), providerFirstCoin.height());
-            }
-            // The rebuilt DAG must not spend coins in its summary-root backend.
-            BOOST_CHECK(coinsCache.HaveCoin(coin.parentTx->OutpointAt(0)));
-            for (const auto &tx : {provider, child, grandchild})
-                BOOST_CHECK(!coinsCache.HaveCoin(tx->OutpointAt(0)));
-        }
-    }
-}
-
-BOOST_AUTO_TEST_CASE(regeneration_retries_longer_branches)
-{
-    // Subblock ancestry (parent -> child):
-    //             +--> A1 --> A2[p] --> A3
-    // Summary ----+
-    //             +--> B1 --> B2[c] --> B3[d]
-    // Uppercase names are subblocks; lowercase names in brackets are transactions.
-    //
-    // p spends a summary-root coin; c spends p's output; d spends c's output.
-    // The branches have no subblock ancestry link. Insert branch B before A,
-    // then regenerate A-first, B-first and interleaved. Each order must apply
-    // all three transactions and leave only d's output.
-    CheckCrossBranchRegeneration(coinsCache, 3);
-}
-
-BOOST_AUTO_TEST_CASE(regeneration_retries_unequal_branches)
-{
-    // Subblock ancestry (parent -> child):
-    //             +--> A1 --> A2[p] --> A3
-    // Summary ----+
-    //             +--> B1 --> B2[c] --> B3 --> B4[d]
-    // Uppercase names are subblocks; lowercase names in brackets are transactions.
-    //
-    // p spends a summary-root coin; c spends p's output; d spends c's output.
-    // The branches have no subblock ancestry link, and B3 adds a step between
-    // c's and d's subblocks. Insert B before A, then regenerate A-first, B-first
-    // and interleaved. All seven subblocks must remain selected, with p, c and d
-    // applied and only d's output left in every order.
-    CheckCrossBranchRegeneration(coinsCache, 4);
+    BOOST_FAIL("no nonce gives a higher hash");
+    return nullptr;
 }
 
 BOOST_AUTO_TEST_CASE(winner_flip_evicts_pool_dependents_at_regeneration)
@@ -1131,11 +752,11 @@ BOOST_AUTO_TEST_CASE(loser_descendant_chain_evicts_pool_dependents)
 BOOST_AUTO_TEST_CASE(applied_rival_evicts_pool_dependents_of_a_displaced_transaction)
 {
     // Two sibling subblocks spend the same coin and the lower-hash one wins, so its transaction L
-    // is applied and a pool child C of L is admissible. A late previous-epoch subblock then
-    // becomes an uncle. Uncles take the summary slots first, so the losing-side subblock leaves
-    // the selection: at the next regeneration its rival W is the only spender present, no loser is
-    // recorded, and W is applied. L cannot be applied while W spends its input, so C has lost its
-    // input and must leave the pool.
+    // is applied and a pool child C of L is admissible. A third sibling F sorts last. A late
+    // previous-epoch subblock then becomes an uncle, and the insert that adopts it is a child of W,
+    // which moves W ahead of L in dag order. Uncles take the summary slots first, so F and L leave
+    // the selection and W is applied. L cannot be applied while W spends its input, so C has lost
+    // its input and must leave the pool.
     const uint32_t tailstormK = Params().GetConsensus().tailstorm_k;
     BOOST_REQUIRE_EQUAL(tailstormK, 4u);
     PreviousEpochTestChain chain(&coinsCache, 30, 31);
@@ -1143,16 +764,16 @@ BOOST_AUTO_TEST_CASE(applied_rival_evicts_pool_dependents_of_a_displaced_transac
 
     // Previous epoch: k-1 committed subblocks and a late child of one of them.
     std::vector<ConstCBlockRef> existingSubblocks;
-    std::set<CTreeNodeRef> summarySubblocks;
+    std::vector<CTreeNodeRef> summarySubblocks;
     for (uint32_t i = 0; i < tailstormK - 2; ++i)
     {
         ConstCBlockRef subblock = MakeTestSubblock(chain.previousSummary, {}, static_cast<unsigned char>(40 + i));
         existingSubblocks.push_back(subblock);
-        summarySubblocks.insert(MakeTreeNodeRef(subblock));
+        summarySubblocks.push_back(MakeTreeNodeRef(subblock));
     }
     ConstCBlockRef parent = MakeTestSubblock(chain.previousSummary, {}, 60);
     CTreeNodeRef parentNode = MakeTreeNodeRef(parent);
-    summarySubblocks.insert(parentNode);
+    summarySubblocks.push_back(parentNode);
     ConstCBlockRef lateChild = MakeTestSubblock(chain.previousSummary, {parentNode}, 61);
 
     std::vector<uint8_t> currentMinerData = GenerateMinerData(tailstormK, summarySubblocks, chain.olderHash);
@@ -1191,20 +812,37 @@ BOOST_AUTO_TEST_CASE(applied_rival_evicts_pool_dependents_of_a_displaced_transac
     const CTransactionRef txW = spend(parentTx->OutpointAt(0), 1000, 500);
     const CTransactionRef txL = spend(parentTx->OutpointAt(0), 1000, 400);
 
-    // Current epoch, in arrival order: F, then B_W, then B_L with the lower hash so L wins.
-    const ConstCBlockRef blockF = MakeTestSubblock(currentSummary, {}, 70);
+    // An unrelated coin and a dummy spend of it, so F carries a tx of its own that conflicts with nothing.
+    CMutableTransaction dummyCoinTx;
+    dummyCoinTx.vin.emplace_back(COutPoint(MakeTestTreeNode(95)->hash, 0), 2000);
+    dummyCoinTx.vout.emplace_back(1000, testSpendable);
+    const CTransactionRef dummyParentTx = MakeTransactionRef(dummyCoinTx);
+    AddCoins(coinsCache, *dummyParentTx, height);
+    const CTransactionRef txF = spend(dummyParentTx->OutpointAt(0), 1000, 300);
+
+    // Three sibling roots of equal score, so dag order is hash order: L < W < F. All three fit in the
+    // k - 1 places, L comes before W and so wins the double spend, and F is the last selected.
     const ConstCBlockRef blockW = MakeTestSubblock(currentSummary, {}, 71, {txW});
     const ConstCBlockRef blockL = MakeLowerHashSubblock(currentSummary, blockW, {txL});
+    const ConstCBlockRef blockF = MakeHigherHashSubblock(currentSummary, blockW, {txF});
     BOOST_REQUIRE(tailstormForest.Insert(blockF));
     BOOST_REQUIRE(tailstormForest.Insert(blockW));
     BOOST_REQUIRE(tailstormForest.Insert(blockL));
 
-    std::set<CTreeNodeRef> bestDag;
+    std::vector<CTreeNodeRef> bestDag;
     CTailstormTreeRef tree;
     BOOST_REQUIRE(tailstormForest.GetBestDagFor(currentHash, bestDag, &tree));
+    BOOST_REQUIRE_EQUAL(bestDag.size(), tailstormK - 1);
+    BOOST_CHECK(bestDag[0]->hash == blockL->GetHash());
+    BOOST_CHECK(bestDag[1]->hash == blockW->GetHash());
+    // The best dag is in sorted order, so its last element is the lowest sorted selected subblock.
+    const CTreeNodeRef lowestSortedBlock = bestDag.back();
+    BOOST_CHECK(lowestSortedBlock->hash == blockF->GetHash());
     BOOST_REQUIRE(tree);
+    // W comes after L, so its double spend is skipped.
     BOOST_REQUIRE(CTailstormForestTest::HasDagTx(*tree, txL->GetId()));
     BOOST_REQUIRE(!CTailstormForestTest::HasDagTx(*tree, txW->GetId()));
+    BOOST_REQUIRE(CTailstormForestTest::HasDagTx(*tree, txF->GetId()));
 
     // C spends L's output and is pooled while L is applied.
     const CTransactionRef txC = spend(txL->OutpointAt(0), txL->vout[0].nValue, 100);
@@ -1212,33 +850,440 @@ BOOST_AUTO_TEST_CASE(applied_rival_evicts_pool_dependents_of_a_displaced_transac
     mempool.addUnchecked(entry.Height(height).FromTx(*txC));
     BOOST_REQUIRE(mempool.exists(txC->GetId()));
 
-    // The late child links into the previous epoch and, at the next insert into this grove, is
-    // adopted as an uncle. It takes a slot ahead of the regular subblocks and B_L is displaced.
     {
         LOCK(tailstormForest.cs_forest);
         const std::set<uint256> linked = tailstormForest.ProcessOrphans();
         BOOST_REQUIRE_EQUAL(linked.count(lateChild->GetHash()), 1u);
     }
-    BOOST_REQUIRE(tailstormForest.Insert(MakeTestSubblock(currentSummary, {}, 72)));
-    bestDag.clear();
-    BOOST_REQUIRE(tailstormForest.GetBestDagFor(currentHash, bestDag));
-    BOOST_REQUIRE(FindTestNode(bestDag, lateChild->GetHash()));
-    BOOST_REQUIRE(!FindTestNode(bestDag, blockL->GetHash()));
-    BOOST_REQUIRE(FindTestNode(bestDag, blockW->GetHash()));
 
-    // Adoption alone leaves the view as it was. The rebuild that a later event triggers is what
-    // applies W and drops L; force it here.
+    // With the dependency-score-hash sort order, we cannot adjust the subblock order via arrival.  The
+    // only way to adjust it is to change the score by adding a child below the block we want to be the
+    // winner, to increase its score.
+    const ConstCBlockRef childOfW = MakeTestSubblock(currentSummary, {MakeTreeNodeRef(blockW)}, 72);
+    BOOST_REQUIRE(tailstormForest.Insert(childOfW));
+
+    // The selection was already full, so the insert only appends the child, unprocessed, without reordering.
+    // The uncle is adopted after it and shrinks the selection. Force the rebuild that a later event would
+    // trigger: it reorders the dag, and the child raises W's score above L's.
     CTailstormGroveRef grove;
-    BOOST_REQUIRE(tailstormForest.GetGrove(blockF->GetHash(), grove));
+    BOOST_REQUIRE(tailstormForest.GetGrove(blockW->GetHash(), grove));
     {
         LOCK(tailstormForest.cs_forest);
         TxAdmissionPause pause;
         tailstormForest.ReGenerateDagData(grove);
     }
+    bestDag.clear();
+    BOOST_REQUIRE(tailstormForest.GetBestDagFor(currentHash, bestDag));
+    BOOST_REQUIRE_EQUAL(bestDag.size(), tailstormK - 1);
+    BOOST_REQUIRE(FindTestNode(bestDag, lateChild->GetHash()));
+    BOOST_REQUIRE(FindTestNode(bestDag, blockW->GetHash()));
+    BOOST_REQUIRE(FindTestNode(bestDag, childOfW->GetHash()));
+    BOOST_REQUIRE(!FindTestNode(bestDag, lowestSortedBlock->hash));
+    BOOST_REQUIRE(!FindTestNode(bestDag, blockL->GetHash()));
     BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, txW->GetId()));
     BOOST_CHECK(!CTailstormForestTest::HasDagTx(*tree, txL->GetId()));
     BOOST_CHECK(!mempool.exists(txC->GetId()));
     mempool.clear();
+}
+
+// A summary over subblocks of a DoubleSpendTestCoin's epoch, connected through ConnectBlock as a
+// peer's summary would be. The coins view is at the summary root for the life of the case.
+class SummaryValidationCase
+{
+    CCoinsViewCache &parent;
+    const bool wasSynced;
+    const bool checkpoints;
+
+public:
+    DoubleSpendTestCoin coin;
+
+    explicit SummaryValidationCase(CCoinsViewCache &coins)
+        : parent(coins), wasSynced(IsInitialSyncComplete()), checkpoints(fCheckpointsEnabled), coin(coins)
+    {
+        BOOST_REQUIRE_EQUAL(Params().GetConsensus().tailstorm_k, 4u);
+        bool synced = true;
+        IsInitialSyncCompleteInit(&synced);
+        fCheckpointsEnabled = false;
+        parent.SetBestBlock(coin.chain.previousHash);
+    }
+
+    ~SummaryValidationCase()
+    {
+        bool synced = wasSynced;
+        IsInitialSyncCompleteInit(&synced);
+        fCheckpointsEnabled = checkpoints;
+    }
+
+    // Insert a subblock into the forest and return its live node.
+    CTreeNodeRef Insert(const ConstCBlockRef &block)
+    {
+        BOOST_REQUIRE(tailstormForest.Insert(block));
+        std::vector<CTreeNodeRef> dag;
+        BOOST_REQUIRE(tailstormForest.GetFullDagFor(coin.chain.previousHash, dag));
+        CTreeNodeRef node = FindTestNode(dag, block->GetHash());
+        BOOST_REQUIRE(node);
+        return node;
+    }
+
+    // The declared nodes in the order a summary must list them: uncles first, then the subblocks as
+    // AnalyzeSummaryDag orders them.
+    std::vector<CTreeNodeRef> Declaration(const std::vector<CTreeNodeRef> &declared) const
+    {
+        std::vector<CTreeNodeRef> ordered;
+        std::vector<ConstCBlockRef> subblocks;
+        std::map<uint256, CTreeNodeRef> byHash;
+        for (const CTreeNodeRef &node : declared)
+        {
+            if (node->fUncle)
+                ordered.push_back(node);
+            else
+            {
+                subblocks.push_back(node->subblock);
+                byHash[node->hash] = node;
+            }
+        }
+        std::vector<ConstCBlockRef> analyzed;
+        std::set<uint256> excluded;
+        std::string reject;
+        BOOST_REQUIRE_MESSAGE(
+            AnalyzeSummaryDag(coin.chain.previousHash, subblocks, parent, analyzed, excluded, reject), reject);
+        for (const ConstCBlockRef &block : analyzed)
+            ordered.push_back(byHash.at(block->GetHash()));
+        return ordered;
+    }
+
+    // A summary declaring the given nodes and carrying txs, which pay fees on top of the subsidy. The
+    // coinbase pays the dag as validation computes it, from the forest's nodes for the declared proofs;
+    // payout names those nodes when they differ from declared.
+    CBlockRef Summary(const std::vector<CTreeNodeRef> &declared,
+        const std::vector<CTransactionRef> &txs,
+        CAmount fees,
+        const std::vector<CTreeNodeRef> *payout = nullptr)
+    {
+        const auto &chain = coin.chain;
+        const std::vector<CTreeNodeRef> ordered = Declaration(declared);
+        const auto minerData = GenerateMinerData(Params().GetConsensus().tailstorm_k, ordered, chain.olderHash);
+        CBlockRef summary = MakeBlockRef(MakeTestSummaryHeader(
+            chain.previousHash, chain.previousSummary.height() + 1, chain.previousSummary.chainWork(), 32, minerData));
+        const CAmount reward = GetBlockSubsidy(summary->height, Params().GetConsensus()) + fees;
+        const std::vector<CTreeNodeRef> &paid = payout ? *payout : declared;
+        const auto scores = GetDagScores(paid);
+        uint64_t totalScore = paid.size();
+        for (const auto &entry : scores)
+            totalScore += entry.second;
+        CAmount dagReward = 0;
+        for (const auto &entry : scores)
+            dagReward += reward * entry.second / totalScore;
+        CMutableTransaction cb;
+        cb.vout.emplace_back(dagReward, paid[0]->subblock->vtx[0]->vout[0].scriptPubKey);
+        cb.vout.emplace_back(reward - dagReward, testSpendable);
+        cb.vout.emplace_back(0, CScript() << OP_RETURN << summary->height << std::vector<uint8_t>(MIN_TX_SIZE));
+        summary->vtx = {MakeTransactionRef(cb)};
+        summary->vtx.insert(summary->vtx.end(), txs.begin(), txs.end());
+        std::sort(summary->vtx.begin() + 1, summary->vtx.end(), NumericallyLessTxHashComparator());
+        summary->UpdateHeader();
+        BOOST_REQUIRE(summary->IsTailstormSummaryBlock());
+        return summary;
+    }
+
+    bool Connect(const CBlockRef &summary, CValidationState &state)
+    {
+        BOOST_REQUIRE_MESSAGE(CheckBlock(Params().GetConsensus(), summary, state, false, true), state.GetLogString());
+        CBlockIndex index(*summary);
+        index.pprev = &coin.chain.previousSummary;
+        CCoinsViewCache view(&parent);
+        std::map<CGroupTokenID, CAmount> mintages;
+        std::map<CGroupTokenID, CAuth> authorities;
+        const bool connected =
+            ConnectBlock(summary, state, &index, view, parent, Params(), mintages, authorities, true);
+        BOOST_TEST_MESSAGE("summary result: " << connected << " " << state.GetLogString());
+        BOOST_CHECK_EQUAL(chainActive.Tip()->GetBlockHash(), coin.chain.previousHash);
+        BOOST_CHECK(parent.HaveCoin(coin.parentTx->OutpointAt(0)));
+        return connected;
+    }
+};
+
+BOOST_AUTO_TEST_CASE(summary_accepts_child_before_parent)
+{
+    // An early input check must preserve CTOR: a transaction's parent may occur later.
+    LOCK(cs_main);
+    SummaryValidationCase test(coinsCache);
+    const auto &root = test.coin.chain.previousSummary;
+    const std::vector<CTreeNodeRef> declared{test.Insert(MakeTestSubblock(root, {}, 95)),
+        test.Insert(MakeTestSubblock(root, {}, 96)), test.Insert(MakeTestSubblock(root, {}, 97))};
+    const CTransactionRef parent = test.coin.SpendCoin(500);
+    CTransactionRef child;
+    for (CAmount value = 1; value < 500; ++value)
+    {
+        child = test.coin.Spend(parent->OutpointAt(0), 500, value);
+        if (NumericallyLessTxHashComparator()(child, parent))
+            break;
+    }
+    BOOST_REQUIRE(NumericallyLessTxHashComparator()(child, parent));
+    const auto summary = test.Summary(declared, {parent, child}, 1000 - child->vout[0].nValue);
+    BOOST_REQUIRE_EQUAL(summary->vtx[1]->GetId(), child->GetId());
+    CValidationState state;
+    BOOST_CHECK_MESSAGE(test.Connect(summary, state), state.GetLogString());
+}
+
+BOOST_AUTO_TEST_CASE(summary_dag_is_rebuilt_from_the_declaration)
+{
+    // Three chained subblocks. The dag analyzed for a summary is rebuilt from their headers alone, so
+    // it comes back in chain order whatever the declaration order, and the forest need not hold them.
+    BOOST_REQUIRE_EQUAL(Params().GetConsensus().tailstorm_k, 4u);
+    PreviousEpochTestChain chain(&coinsCache, 92, 93);
+    const ConstCBlockRef a = MakeTestSubblock(chain.previousSummary, {}, 95);
+    const ConstCBlockRef b = MakeTestSubblock(chain.previousSummary, {MakeTreeNodeRef(a)}, 96);
+    const ConstCBlockRef c = MakeTestSubblock(chain.previousSummary, {MakeTreeNodeRef(b)}, 97);
+
+    const std::vector<std::vector<ConstCBlockRef> > declarations{{c, a, b}, {b, c, a}, {a, b, c}};
+    for (const std::vector<ConstCBlockRef> &declared : declarations)
+    {
+        std::vector<ConstCBlockRef> ordered;
+        std::set<uint256> excluded;
+        std::string reject;
+        BOOST_REQUIRE_MESSAGE(
+            AnalyzeSummaryDag(chain.previousHash, declared, coinsCache, ordered, excluded, reject), reject);
+        BOOST_REQUIRE_EQUAL(ordered.size(), 3u);
+        BOOST_CHECK_EQUAL(ordered[0]->GetHash(), a->GetHash());
+        BOOST_CHECK_EQUAL(ordered[1]->GetHash(), b->GetHash());
+        BOOST_CHECK_EQUAL(ordered[2]->GetHash(), c->GetHash());
+        BOOST_CHECK(excluded.empty());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(summary_exclusions_drop_unsourced_declared_transactions)
+{
+    // A declared transaction sources from the coins at the summary root or from another declared
+    // transaction. One that does neither is excluded, and it is not a double spend loser.
+    DoubleSpendTestCoin coin(coinsCache);
+    const CBlockIndex &summaryRoot = coin.chain.previousSummary;
+    const CTransactionRef txA = coin.SpendCoin(500);
+    const CTransactionRef txB = coin.Spend(txA->OutpointAt(0), txA->vout[0].nValue, 300);
+    const CTransactionRef txC = coin.Spend(COutPoint(MakeTestTreeNode(99)->hash, 0), 1000, 100);
+    const CTreeNodeRef a = MakeTreeNodeRef(MakeTestSubblock(summaryRoot, {}, 95, {txA}));
+    const CTreeNodeRef b = MakeTreeNodeRef(MakeTestSubblock(summaryRoot, {a}, 96, {txB}));
+    const CTreeNodeRef c = MakeTreeNodeRef(MakeTestSubblock(summaryRoot, {}, 98, {txC}));
+
+    std::vector<ConstCBlockRef> ordered;
+    std::set<uint256> excluded;
+    std::string reject;
+    BOOST_REQUIRE_MESSAGE(AnalyzeSummaryDag(coin.chain.previousHash, {a->subblock, b->subblock, c->subblock},
+                              coinsCache, ordered, excluded, reject),
+        reject);
+    BOOST_CHECK_EQUAL(excluded.size(), 1u);
+    BOOST_CHECK_EQUAL(excluded.count(txC->GetId()), 1u);
+
+    // The same dag through the exclusion set alone, which also reports the losers: there are none.
+    LOCK(tailstormForest.cs_forest);
+    LinkTestTreeNodes(a, b);
+    std::set<uint256> losers;
+    const std::set<uint256> direct = GetTxnExclusionSet(OrderDag({a, b, c}), &coinsCache, &losers);
+    BOOST_CHECK(losers.empty());
+    BOOST_CHECK(direct == excluded);
+}
+
+BOOST_AUTO_TEST_CASE(summary_validation_isolated_from_live_dag)
+{
+    // Connect the same summary while the forest's view of its dag changes: after a fault in the live
+    // sequence ids, and after a late arrival that reorders the live dag and flips its double spend
+    // winner. Missing transactions and incorrect payouts must still fail through the full connection path.
+    LOCK(cs_main);
+    SummaryValidationCase test(coinsCache);
+    const CBlockIndex &root = test.coin.chain.previousSummary;
+    const CTransactionRef winner = test.coin.SpendCoin(700);
+    const CTransactionRef loser = test.coin.SpendCoin(600);
+    const CTransactionRef childTx = test.coin.Spend(winner->OutpointAt(0), 700, 500);
+    const ConstCBlockRef a = MakeTestSubblock(root, {}, 95, {winner});
+    const ConstCBlockRef b = MakeLowerHashSubblock(root, a, {loser});
+    BOOST_REQUIRE(b->GetHash() < a->GetHash());
+    const CTreeNodeRef liveA = test.Insert(a);
+    const CTreeNodeRef liveC = test.Insert(MakeTestSubblock(root, {MakeTreeNodeRef(a)}, 97, {childTx}));
+    const CTreeNodeRef liveB = test.Insert(b);
+
+    // a and c score two each and b one, so a leads the dag order and winner is the first spend.
+    const CBlockRef summary = test.Summary({liveA, liveB, liveC}, {winner, childTx}, 500);
+    const uint256 summaryHash = summary->GetHash();
+
+    auto check = [&](const CBlockRef &block, const std::string &expectedReject)
+    {
+        CValidationState state;
+        const bool connected = test.Connect(block, state);
+        BOOST_CHECK_MESSAGE(connected == expectedReject.empty(), state.GetLogString());
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), expectedReject);
+    };
+    auto checkSummary = [&]()
+    {
+        check(summary, "");
+
+        CBlockRef missingTx = MakeBlockRef(*summary);
+        missingTx->vtx.erase(std::find(missingTx->vtx.begin(), missingTx->vtx.end(), childTx));
+        missingTx->UpdateHeader();
+        check(missingTx, "bad-blk-missing-txn");
+
+        CBlockRef wrongPayout = MakeBlockRef(*summary);
+        CMutableTransaction wrongCoinbase(*summary->vtx[0]);
+        --wrongCoinbase.vout[0].nValue;
+        wrongPayout->vtx[0] = MakeTransactionRef(wrongCoinbase);
+        wrongPayout->UpdateHeader();
+        check(wrongPayout, "bad-cb-no-dag-match");
+    };
+    // The declared dag as the forest holds it, in its live order, and the exclusions that order gives.
+    auto liveExclusions = [&](std::vector<CTreeNodeRef> &declared)
+    {
+        ConstCBlockRef declaredSummary = summary;
+        CTailstormTreeRef tree;
+        BOOST_REQUIRE(tailstormForest.GetDagForBlock(declaredSummary, declared, &tree));
+        BOOST_REQUIRE(tree);
+        BOOST_REQUIRE_EQUAL(declared.size(), 3u);
+        return GetTxnExclusionSet(declared, *tree);
+    };
+
+    LOCK(tailstormForest.cs_forest);
+    std::vector<CTreeNodeRef> declared;
+    BOOST_CHECK_EQUAL(liveExclusions(declared).count(winner->GetId()), 0u);
+    checkSummary();
+
+    // Fault injection: swap the live sequence ids of a and b. The forest now orders the declared dag
+    // b, c, a and takes loser as the first spend; validation must not read the ids.
+    {
+        const uint32_t idA = liveA->nSequenceId;
+        const uint32_t idB = liveB->nSequenceId;
+        BOOST_SCOPE_EXIT(&liveA, &liveB, idA, idB)
+        {
+            liveA->nSequenceId = idA;
+            liveB->nSequenceId = idB;
+        }
+        BOOST_SCOPE_EXIT_END
+        liveA->nSequenceId = idB;
+        liveB->nSequenceId = idA;
+        const std::set<uint256> faulted = liveExclusions(declared);
+        BOOST_CHECK_EQUAL(faulted.count(winner->GetId()), 1u);
+        BOOST_CHECK_EQUAL(faulted.count(loser->GetId()), 0u);
+        checkSummary();
+    }
+
+    // A late child of b lifts b's rank to a's, and b's lower hash then places it first: the forest
+    // reorders the live dag to b, a, c and its winner flips to loser, while the summary stays valid.
+    // The selection is already full, so the insert only appends late; renumber as a later event
+    // (ReGenerateDagData) would, to apply the reorder.
+    const ConstCBlockRef late = MakeTestSubblock(root, {MakeTreeNodeRef(b)}, 98);
+    BOOST_REQUIRE(tailstormForest.Insert(late));
+    {
+        ConstCBlockRef declaredSummary = summary;
+        std::vector<CTreeNodeRef> dag;
+        CTailstormTreeRef tree;
+        BOOST_REQUIRE(tailstormForest.GetDagForBlock(declaredSummary, dag, &tree));
+        BOOST_REQUIRE(tree);
+        tailstormForest.RenumberDag(*tree);
+    }
+    const std::set<uint256> flipped = liveExclusions(declared);
+    BOOST_REQUIRE(!FindTestNode(declared, late->GetHash()));
+    BOOST_CHECK_EQUAL(flipped.count(winner->GetId()), 1u);
+    BOOST_CHECK_EQUAL(flipped.count(loser->GetId()), 0u);
+    checkSummary();
+    BOOST_CHECK_EQUAL(summary->GetHash(), summaryHash);
+}
+
+// A subblock built on any root, for declarations the forest would never produce.
+static ConstCBlockRef MakeTestSubblockWithRoot(const uint256 &hashPrev,
+    const std::vector<CTreeNodeRef> &parents,
+    const uint32_t nBits,
+    const unsigned char nonce)
+{
+    CBlockRef block = MakeBlockRef();
+    block->hashPrevBlock = hashPrev;
+    block->height = 2;
+    block->nTime = 3;
+    block->minerData = GenerateMinerData(Params().GetConsensus().tailstorm_k, parents, uint256());
+    block->nBits = nBits;
+    block->nonce = {nonce};
+    CMutableTransaction coinbase;
+    coinbase.vout.emplace_back(0, CScript() << OP_RETURN << block->height);
+    block->vtx.push_back(MakeTransactionRef(coinbase));
+    block->UpdateHeader();
+    return ConstCBlockRef(block);
+}
+
+// Analyzed as this epoch's subblocks of chain, these do not form a complete dag, and nothing is returned.
+static void CheckSummaryDagIncomplete(const PreviousEpochTestChain &chain,
+    const std::vector<ConstCBlockRef> &subblocks,
+    const CCoinsViewCache &coins)
+{
+    std::vector<ConstCBlockRef> ordered;
+    std::set<uint256> excluded;
+    std::string reject;
+    BOOST_CHECK(!AnalyzeSummaryDag(chain.previousHash, subblocks, coins, ordered, excluded, reject));
+    BOOST_CHECK_EQUAL(reject, "bad-summary-dag-incomplete");
+    BOOST_CHECK(ordered.empty());
+    BOOST_CHECK(excluded.empty());
+}
+
+BOOST_AUTO_TEST_CASE(summary_rejects_a_subblock_whose_parent_it_does_not_commit)
+{
+    // b builds on a; the summary declares b, c and d but not a.
+    BOOST_REQUIRE_EQUAL(Params().GetConsensus().tailstorm_k, 4u);
+    PreviousEpochTestChain chain(&coinsCache, 220, 221);
+    const ConstCBlockRef a = MakeTestSubblock(chain.previousSummary, {}, 222);
+    const ConstCBlockRef b = MakeTestSubblock(chain.previousSummary, {MakeTreeNodeRef(a)}, 223);
+    const ConstCBlockRef c = MakeTestSubblock(chain.previousSummary, {}, 224);
+    const ConstCBlockRef d = MakeTestSubblock(chain.previousSummary, {}, 225);
+    CheckSummaryDagIncomplete(chain, {b, c, d}, coinsCache);
+}
+
+BOOST_AUTO_TEST_CASE(summary_rejects_a_subblock_whose_parent_is_an_uncle)
+{
+    // u is from the previous epoch and declared as an uncle, so it is not among the analyzed
+    // subblocks; y names it as a parent.
+    BOOST_REQUIRE_EQUAL(Params().GetConsensus().tailstorm_k, 4u);
+    PreviousEpochTestChain chain(&coinsCache, 226, 227);
+    const ConstCBlockRef a = MakeTestSubblock(chain.previousSummary, {}, 230);
+    const ConstCBlockRef u = MakeTestSubblockWithRoot(chain.olderHash, {}, a->nBits, 228);
+    const ConstCBlockRef y = MakeTestSubblock(chain.previousSummary, {MakeTreeNodeRef(u)}, 229);
+    CheckSummaryDagIncomplete(chain, {y, a}, coinsCache);
+}
+
+BOOST_AUTO_TEST_CASE(summary_uncle_count_must_match_the_blocks)
+{
+    // Whether a declared block is an uncle follows from the root it builds on, not from the count the
+    // summary states. A previous-epoch block listed among the subblocks is not part of this epoch's
+    // dag, and a subblock of this epoch listed as an uncle must not have its transactions passed over.
+    LOCK(cs_main);
+    SummaryValidationCase test(coinsCache);
+    const CBlockIndex &root = test.coin.chain.previousSummary;
+    const CTransactionRef tx = test.coin.SpendCoin(500);
+    const CTreeNodeRef a = test.Insert(MakeTestSubblock(root, {}, 95, {tx}));
+    const CTreeNodeRef b = test.Insert(MakeTestSubblock(root, {}, 96));
+    const CTreeNodeRef c = test.Insert(MakeTestSubblock(root, {}, 97));
+    const std::vector<CTreeNodeRef> live{a, b, c};
+
+    // Declared as they are, the summary carries tx and connects.
+    CValidationState honest;
+    BOOST_CHECK_MESSAGE(test.Connect(test.Summary(live, {tx}, 500), honest), honest.GetLogString());
+
+    // u builds on the previous summary. Passed to the analysis as a subblock of this epoch, its parent
+    // is neither a declared subblock nor the summary root.
+    const ConstCBlockRef u = MakeTestSubblockWithRoot(test.coin.chain.olderHash, {}, a->subblock->nBits, 90);
+    CheckSummaryDagIncomplete(test.coin.chain, {u, b->subblock, c->subblock}, coinsCache);
+
+    // a declared as an uncle, with tx left out of the summary. The forest holds a as a subblock of this
+    // epoch and the coinbase pays it as one.
+    CTreeNodeRef claimedUncle = MakeTreeNodeRef(a->subblock);
+    claimedUncle->fUncle = true;
+    CValidationState state;
+    BOOST_CHECK_MESSAGE(!test.Connect(test.Summary({claimedUncle, b, c}, {}, 0, &live), state), state.GetLogString());
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-summary-uncle");
+}
+
+BOOST_AUTO_TEST_CASE(summary_rejects_a_block_on_neither_root)
+{
+    // x builds on a block that is neither this summary's parent nor the previous summary.
+    BOOST_REQUIRE_EQUAL(Params().GetConsensus().tailstorm_k, 4u);
+    PreviousEpochTestChain chain(&coinsCache, 236, 237);
+    const ConstCBlockRef a = MakeTestSubblock(chain.previousSummary, {}, 240);
+    const ConstCBlockRef c = MakeTestSubblock(chain.previousSummary, {}, 241);
+    const ConstCBlockRef x = MakeTestSubblockWithRoot(MakeTestTreeNode(238)->hash, {}, a->nBits, 239);
+    CheckSummaryDagIncomplete(chain, {x, a, c}, coinsCache);
 }
 
 BOOST_AUTO_TEST_CASE(coinbase_rewards)
@@ -1273,7 +1318,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
 
     */
 
-    std::set<CTreeNodeRef> setBestDag;
+    std::vector<CTreeNodeRef> setBestDag;
     std::map<uint256, uint32_t> mapExpectedScores;
 
     CTreeNode node;
@@ -1281,7 +1326,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.dagHeight = 1;
     CTreeNodeRef noderef = MakeTreeNodeRef(node);
 
-    setBestDag.insert(noderef);
+    setBestDag.push_back(noderef);
     mapExpectedScores.emplace(node.hash, 1);
 
     auto mapScores = GetDagScores(setBestDag);
@@ -1320,14 +1365,14 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.hash = InsecureRand256();
     node.dagHeight = 1;
     CTreeNodeRef noderef1 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1);
+    setBestDag.push_back(noderef1);
     mapExpectedScores.emplace(node.hash, 2);
 
     node.hash = InsecureRand256();
     node.dagHeight = 2;
     node.setAncestors.insert(noderef1);
     CTreeNodeRef noderef2 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2);
+    setBestDag.push_back(noderef2);
     mapExpectedScores.emplace(node.hash, 2);
 
     // Add the descendants
@@ -1371,7 +1416,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     CTreeNodeRef noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 2);
 
     node.hash = InsecureRand256();
@@ -1379,7 +1424,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     CTreeNodeRef noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 2);
 
     node.hash = InsecureRand256();
@@ -1389,7 +1434,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef1a);
     node.setAncestors.insert(noderef1b);
     noderef2 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2);
+    setBestDag.push_back(noderef2);
     mapExpectedScores.emplace(node.hash, 3);
 
     // Add the descendants
@@ -1434,7 +1479,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 2);
 
     node.hash = InsecureRand256();
@@ -1442,7 +1487,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 1);
 
     node.hash = InsecureRand256();
@@ -1451,7 +1496,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2);
+    setBestDag.push_back(noderef2);
     mapExpectedScores.emplace(node.hash, 2);
 
     // Add the descendants
@@ -1510,7 +1555,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 6);
 
     node.hash = InsecureRand256();
@@ -1518,7 +1563,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 5);
 
     node.hash = InsecureRand256();
@@ -1527,7 +1572,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2);
+    setBestDag.push_back(noderef2);
     mapExpectedScores.emplace(node.hash, 6);
 
 
@@ -1538,7 +1583,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2);
     node.setAncestors.insert(noderef1b);
     CTreeNodeRef noderef3 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3);
+    setBestDag.push_back(noderef3);
     mapExpectedScores.emplace(node.hash, 7);
 
 
@@ -1548,7 +1593,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef3);
     CTreeNodeRef noderef4 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef4);
+    setBestDag.push_back(noderef4);
     mapExpectedScores.emplace(node.hash, 6);
 
     node.hash = InsecureRand256();
@@ -1557,7 +1602,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef3);
     CTreeNodeRef noderef4b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef4b);
+    setBestDag.push_back(noderef4b);
     mapExpectedScores.emplace(node.hash, 5);
 
     node.hash = InsecureRand256();
@@ -1566,7 +1611,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef4);
     CTreeNodeRef noderef5 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef5);
+    setBestDag.push_back(noderef5);
     mapExpectedScores.emplace(node.hash, 6);
 
     // Add the descendants
@@ -1615,7 +1660,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 2);
 
     node.hash = InsecureRand256();
@@ -1623,7 +1668,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 2);
 
     node.hash = InsecureRand256();
@@ -1632,7 +1677,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     CTreeNodeRef noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 2);
 
     node.hash = InsecureRand256();
@@ -1641,7 +1686,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     CTreeNodeRef noderef2b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2b);
+    setBestDag.push_back(noderef2b);
     mapExpectedScores.emplace(node.hash, 2);
 
     // Add the descendants
@@ -1686,7 +1731,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 2);
 
     node.hash = InsecureRand256();
@@ -1694,7 +1739,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -1703,7 +1748,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 2);
 
     node.hash = InsecureRand256();
@@ -1712,7 +1757,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2b);
+    setBestDag.push_back(noderef2b);
     mapExpectedScores.emplace(node.hash, 2);
 
     node.hash = InsecureRand256();
@@ -1721,7 +1766,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     CTreeNodeRef noderef2c = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2c);
+    setBestDag.push_back(noderef2c);
     mapExpectedScores.emplace(node.hash, 2);
 
     // Add the descendants
@@ -1773,7 +1818,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -1781,7 +1826,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -1790,7 +1835,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -1799,7 +1844,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2b);
+    setBestDag.push_back(noderef2b);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -1808,7 +1853,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2c = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2c);
+    setBestDag.push_back(noderef2c);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -1819,7 +1864,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2b);
     node.setAncestors.insert(noderef2c);
     CTreeNodeRef noderef3a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3a);
+    setBestDag.push_back(noderef3a);
     mapExpectedScores.emplace(node.hash, 6);
 
     // Add the descendants
@@ -1874,7 +1919,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 5);
 
     node.hash = InsecureRand256();
@@ -1883,7 +1928,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -1892,7 +1937,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2b);
+    setBestDag.push_back(noderef2b);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -1901,7 +1946,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2c = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2c);
+    setBestDag.push_back(noderef2c);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -1912,7 +1957,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2b);
     node.setAncestors.insert(noderef2c);
     noderef3a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3a);
+    setBestDag.push_back(noderef3a);
     mapExpectedScores.emplace(node.hash, 5);
 
     // Add the descendants
@@ -1960,7 +2005,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 1);
 
     node.hash = InsecureRand256();
@@ -1968,7 +2013,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef2b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2b);
+    setBestDag.push_back(noderef2b);
     mapExpectedScores.emplace(node.hash, 1);
 
     node.hash = InsecureRand256();
@@ -1976,7 +2021,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef2c = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2c);
+    setBestDag.push_back(noderef2c);
     mapExpectedScores.emplace(node.hash, 1);
 
     mapScores = GetDagScores(setBestDag);
@@ -2023,7 +2068,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -2031,7 +2076,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 1);
 
     node.hash = InsecureRand256();
@@ -2040,7 +2085,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -2049,7 +2094,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef2a);
     noderef3a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3a);
+    setBestDag.push_back(noderef3a);
     mapExpectedScores.emplace(node.hash, 3);
 
     // Add the descendants
@@ -2107,7 +2152,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2115,7 +2160,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 6);
 
     node.hash = InsecureRand256();
@@ -2124,7 +2169,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2133,7 +2178,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2b);
+    setBestDag.push_back(noderef2b);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2142,7 +2187,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2c = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2c);
+    setBestDag.push_back(noderef2c);
     mapExpectedScores.emplace(node.hash, 4);
 
     // Special case in that we need to add the children so we can
@@ -2153,7 +2198,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     CTreeNodeRef noderef2d = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2d);
+    setBestDag.push_back(noderef2d);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -2164,7 +2209,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2b);
     node.setAncestors.insert(noderef2c);
     noderef3a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3a);
+    setBestDag.push_back(noderef3a);
     mapExpectedScores.emplace(node.hash, 7);
 
     node.hash = InsecureRand256();
@@ -2174,7 +2219,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2d);
     node.setAncestors.insert(noderef3a);
     noderef4 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef4);
+    setBestDag.push_back(noderef4);
     mapExpectedScores.emplace(node.hash, 8);
 
     // Add the descendants
@@ -2238,7 +2283,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2246,7 +2291,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 8);
 
     node.hash = InsecureRand256();
@@ -2255,7 +2300,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2264,7 +2309,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2b);
+    setBestDag.push_back(noderef2b);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2273,7 +2318,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2c = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2c);
+    setBestDag.push_back(noderef2c);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2282,7 +2327,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2d = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2d);
+    setBestDag.push_back(noderef2d);
     mapExpectedScores.emplace(node.hash, 5);
 
     node.hash = InsecureRand256();
@@ -2293,7 +2338,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2b);
     node.setAncestors.insert(noderef2c);
     noderef3 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3);
+    setBestDag.push_back(noderef3);
     mapExpectedScores.emplace(node.hash, 7);
 
     node.hash = InsecureRand256();
@@ -2302,7 +2347,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef2d);
     noderef3a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3a);
+    setBestDag.push_back(noderef3a);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2311,7 +2356,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef3a);
     CTreeNodeRef noderef4a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef4a);
+    setBestDag.push_back(noderef4a);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2321,7 +2366,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2d);
     node.setAncestors.insert(noderef3);
     noderef4 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef4);
+    setBestDag.push_back(noderef4);
     mapExpectedScores.emplace(node.hash, 8);
 
     // Add the descendants
@@ -2387,7 +2432,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 5);
 
     node.hash = InsecureRand256();
@@ -2395,7 +2440,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 7);
 
     node.hash = InsecureRand256();
@@ -2404,7 +2449,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 5);
 
     node.hash = InsecureRand256();
@@ -2413,7 +2458,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2b);
+    setBestDag.push_back(noderef2b);
     mapExpectedScores.emplace(node.hash, 5);
 
     node.hash = InsecureRand256();
@@ -2422,7 +2467,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2c = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2c);
+    setBestDag.push_back(noderef2c);
     mapExpectedScores.emplace(node.hash, 5);
 
     node.hash = InsecureRand256();
@@ -2431,7 +2476,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2d = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2d);
+    setBestDag.push_back(noderef2d);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2442,7 +2487,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2b);
     node.setAncestors.insert(noderef2c);
     noderef3 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3);
+    setBestDag.push_back(noderef3);
     mapExpectedScores.emplace(node.hash, 8);
 
     node.hash = InsecureRand256();
@@ -2452,7 +2497,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2d);
     node.setAncestors.insert(noderef3);
     noderef4a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef4a);
+    setBestDag.push_back(noderef4a);
     mapExpectedScores.emplace(node.hash, 8);
 
     node.hash = InsecureRand256();
@@ -2462,7 +2507,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2d);
     node.setAncestors.insert(noderef3);
     noderef4 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef4);
+    setBestDag.push_back(noderef4);
     mapExpectedScores.emplace(node.hash, 8);
 
     // Add the descendants
@@ -2528,7 +2573,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2536,7 +2581,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 7);
 
     node.hash = InsecureRand256();
@@ -2545,7 +2590,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2554,7 +2599,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2b);
+    setBestDag.push_back(noderef2b);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2563,7 +2608,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2c = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2c);
+    setBestDag.push_back(noderef2c);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2572,7 +2617,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2d = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2d);
+    setBestDag.push_back(noderef2d);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2583,7 +2628,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2b);
     node.setAncestors.insert(noderef2c);
     noderef3 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3);
+    setBestDag.push_back(noderef3);
     mapExpectedScores.emplace(node.hash, 7);
 
     node.hash = InsecureRand256();
@@ -2592,7 +2637,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef2d);
     noderef3a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3a);
+    setBestDag.push_back(noderef3a);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -2602,7 +2647,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2d);
     node.setAncestors.insert(noderef3);
     noderef4 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef4);
+    setBestDag.push_back(noderef4);
     mapExpectedScores.emplace(node.hash, 8);
 
     // Add the descendants
@@ -2661,7 +2706,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -2669,7 +2714,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 4);
 
     node.hash = InsecureRand256();
@@ -2678,7 +2723,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -2687,7 +2732,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2b);
+    setBestDag.push_back(noderef2b);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -2696,7 +2741,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2c = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2c);
+    setBestDag.push_back(noderef2c);
     mapExpectedScores.emplace(node.hash, 3);
 
     node.hash = InsecureRand256();
@@ -2709,7 +2754,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2b);
     node.setAncestors.insert(noderef2c);
     noderef3a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3a);
+    setBestDag.push_back(noderef3a);
     mapExpectedScores.emplace(node.hash, 6);
 
     // Add the descendants
@@ -2760,14 +2805,14 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     noderef1->dagHeight = 1;
     noderef1->setAncestors.clear();
     noderef1->setDescendants.clear();
-    setBestDag.insert(noderef1);
+    setBestDag.push_back(noderef1);
     mapExpectedScores.emplace(noderef1->hash, 3);
 
     noderef2->dagHeight = 2;
     noderef2->setAncestors.clear();
     noderef2->setDescendants.clear();
     noderef2->setAncestors.insert(noderef1);
-    setBestDag.insert(noderef2);
+    setBestDag.push_back(noderef2);
     mapExpectedScores.emplace(noderef2->hash, 3);
 
     // Add the descendants
@@ -2780,7 +2825,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.fUncle = true;
     CTreeNodeRef noderefUncle1 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderefUncle1);
+    setBestDag.push_back(noderefUncle1);
     mapExpectedScores.emplace(noderefUncle1->hash, 1);
 
     mapScores = GetDagScores(setBestDag);
@@ -2834,7 +2879,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1a);
+    setBestDag.push_back(noderef1a);
     mapExpectedScores.emplace(node.hash, 6);
 
     node.hash = InsecureRand256();
@@ -2843,7 +2888,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.clear();
     node.setDescendants.clear();
     noderef1b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef1b);
+    setBestDag.push_back(noderef1b);
     mapExpectedScores.emplace(node.hash, 10);
 
     node.hash = InsecureRand256();
@@ -2853,7 +2898,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1a);
     noderef2a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2a);
+    setBestDag.push_back(noderef2a);
     mapExpectedScores.emplace(node.hash, 6);
 
     node.hash = InsecureRand256();
@@ -2863,7 +2908,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2b = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2b);
+    setBestDag.push_back(noderef2b);
     mapExpectedScores.emplace(node.hash, 6);
 
     node.hash = InsecureRand256();
@@ -2873,7 +2918,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2c = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2c);
+    setBestDag.push_back(noderef2c);
     mapExpectedScores.emplace(node.hash, 6);
 
     node.hash = InsecureRand256();
@@ -2883,7 +2928,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef1b);
     noderef2d = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef2d);
+    setBestDag.push_back(noderef2d);
     mapExpectedScores.emplace(node.hash, 7);
 
     node.hash = InsecureRand256();
@@ -2895,7 +2940,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2b);
     node.setAncestors.insert(noderef2c);
     noderef3 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3);
+    setBestDag.push_back(noderef3);
     mapExpectedScores.emplace(node.hash, 9);
 
     node.hash = InsecureRand256();
@@ -2905,7 +2950,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef2d);
     noderef3a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef3a);
+    setBestDag.push_back(noderef3a);
     mapExpectedScores.emplace(node.hash, 6);
 
     node.hash = InsecureRand256();
@@ -2915,7 +2960,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.setAncestors.insert(noderef3a);
     noderef4a = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef4a);
+    setBestDag.push_back(noderef4a);
     mapExpectedScores.emplace(node.hash, 6);
 
     node.hash = InsecureRand256();
@@ -2926,7 +2971,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setAncestors.insert(noderef2d);
     node.setAncestors.insert(noderef3);
     noderef4 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderef4);
+    setBestDag.push_back(noderef4);
     mapExpectedScores.emplace(node.hash, 10);
 
     // Add the descendants
@@ -2947,7 +2992,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     noderefUncle1->setAncestors.clear();
     noderefUncle1->setDescendants.clear();
     noderefUncle1->fUncle = true;
-    setBestDag.insert(noderefUncle1);
+    setBestDag.push_back(noderefUncle1);
     mapExpectedScores.emplace(noderefUncle1->hash, 8);
 
     node.hash = InsecureRand256();
@@ -2956,7 +3001,7 @@ BOOST_AUTO_TEST_CASE(coinbase_rewards)
     node.setDescendants.clear();
     node.fUncle = true;
     CTreeNodeRef noderefUncle2 = MakeTreeNodeRef(node);
-    setBestDag.insert(noderefUncle2);
+    setBestDag.push_back(noderefUncle2);
     mapExpectedScores.emplace(noderefUncle2->hash, 8);
 
     mapScores = GetDagScores(setBestDag);
@@ -2994,7 +3039,7 @@ BOOST_AUTO_TEST_CASE(late_orphan_replay)
     // It is parked, unprocessed, in the previous epoch's DAG.
     BOOST_REQUIRE(tailstormForest.Insert(parent));
 
-    std::set<CTreeNodeRef> previousDag;
+    std::vector<CTreeNodeRef> previousDag;
     BOOST_REQUIRE(tailstormForest.GetFullDagFor(chain.previousHash, previousDag));
     CTreeNodeRef parentNodeInDag = FindTestNode(previousDag, parent->GetHash());
     BOOST_REQUIRE(parentNodeInDag);
@@ -3031,18 +3076,18 @@ BOOST_AUTO_TEST_CASE(late_uncle_inclusion)
     BOOST_REQUIRE(blockcache.GetBlock(chain.previousHash));
 
     std::vector<ConstCBlockRef> existingSubblocks;
-    std::set<CTreeNodeRef> summarySubblocks;
+    std::vector<CTreeNodeRef> summarySubblocks;
     for (uint32_t i = 0; i < tailstormK - 2; ++i)
     {
         ConstCBlockRef subblock =
             MakeTestSubblock(chain.previousSummary, {}, static_cast<unsigned char>(40 + i));
         existingSubblocks.push_back(subblock);
-        summarySubblocks.insert(MakeTreeNodeRef(subblock));
+        summarySubblocks.push_back(MakeTreeNodeRef(subblock));
     }
 
     ConstCBlockRef parent = MakeTestSubblock(chain.previousSummary, {}, 60);
     CTreeNodeRef parentNode = MakeTreeNodeRef(parent);
-    summarySubblocks.insert(parentNode);
+    summarySubblocks.push_back(parentNode);
     BOOST_REQUIRE_EQUAL(summarySubblocks.size(), tailstormK - 1);
     ConstCBlockRef child = MakeTestSubblock(chain.previousSummary, {parentNode}, 61);
 
@@ -3072,7 +3117,7 @@ BOOST_AUTO_TEST_CASE(late_uncle_inclusion)
     BOOST_CHECK_EQUAL(tailstormForest.GetUnlinkedSubblocks(), 1);
     BOOST_REQUIRE(tailstormForest.Insert(parent));
 
-    std::set<CTreeNodeRef> previousDag;
+    std::vector<CTreeNodeRef> previousDag;
     BOOST_REQUIRE(tailstormForest.GetFullDagFor(chain.previousHash, previousDag));
     BOOST_REQUIRE_EQUAL(previousDag.size(), tailstormK - 1);
     CTreeNodeRef parentNodeInDag = FindTestNode(previousDag, parent->GetHash());
@@ -3098,14 +3143,14 @@ BOOST_AUTO_TEST_CASE(late_uncle_inclusion)
     ConstCBlockRef currentSubblock = MakeTestSubblock(currentSummary, {}, 70);
     BOOST_REQUIRE(tailstormForest.Insert(currentSubblock));
 
-    std::set<CTreeNodeRef> currentDag;
+    std::vector<CTreeNodeRef> currentDag;
     BOOST_REQUIRE(tailstormForest.GetFullDagFor(currentHash, currentDag));
     CTreeNodeRef childUncle = FindTestNode(currentDag, child->GetHash());
     BOOST_REQUIRE(childUncle);
     BOOST_CHECK(childUncle->fUncle);
     BOOST_CHECK_EQUAL(childUncle->roothash, currentHash);
 
-    std::set<CTreeNodeRef> bestDag;
+    std::vector<CTreeNodeRef> bestDag;
     BOOST_REQUIRE(tailstormForest.GetBestDagFor(currentHash, bestDag));
     CTreeNodeRef selectedChildUncle = FindTestNode(bestDag, child->GetHash());
     BOOST_REQUIRE(selectedChildUncle);
@@ -3126,13 +3171,13 @@ BOOST_AUTO_TEST_CASE(summary_orphan_survives_descendant_grove)
     ScopedChainTip scopedChainTip(&chain.previousSummary);
 
     std::vector<ConstCBlockRef> summarySubblocks;
-    std::set<CTreeNodeRef> summarySubblockNodes;
+    std::vector<CTreeNodeRef> summarySubblockNodes;
     for (uint32_t i = 0; i < tailstormK - 1; ++i)
     {
         ConstCBlockRef subblock =
             MakeTestSubblock(chain.previousSummary, {}, static_cast<unsigned char>(90 + i));
         summarySubblocks.push_back(subblock);
-        summarySubblockNodes.insert(MakeTreeNodeRef(subblock));
+        summarySubblockNodes.push_back(MakeTreeNodeRef(subblock));
     }
 
     std::vector<uint8_t> minerData =
@@ -3215,11 +3260,261 @@ BOOST_AUTO_TEST_CASE(summary_orphan_survives_descendant_grove)
     BOOST_CHECK_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 0);
 }
 
+BOOST_AUTO_TEST_CASE(summary_orphan_accept_subblock)
+{
+    // AcceptSubblock must retry a complete summary orphan before checking the forest.
+    // The summary is deliberately invalid so the retry has a definite outcome.
+    const uint32_t tailstormK = Params().GetConsensus().tailstorm_k;
+    BOOST_REQUIRE(tailstormK >= 3);
+
+    PreviousEpochTestChain chain(&coinsCache, 120, 121);
+    ScopedChainTip scopedChainTip(&chain.previousSummary);
+
+    std::vector<ConstCBlockRef> subblocks;
+    std::vector<CTreeNodeRef> nodes;
+    for (uint32_t i = 0; i < tailstormK - 1; ++i)
+    {
+        subblocks.push_back(MakeTestSubblock(chain.previousSummary, {}, static_cast<unsigned char>(130 + i)));
+        nodes.push_back(MakeTreeNodeRef(subblocks.back()));
+    }
+
+    const auto minerData = GenerateMinerData(tailstormK, nodes, chain.olderHash);
+    CBlockHeader summaryHeader =
+        MakeTestSummaryHeader(chain.previousHash, 2, chain.previousSummary.chainWork(), 140, minerData);
+    summaryHeader.nonce.resize(CBlockHeader::MAX_NONCE_SIZE + 1);
+    CBlockIndex summaryIndex(summaryHeader);
+    summaryIndex.pprev = &chain.previousSummary;
+    summaryIndex.nStatus |= BLOCK_PROCESSED | BLOCK_HAVE_DATA | BLOCK_LINKED;
+    {
+        WRITELOCK(cs_mapBlockIndex);
+        BOOST_REQUIRE(summaryIndex.RaiseValidity(BLOCK_VALID_TRANSACTIONS));
+    }
+    summaryIndex.nNextMaxBlockSize = Params().GetConsensus().nNextMaxBlockSize;
+    const uint256 summaryHash = summaryHeader.GetHash();
+    ScopedBlockIndexEntry summaryEntry(summaryHash, &summaryIndex);
+    ConstCBlockRef summary = std::make_shared<const CBlock>(summaryHeader);
+    ScopedBlockCacheEntry summaryCacheEntry(summary, summaryIndex.height());
+
+    for (size_t i = 0; i + 1 < subblocks.size(); ++i)
+        BOOST_REQUIRE(tailstormForest.Insert(subblocks[i]));
+    ConstCBlockRef descendant = MakeTestSubblock(summaryIndex, {}, 150);
+    BOOST_REQUIRE(tailstormForest.Insert(descendant));
+    tailstormForest.AddSummaryBlockOrphan(summary);
+
+    CTailstormGroveRef descendantGrove;
+    BOOST_REQUIRE(tailstormForest.GetGrove(summaryHash, descendantGrove));
+    BOOST_REQUIRE_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 1);
+    std::vector<CTreeNodeRef> committed;
+    BOOST_REQUIRE(!tailstormForest.GetDagForBlock(summary, committed));
+
+    // The predecessor lookup is only fixture scaffolding, not a populated grove.
+    CTailstormForestTest::RemoveGroveLookup(tailstormForest, chain.olderHash);
+    const bool originalTailstormEnabled = fTailstormEnabled.load();
+    const bool originalTemplateRecalc = forceTemplateRecalc.load();
+    BOOST_SCOPE_EXIT(originalTailstormEnabled, originalTemplateRecalc)
+    {
+        tailstormForest.setSanityCheck(0.0);
+        fTailstormEnabled.store(originalTailstormEnabled);
+        forceTemplateRecalc.store(originalTemplateRecalc);
+    }
+    BOOST_SCOPE_EXIT_END
+    fTailstormEnabled.store(true);
+    tailstormForest.setSanityCheck(1.0);
+    tailstormForest.Check();
+
+    // Use the production entry point: insertion, orphan processing, reorg check, consistency check.
+    AcceptSubblock(subblocks.back());
+
+    BOOST_CHECK_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 0);
+    committed.clear();
+    BOOST_REQUIRE(tailstormForest.GetDagForBlock(summary, committed));
+    BOOST_CHECK_EQUAL(committed.size(), tailstormK - 1);
+    BOOST_CHECK(FindTestNode(committed, subblocks.back()->GetHash()));
+    BOOST_CHECK(tailstormForest.GetGrove(summaryHash, descendantGrove));
+    BOOST_CHECK(chainActive.Tip() == &chain.previousSummary);
+    {
+        READLOCK(cs_mapBlockIndex);
+        BOOST_CHECK(!summaryIndex.IsValid(BLOCK_VALID_SCRIPTS));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(summary_orphan_late_uncle)
+{
+    // R closes the epoch rooted at R0, committing A, B and C but omitting U.
+    // S waits for U as an uncle alongside D and E; F already references S.
+    // Parent references:
+    // R0 --> A --> B --> C --> U
+    // R  --> D
+    // R  --> E
+    // S  --> F
+    const uint32_t tailstormK = Params().GetConsensus().tailstorm_k;
+    BOOST_REQUIRE(tailstormK >= 3);
+    const bool originalTailstormEnabled = fTailstormEnabled.load();
+    const bool originalTemplateRecalc = forceTemplateRecalc.load();
+    const uint64_t originalForkTime = nMiningForkTime;
+    bool originalSyncComplete = IsInitialSyncComplete();
+    BOOST_SCOPE_EXIT(originalTailstormEnabled, originalTemplateRecalc, originalForkTime, originalSyncComplete)
+    {
+        tailstormForest.setSanityCheck(0.0);
+        fTailstormEnabled.store(originalTailstormEnabled);
+        forceTemplateRecalc.store(originalTemplateRecalc);
+        nMiningForkTime = originalForkTime;
+        IsInitialSyncCompleteInit(&originalSyncComplete);
+    }
+    BOOST_SCOPE_EXIT_END
+
+    // Use the real chain and coins view so orphan replay can validate and activate S.
+    tailstormForest.SetBackend(pcoinsTip);
+    fTailstormEnabled.store(false);
+    auto initialTemplate = BlockAssembler(Params()).CreateNewBlock(CScript() << OP_RETURN);
+    CBlockRef initialBlock = initialTemplate->block;
+    initialBlock->nonce.resize(4);
+    initialBlock->UpdateHeader();
+    BOOST_REQUIRE(MineBlock(*initialBlock, 100000, Params().GetConsensus()));
+    CValidationState initialState;
+    const bool initialAccepted =
+        ProcessSummaryBlock(initialState, Params(), nullptr, initialBlock, true, nullptr, SINGLE_THREADED);
+    BOOST_REQUIRE_MESSAGE(initialAccepted, initialState.GetLogString());
+    BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == initialBlock->GetHash());
+    CBlockIndex *previousRoot = chainActive.Tip();
+
+    nMiningForkTime = 1;
+    fTailstormEnabled.store(true);
+    bool synced = true;
+    IsInitialSyncCompleteInit(&synced);
+
+    auto makeSubblock = [&](const CBlockIndex &root, const std::vector<CTreeNodeRef> &parents, unsigned char tag)
+    {
+        CBlockRef block = std::make_shared<CBlock>(*MakeTestSubblock(root, parents, tag));
+        CMutableTransaction coinbase(*block->vtx[0]);
+        coinbase.vout[0].scriptPubKey << std::vector<uint8_t>(100, tag);
+        block->vtx[0] = MakeTransactionRef(coinbase);
+        block->nonce = {tag, 0, 0, 0};
+        block->UpdateHeader();
+        BOOST_REQUIRE(MineBlock(*block, 100000, Params().GetConsensus()));
+        CValidationState state;
+        BOOST_REQUIRE_MESSAGE(CheckBlock(Params().GetConsensus(), block, state), state.GetLogString());
+        return ConstCBlockRef(block);
+    };
+    auto makeSummary = [&](CBlockIndex &root, std::vector<CTreeNodeRef> nodes, unsigned char tag)
+    {
+        CBlockRef block = std::make_shared<CBlock>(MakeTestSummaryHeader(root.GetBlockHash(), root.height() + 1,
+            root.chainWork(), tag, GenerateMinerData(tailstormK, nodes, root.pprev->GetBlockHash())));
+        block->nTime = root.GetBlockTime() + 1;
+        block->hashAncestor = root.GetChildsConsensusAncestor()->GetBlockHash();
+        block->nBits = GetNextWorkRequired(&root, block.get(), Params().GetConsensus());
+        block->chainWork = ArithToUint256(root.chainWork() + block->GetBlockWork());
+        const CAmount reward = GetBlockSubsidy(block->height, Params().GetConsensus());
+        const auto scores = GetDagScores(nodes);
+        uint32_t totalScore = tailstormK - 1;
+        for (const auto &entry : scores)
+            totalScore += entry.second;
+        CMutableTransaction coinbase;
+        CAmount paid = 0;
+        for (const auto &entry : scores)
+        {
+            const CAmount amount = reward * entry.second / totalScore;
+            coinbase.vout.emplace_back(amount, entry.first->subblock->vtx[0]->vout[0].scriptPubKey);
+            paid += amount;
+        }
+        coinbase.vout.emplace_back(reward - paid, CScript() << OP_RETURN << tag);
+        coinbase.vout.emplace_back(0, CScript() << OP_RETURN << block->height << std::vector<uint8_t>(100, tag));
+        block->vtx.push_back(MakeTransactionRef(coinbase));
+        block->nonce = {tag, 0, 0, 0};
+        block->UpdateHeader();
+        BOOST_REQUIRE(MineBlock(*block, 100000, Params().GetConsensus()));
+        CValidationState state;
+        BOOST_REQUIRE_MESSAGE(CheckBlock(Params().GetConsensus(), block, state), state.GetLogString());
+        const bool contextual = ContextualCheckBlock(block, state, &root);
+        BOOST_REQUIRE_MESSAGE(contextual, state.GetLogString());
+        BOOST_REQUIRE(ValidateSummaryBlockCoinbase(reward, block, nodes));
+        return ConstCBlockRef(block);
+    };
+
+    std::vector<CTreeNodeRef> previousNodes;
+    for (uint32_t i = 0; i < tailstormK - 1; ++i)
+    {
+        const auto parents =
+            previousNodes.empty() ? std::vector<CTreeNodeRef>{} : std::vector<CTreeNodeRef>{previousNodes.back()};
+        ConstCBlockRef block = makeSubblock(*previousRoot, parents, 170 + i);
+        AcceptSubblock(block);
+        std::vector<CTreeNodeRef> dag;
+        BOOST_REQUIRE(tailstormForest.GetFullDagFor(previousRoot->GetBlockHash(), dag));
+        previousNodes.push_back(FindTestNode(dag, block->GetHash()));
+        BOOST_REQUIRE(previousNodes.back());
+    }
+    ConstCBlockRef lateUncle = makeSubblock(*previousRoot, {previousNodes.back()}, 180);
+    ConstCBlockRef rootBlock = makeSummary(*previousRoot, previousNodes, 181);
+    CValidationState rootState;
+    const bool rootAccepted =
+        ProcessSummaryBlock(rootState, Params(), nullptr, rootBlock, true, nullptr, SINGLE_THREADED);
+    BOOST_REQUIRE_MESSAGE(rootAccepted, rootState.GetLogString());
+    BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == rootBlock->GetHash());
+    CBlockIndex *rootIndex = chainActive.Tip();
+
+    // Leave one summary proof for an uncle that is still absent locally.
+    std::vector<CTreeNodeRef> summaryNodes;
+    CTreeNodeRef uncleNode = MakeTreeNodeRef(lateUncle);
+    uncleNode->fUncle = true;
+    summaryNodes.push_back(uncleNode);
+    for (uint32_t i = 0; i < tailstormK - 2; ++i)
+    {
+        ConstCBlockRef block = makeSubblock(*rootIndex, {}, 190 + i);
+        AcceptSubblock(block);
+    }
+    std::vector<CTreeNodeRef> currentNodes;
+    BOOST_REQUIRE(tailstormForest.GetFullDagFor(rootBlock->GetHash(), currentNodes));
+    summaryNodes.insert(summaryNodes.end(), currentNodes.begin(), currentNodes.end());
+    ConstCBlockRef summary = makeSummary(*rootIndex, summaryNodes, 200);
+    // Store S through normal validation; its missing uncle must leave it queued.
+    CValidationState summaryState;
+    ProcessSummaryBlock(summaryState, Params(), nullptr, summary, true, nullptr, SINGLE_THREADED);
+    BOOST_REQUIRE_MESSAGE(summaryState.IsValid(), summaryState.GetLogString());
+    BOOST_REQUIRE_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 1);
+    BOOST_REQUIRE(chainActive.Tip() == rootIndex);
+    CBlockIndex *summaryIndex = LookupBlockIndex(summary->GetHash());
+    BOOST_REQUIRE(summaryIndex);
+    AcceptSubblock(makeSubblock(*summaryIndex, {}, 210));
+    CTailstormGroveRef descendantGrove;
+    BOOST_REQUIRE(tailstormForest.GetGrove(summary->GetHash(), descendantGrove));
+
+    CTailstormGroveRef rootGrove;
+    BOOST_REQUIRE(tailstormForest.GetGrove(rootBlock->GetHash(), rootGrove));
+    std::vector<CTreeNodeRef> currentDag;
+    BOOST_REQUIRE(tailstormForest.GetFullDagFor(rootBlock->GetHash(), currentDag));
+    BOOST_REQUIRE_EQUAL(currentDag.size(), tailstormK - 2);
+    std::vector<CTreeNodeRef> committed;
+    BOOST_REQUIRE(!tailstormForest.GetDagForBlock(summary, committed));
+    tailstormForest.setSanityCheck(1.0);
+    tailstormForest.Check();
+
+    // This updates the previous grove, not the cached uncle set of the current one.
+    AcceptSubblock(lateUncle);
+
+    BOOST_CHECK(tailstormForest.Contains(lateUncle->GetHash()));
+    BOOST_CHECK_EQUAL(CTailstormForestTest::SummaryOrphanCount(tailstormForest), 0);
+    BOOST_REQUIRE(tailstormForest.GetDagForBlock(summary, committed));
+    BOOST_CHECK_EQUAL(committed.size(), tailstormK - 1);
+    const CTreeNodeRef committedUncle = FindTestNode(committed, lateUncle->GetHash());
+    BOOST_REQUIRE(committedUncle);
+    BOOST_CHECK(committedUncle->fUncle);
+    BOOST_CHECK(chainActive.Tip() == summaryIndex);
+    {
+        READLOCK(cs_mapBlockIndex);
+        BOOST_CHECK(summaryIndex->IsValid(BLOCK_VALID_SCRIPTS));
+    }
+}
+
 BOOST_AUTO_TEST_CASE(unprocessed_ancestor_parks_child_during_reorg_gap)
 {
+    // An arrival is applied on its own only if every other subblock is processed exactly when it is
+    // within the cutoff. Here the parent is within it but unprocessed, so the child is not applied:
+    // the tree regenerates instead (a no-op here, as there is no grove to regenerate).
     CBlockIndex summaryRoot;
     summaryRoot.SetBlockHeader(std::make_shared<CBlockHeader>());
     summaryRoot.SetBlockHeaderHeight(0);
+    const uint256 summaryRootHash = MakeTestTreeNode(99)->hash;
+    summaryRoot.phashBlock = &summaryRootHash;
     ScopedChainTip scopedChainTip(&summaryRoot);
 
     LOCK(tailstormForest.cs_forest);
@@ -3301,42 +3596,108 @@ BOOST_AUTO_TEST_CASE(checkforreorg_consumes_request_at_state_snapshot)
     fTailstormEnabled.store(false);
 }
 
-BOOST_AUTO_TEST_CASE(renumber_dag_closes_sequence_id_gaps)
+BOOST_AUTO_TEST_CASE(renumber_dag_orders_by_dependency_score_hash)
 {
-    // RemoveFromGrove takes a subblock out of the dag but leaves its nSequenceId behind as a
-    // hole, and Check() asserts every dag is numbered 1..N with nothing missing. Fill a dag
-    // with gapped ids and check RenumberDag closes the holes without reordering the subblocks.
+    // RenumberDag numbers a dag 1..N by dependency (parents before children), then higher score,
+    // then lower hash, whatever ids the subblocks held before.
     LOCK(tailstormForest.cs_forest);
 
     TestTailstormTree tree;
 
-    // Two gaps: one where the subblocks numbered 3 and 4 were removed, one where 7 and 8 were.
-    const std::vector<uint32_t> vGappedIds = {1, 2, 5, 6, 9};
-    std::vector<CTreeNodeRef> vNodesInArrivalOrder;
-    unsigned char nonce = 1;
-    for (const uint32_t nSequenceId : vGappedIds)
+    // Two base subblocks with no children score the same, so the lower hash goes first. Give
+    // the higher-hash one a child: its score rises above the other's, and the child (whose
+    // score counts its parent) also outranks the childless base subblock.
+    CTreeNodeRef nodeA = MakeTestTreeNode(1);
+    CTreeNodeRef nodeB = MakeTestTreeNode(2);
+    if (nodeA->hash < nodeB->hash)
+        std::swap(nodeA, nodeB);
+    BOOST_REQUIRE(nodeB->hash < nodeA->hash);
+    nodeA->dagHeight = 1;
+    nodeB->dagHeight = 1;
+
+    // Gapped and out of order ids, as a removal or an arrival leaves them.
+    nodeA->nSequenceId = 5;
+    nodeB->nSequenceId = 2;
+    tree.AddNode(nodeA);
+    tree.AddNode(nodeB);
+    tailstormForest.RenumberDag(tree);
+    BOOST_CHECK_EQUAL(nodeB->nSequenceId, 1);
+    BOOST_CHECK_EQUAL(nodeA->nSequenceId, 2);
+
+    CTreeNodeRef child = MakeTestTreeNode(3);
+    LinkTestTreeNodes(nodeA, child);
+    tree.AddNode(child);
+    tailstormForest.RenumberDag(tree);
+    BOOST_CHECK_EQUAL(nodeA->nSequenceId, 1);
+    BOOST_CHECK_EQUAL(child->nSequenceId, 2);
+    BOOST_CHECK_EQUAL(nodeB->nSequenceId, 3);
+
+    const std::vector<CTreeNodeRef> sorted = tree.SortedDag();
+    BOOST_REQUIRE_EQUAL(sorted.size(), 3);
+    BOOST_CHECK(sorted[0] == nodeA);
+    BOOST_CHECK(sorted[1] == child);
+    BOOST_CHECK(sorted[2] == nodeB);
+
+    // Renumbering an unchanged dag leaves every id where it is.
+    tailstormForest.RenumberDag(tree);
+    BOOST_CHECK_EQUAL(nodeA->nSequenceId, 1);
+    BOOST_CHECK_EQUAL(child->nSequenceId, 2);
+    BOOST_CHECK_EQUAL(nodeB->nSequenceId, 3);
+}
+
+BOOST_AUTO_TEST_CASE(renumber_dag_ranks_by_descendant_score)
+{
+    // A subblock with several parents scores high while each parent scores low. Ranking a parent by the
+    // highest score among it and its descendants places the parents, and so the child, ahead of an
+    // unrelated chain whose scores fall between theirs.
+    LOCK(tailstormForest.cs_forest);
+
+    TestTailstormTree tree;
+
+    // P1, P2, P3 (score 2 each) are the parents of C (score 4).
+    std::vector<CTreeNodeRef> parents;
+    CTreeNodeRef child = MakeTestTreeNode(10);
+    for (unsigned char nonce = 1; nonce <= 3; nonce++)
     {
-        CTreeNodeRef node = MakeTestTreeNode(nonce++);
-        node->nSequenceId = nSequenceId;
-        tree.AddNode(node);
-        vNodesInArrivalOrder.push_back(node);
+        CTreeNodeRef parent = MakeTestTreeNode(nonce);
+        parent->dagHeight = 1;
+        LinkTestTreeNodes(parent, child);
+        parents.push_back(parent);
+        tree.AddNode(parent);
     }
-    BOOST_REQUIRE_EQUAL(tree.Size(), vGappedIds.size());
+    tree.AddNode(child);
+
+    // Q -> Q1 -> Q2 all score 3.
+    CTreeNodeRef nodeQ = MakeTestTreeNode(20);
+    CTreeNodeRef nodeQ1 = MakeTestTreeNode(21);
+    CTreeNodeRef nodeQ2 = MakeTestTreeNode(22);
+    nodeQ->dagHeight = 1;
+    LinkTestTreeNodes(nodeQ, nodeQ1);
+    LinkTestTreeNodes(nodeQ1, nodeQ2);
+    tree.AddNode(nodeQ);
+    tree.AddNode(nodeQ1);
+    tree.AddNode(nodeQ2);
+
+    std::vector<CTreeNodeRef> all = parents;
+    all.insert(all.end(), {child, nodeQ, nodeQ1, nodeQ2});
+    const auto scores = GetDagScores(all);
+    BOOST_REQUIRE_EQUAL(scores.at(parents[0]), 2);
+    BOOST_REQUIRE_EQUAL(scores.at(child), 4);
+    BOOST_REQUIRE_EQUAL(scores.at(nodeQ), 3);
 
     tailstormForest.RenumberDag(tree);
 
-    // The ids are contiguous again, and each subblock holds its place in the arrival order
-    // that the old ids recorded.
-    for (size_t i = 0; i < vNodesInArrivalOrder.size(); i++)
-    {
-        BOOST_CHECK_EQUAL(vNodesInArrivalOrder[i]->nSequenceId, static_cast<uint32_t>(i + 1));
-    }
+    for (const auto &parent : parents)
+        BOOST_CHECK(parent->nSequenceId < child->nSequenceId);
+    BOOST_CHECK_EQUAL(child->nSequenceId, 4);
+    BOOST_CHECK_EQUAL(nodeQ->nSequenceId, 5);
+    BOOST_CHECK_EQUAL(nodeQ1->nSequenceId, 6);
+    BOOST_CHECK_EQUAL(nodeQ2->nSequenceId, 7);
 
-    // Renumbering a dag that has no gaps leaves every id where it is.
-    tailstormForest.RenumberDag(tree);
-    for (size_t i = 0; i < vNodesInArrivalOrder.size(); i++)
+    for (const auto &node : all)
     {
-        BOOST_CHECK_EQUAL(vNodesInArrivalOrder[i]->nSequenceId, static_cast<uint32_t>(i + 1));
+        node->setAncestors.clear();
+        node->setDescendants.clear();
     }
 }
 

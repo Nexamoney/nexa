@@ -1160,8 +1160,20 @@ static UniValue getsubblock(const UniValue &params, bool fHelp)
             if (param1 == "remove")
             {
                 uint256 hash(uint256S(param0));
+                // Same lock order as dag insertion: the forest lock, then the corral pause.
+                LOCK(tailstormForest.cs_forest);
+                TxAdmissionPause txlock;
+                // Find the grove first; once the subblock is removed its hash no longer leads to it.
+                CTailstormGroveRef grove;
+                tailstormForest.GetGrove(hash, grove);
                 if (tailstormForest.Remove(hash))
+                {
+                    // Rebuild the view without the removed subblock and its descendants. Only the grove
+                    // extending the active tip has a view to rebuild.
+                    if (grove && grove->id() == chainActive.Tip()->GetBlockHash())
+                        tailstormForest.ReGenerateDagData(grove);
                     return "Removed from dag: " + param0;
+                }
                 else
                     throw runtime_error(strprintf("Did not remove from dag: %s", param0));
             }
@@ -2260,6 +2272,22 @@ UniValue reconsidermostworkchain(const UniValue &params, bool fHelp)
     return NullUniValue;
 }
 
+UniValue reconsiderdag(const UniValue &params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error("reconsiderdag\n"
+                            "\nRegenerate and re-sort the DAG built on the active chain tip.\n"
+                            "\nResult:\n"
+                            "\"hash\"    (string) the dag tip hash after the resort\n"
+                            "\nExamples:\n" +
+                            HelpExampleCli("reconsiderdag", "") + HelpExampleRpc("reconsiderdag", ""));
+
+    if (!tailstormForest.ReconsiderDag())
+        throw runtime_error("No dag on the active chain tip");
+
+    return tailstormForest.GetDagActiveTip().GetHex();
+}
+
 template <typename T>
 static T CalculateTruncatedMedian(std::vector<T> &scores)
 {
@@ -2786,7 +2814,7 @@ UniValue tailstormInfoToJSON(uint256 &blockhash, bool fVerbose)
     UniValue ret(UniValue::VOBJ);
     if (!blockhash.IsNull())
     {
-        std::set<CTreeNodeRef> setBestDag;
+        std::vector<CTreeNodeRef> setBestDag;
         tailstormForest.GetBestDagFor(blockhash, setBestDag);
         LOG(DAG, "getting tailstorm info for %s setbestdag %ld\n", blockhash.ToString(), setBestDag.size());
         for (CTreeNodeRef node : setBestDag)
@@ -2821,7 +2849,7 @@ UniValue tailstormInfoToJSON(uint256 &blockhash, bool fVerbose)
         int64_t nUnlinkedSubblocks = tailstormForest.GetUnlinkedSubblocks();
         int64_t nUnlinkedSummaryBlocks = tailstormForest.GetUnlinkedSummaryBlocks();
 
-        std::set<CTreeNodeRef> setFullDag;
+        std::vector<CTreeNodeRef> setFullDag;
         tailstormForest.GetFullDagFor(blockhash, setFullDag);
 
         if (fVerbose == 1)
@@ -3229,6 +3257,7 @@ static const CRPCCommand commands[] = {
     {"hidden", "reconsiderblock", &reconsiderblock, true},
     {"hidden", "rollbackchain", &rollbackchain, true},
     {"hidden", "reconsidermostworkchain", &reconsidermostworkchain, true},
+    {"hidden", "reconsiderdag", &reconsiderdag, true},
 };
 
 void RegisterBlockchainRPCCommands(CRPCTable &table)

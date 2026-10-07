@@ -122,7 +122,7 @@ private:
     /** Clear the block's state and prepare for assembling a new block */
     void resetBlock(const CScript &scriptPubKeyIn,
         int64_t coinbaseSize = -1,
-        std::set<CTreeNodeRef> *setBestDag = nullptr);
+        std::vector<CTreeNodeRef> *setBestDag = nullptr);
     /** Add a tx to the block */
     void AddToBlock(std::vector<const CTxMemPoolEntry *> *vtxe, CTxMemPool::TxIdIter iter);
     void RemoveFromBlock(std::vector<const CTxMemPoolEntry *> *vtxe, CTxMemPool::TxIdIter iter);
@@ -151,13 +151,13 @@ private:
     /** Bytes to reserve for coinbase and block header */
     uint64_t reserveBlockSize(const CScript &scriptPubKeyIn,
         int64_t coinbaseSize = -1,
-        std::set<CTreeNodeRef> *setBestDag = nullptr);
+        std::vector<CTreeNodeRef> *setBestDag = nullptr);
 
     /** Constructs a coinbase transaction */
     CTransactionRef coinbaseTx(const CScript &scriptPubKeyIn,
         int nHeight,
         CAmount nValue,
-        std::set<CTreeNodeRef> *setBestDag = nullptr);
+        std::vector<CTreeNodeRef> *setBestDag = nullptr);
 
     // helper functions for addPackageTxs()
     /** Test whether a package, if added to the block, would make the block exceed the sigops limits */
@@ -185,6 +185,6 @@ void SignalBlockTemplateChange();
 
 // Taking a tailstorm dag as an input, generate a vout for a tailstorm summary block
 // which has its outputs grouped by their public keys.
-bool ValidateSummaryBlockCoinbase(CAmount nBlockReward, ConstCBlockRef pblock, std::set<CTreeNodeRef> &setBestDag);
+bool ValidateSummaryBlockCoinbase(CAmount nBlockReward, ConstCBlockRef pblock, std::vector<CTreeNodeRef> &setBestDag);
 
 #endif // NEXA_MINER_H
