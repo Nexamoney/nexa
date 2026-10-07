@@ -13,6 +13,7 @@
 #include "txadmission.h"
 #include "validation/tailstorm.h"
 
+#include <boost/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 
 #include <chrono>
@@ -324,6 +325,62 @@ BOOST_AUTO_TEST_CASE(double_spend_prefers_dag_score)
     BOOST_CHECK_EQUAL(losers.count(loserTx->GetId()), 1);
     BOOST_CHECK_EQUAL(exclusions.count(winnerTx->GetId()), 0);
     BOOST_CHECK_EQUAL(exclusions.count(loserTx->GetId()), 1);
+}
+
+BOOST_AUTO_TEST_CASE(double_spend_changes_after_join)
+{
+    // A common descendant does not freeze the winner: extending only the
+    // losing branch can give it a higher score.
+    // See winner_flip_evicts_pool_dependents_at_regeneration for a score-driven flip without a join,
+    // and first_regeneration_of_a_group_evicts_pool_dependents for displacement by a lower-hash rival.
+    const COutPoint spentOutput(MakeTestTreeNode(20)->hash);
+    const CTransactionRef txA = MakeTestTransaction(spentOutput, 1);
+    const CTransactionRef txB = MakeTestTransaction(spentOutput, 2);
+    const CTreeNodeRef nodeA = MakeTestTransactionNode(txA, 1);
+    const CTreeNodeRef nodeB = MakeTestTransactionNode(txB, 2);
+    const CTreeNodeRef initialWinner = nodeA->hash < nodeB->hash ? nodeA : nodeB;
+    const CTreeNodeRef initialLoser = initialWinner == nodeA ? nodeB : nodeA;
+    const CTransactionRef winnerTx = initialWinner == nodeA ? txA : txB;
+    const CTransactionRef loserTx = initialWinner == nodeA ? txB : txA;
+    const CTreeNodeRef join = MakeTestTreeNode(3);
+    const CTreeNodeRef side = MakeTestTreeNode(4);
+    BOOST_SCOPE_EXIT_ALL(&)
+    {
+        for (const auto &node : {nodeA, nodeB, join, side})
+        {
+            node->setAncestors.clear();
+            node->setDescendants.clear();
+        }
+    };
+
+    nodeA->dagHeight = 1;
+    nodeB->dagHeight = 1;
+    LinkTestTreeNodes(nodeA, join);
+    LinkTestTreeNodes(nodeB, join);
+    std::set<CTreeNodeRef> dag{nodeA, nodeB, join};
+    const auto before = GetDagScores(dag);
+    BOOST_REQUIRE_EQUAL(before.at(initialWinner), 2);
+    BOOST_REQUIRE_EQUAL(before.at(initialLoser), 2);
+
+    LOCK(tailstormForest.cs_forest);
+    CDagConflictRegistry registry;
+    BOOST_CHECK(!registry.ScanSpends(nodeA, true));
+    BOOST_CHECK(!registry.ScanSpends(nodeB, true));
+    BOOST_REQUIRE_EQUAL(registry.GroupCount(), 1);
+    const auto initialExclusions = GetTxnExclusionSet(dag, registry);
+    BOOST_CHECK_EQUAL(initialExclusions.size(), 1);
+    BOOST_CHECK_EQUAL(initialExclusions.count(winnerTx->GetId()), 0);
+    BOOST_CHECK_EQUAL(initialExclusions.count(loserTx->GetId()), 1);
+
+    LinkTestTreeNodes(initialLoser, side);
+    dag.insert(side);
+    const auto after = GetDagScores(dag);
+    BOOST_REQUIRE_EQUAL(after.at(initialWinner), 2);
+    BOOST_REQUIRE_EQUAL(after.at(initialLoser), 3);
+    const auto finalExclusions = GetTxnExclusionSet(dag, registry);
+    BOOST_CHECK_EQUAL(finalExclusions.size(), 1);
+    BOOST_CHECK_EQUAL(finalExclusions.count(winnerTx->GetId()), 1);
+    BOOST_CHECK_EQUAL(finalExclusions.count(loserTx->GetId()), 0);
 }
 
 BOOST_AUTO_TEST_CASE(double_spend_uses_hash_tiebreak)
