@@ -808,13 +808,14 @@ static ConstCBlockRef MakeLowerHashSubblock(
 BOOST_AUTO_TEST_CASE(regeneration_retries_cross_branch_spend)
 {
     // Subblock ancestry (parent -> child):
-    //             +--> A[P]
+    //             +--> A[p]
     // Summary ----+
-    //             +--> B[C]
-    // Transactions: P -> C (C spends P's output).
+    //             +--> B[c]
+    // Uppercase names are subblocks; lowercase names in brackets are transactions.
     //
-    // Unrelated subblocks can carry dependent transactions. Rebuilding either sequence order
-    // must apply both transactions and leave the same coins, including child-first replay.
+    // A carries p, which spends a summary-root coin. B carries c, which spends p's
+    // output, but B does not reference A. Insert B first, then A, and regenerate
+    // in both sequence orders. Both transactions must apply, leaving only c's output.
     DoubleSpendTestCoin coin(coinsCache);
     const CBlockIndex &summary = coin.chain.previousSummary;
     const CTransactionRef provider = coin.SpendCoin(800);
@@ -905,6 +906,8 @@ static void CheckCrossBranchRegeneration(CCoinsViewCache &coinsCache, size_t spe
         ~ScopedTailstormK() { value = saved; }
     } tailstormK;
     DoubleSpendTestCoin coin(coinsCache);
+    // p spends a summary-root coin, c spends p's output, and d spends c's.
+    // A2 carries p; B2 carries c; the last subblock on branch B carries d.
     const CTransactionRef provider = coin.SpendCoin(800);
     const CTransactionRef child = coin.Spend(provider->OutpointAt(0), 800, 600);
     const CTransactionRef grandchild = coin.Spend(child->OutpointAt(0), 600, 400);
@@ -920,7 +923,7 @@ static void CheckCrossBranchRegeneration(CCoinsViewCache &coinsCache, size_t spe
         return node;
     };
 
-    // Insert C and D before P so setup also exercises chained missing-input retries.
+    // Insert the subblocks carrying c and d before p's, exercising chained missing-input retries.
     unsigned char nonce = 95;
     std::vector<CTreeNodeRef> branchB;
     for (size_t i = 0; i < spenderBranchLength; ++i)
@@ -931,7 +934,7 @@ static void CheckCrossBranchRegeneration(CCoinsViewCache &coinsCache, size_t spe
         std::vector<CTransactionRef> txs;
         if (i == 1)
             txs.push_back(child);
-        // Put D at the branch tip so the unequal case spans an extra subblock.
+        // Put d at the branch tip so the unequal case spans an extra subblock.
         if (i + 1 == spenderBranchLength)
             txs.push_back(grandchild);
         branchB.push_back(insert(parents, nonce++, txs));
@@ -993,7 +996,7 @@ static void CheckCrossBranchRegeneration(CCoinsViewCache &coinsCache, size_t spe
             }
             for (const auto &tx : {provider, child, grandchild})
                 BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, tx->GetId()));
-            // Only D's output survives once P, C and D have all been applied.
+            // Only d's output survives once p, c and d have all been applied.
             CCoinsViewCache &view = CTailstormForestTest::CoinsView(*tree);
             for (const auto &tx : {coin.parentTx, provider, child})
                 BOOST_CHECK(!view.HaveCoin(tx->OutpointAt(0)));
@@ -1019,24 +1022,31 @@ static void CheckCrossBranchRegeneration(CCoinsViewCache &coinsCache, size_t spe
 BOOST_AUTO_TEST_CASE(regeneration_retries_longer_branches)
 {
     // Subblock ancestry (parent -> child):
-    //             +--> A1 --> A2[P] --> A3
+    //             +--> A1 --> A2[p] --> A3
     // Summary ----+
-    //             +--> B1 --> B2[C] --> B3[D]
-    // Transactions: P -> C -> D (each spends the preceding transaction's output).
+    //             +--> B1 --> B2[c] --> B3[d]
+    // Uppercase names are subblocks; lowercase names in brackets are transactions.
     //
-    // Transactions P -> C -> D must apply in every tested replay order.
+    // p spends a summary-root coin; c spends p's output; d spends c's output.
+    // The branches have no subblock ancestry link. Insert branch B before A,
+    // then regenerate A-first, B-first and interleaved. Each order must apply
+    // all three transactions and leave only d's output.
     CheckCrossBranchRegeneration(coinsCache, 3);
 }
 
 BOOST_AUTO_TEST_CASE(regeneration_retries_unequal_branches)
 {
     // Subblock ancestry (parent -> child):
-    //             +--> A1 --> A2[P] --> A3
+    //             +--> A1 --> A2[p] --> A3
     // Summary ----+
-    //             +--> B1 --> B2[C] --> B3 --> B4[D]
-    // Transactions: P -> C -> D (each spends the preceding transaction's output).
+    //             +--> B1 --> B2[c] --> B3 --> B4[d]
+    // Uppercase names are subblocks; lowercase names in brackets are transactions.
     //
-    // Replaying the longer branch first must still recover both dependent transactions.
+    // p spends a summary-root coin; c spends p's output; d spends c's output.
+    // The branches have no subblock ancestry link, and B3 adds a step between
+    // c's and d's subblocks. Insert B before A, then regenerate A-first, B-first
+    // and interleaved. All seven subblocks must remain selected, with p, c and d
+    // applied and only d's output left in every order.
     CheckCrossBranchRegeneration(coinsCache, 4);
 }
 
