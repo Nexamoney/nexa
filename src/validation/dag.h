@@ -419,6 +419,7 @@ protected:
     CTreeNodeRef Insert(CTreeNodeRef newNode);
     bool GetBestDag(std::set<CTreeNodeRef> &dag);
     bool GetFullDag(std::set<CTreeNodeRef> &dag);
+    bool GetDagForReorg(std::set<CTreeNodeRef> &dag);
     bool GetBestTipHash(uint256 &hash);
 };
 
@@ -558,6 +559,10 @@ public:
     //! Return a set of nodes from a tree that matches what is in a block. If ptree is set it
     //! receives the tree that produced them, for GetTxnExclusionSet.
     bool GetDagForBlock(ConstCBlockRef &pblock, std::set<CTreeNodeRef> &dag, CTailstormTreeRef *ptree = nullptr);
+
+    //! Return the set of tree nodes (uncles first then subblocks) that fit k-1 subblocks regardless of whether
+    //! those subblocks were processed or not.
+    bool GetDagForReorg(const uint256 &hash, std::set<CTreeNodeRef> &dag);
 
     //! Return the current hash of the tip of the dag which contains this hash
     bool GetBestTipHashFor(const uint256 &hash, uint256 &tiphash);
