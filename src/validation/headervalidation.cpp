@@ -82,7 +82,13 @@ bool CheckTailstormSummaryBlockProofOfWork(const Consensus::Params &consensusPar
             nUnclesFound++;
         }
 
-        setExists.insert(miningHeaderCommitment);
+        // Check for duplicates
+        if (setExists.count(powHash))
+        {
+            return state.DoS(50, error("CheckSummaryBlockHeader: summary has duplicate mining hash"), REJECT_INVALID,
+                "bad-blk-duplicate-mining-hash");
+        }
+        setExists.insert(powHash);
         count++;
     }
 
