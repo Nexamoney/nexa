@@ -2765,26 +2765,36 @@ UniValue getchaintxstats(const UniValue &params, bool fHelp)
     return ret;
 }
 
-UniValue tailstormInfoToJSON()
+UniValue tailstormInfoToJSON(uint256 &blockhash, bool fVerbose)
 {
     LOCK(tailstormForest.cs_forest);
 
-    CBlockIndex *tip = chainActive.Tip();
+    CBlockIndex *tip = nullptr;
+    if (blockhash.IsNull())
+    {
+        tip = chainActive.Tip();
+        blockhash = chainActive.Tip()->GetBlockHash();
+    }
+    else
+    {
+        tip = LookupBlockIndex(blockhash);
+        if (!tip)
+            throw JSONRPCError(
+                RPC_INVALID_ADDRESS_OR_KEY, strprintf("Summary Block %s not found", blockhash.ToString()));
+    }
+
     UniValue ret(UniValue::VOBJ);
-    if (tip != nullptr)
+    if (!blockhash.IsNull())
     {
         std::set<CTreeNodeRef> setBestDag;
-        tailstormForest.GetBestDagFor(tip->GetBlockHash(), setBestDag);
-        LOGA("getting tailstorm info for %s at height %ld setbestdag %ld\n", tip->GetBlockHash().ToString().c_str(),
-            tip->height(), setBestDag.size());
+        tailstormForest.GetBestDagFor(blockhash, setBestDag);
+        LOG(DAG, "getting tailstorm info for %s setbestdag %ld\n", blockhash.ToString(), setBestDag.size());
         for (CTreeNodeRef node : setBestDag)
         {
-            LOGA(" subblock in bestdag %s\n", node->hash.ToString());
+            LOG(DAG, "  subblock in bestdag %s\n", node->hash.ToString());
         }
 
-        uint256 dagTipHash = GetActiveDagTip(setBestDag);
-
-        // calculate uncles
+        // Calculate uncles
         int64_t nUncles = 0;
         for (auto node : setBestDag)
         {
@@ -2792,18 +2802,40 @@ UniValue tailstormInfoToJSON()
                 nUncles++;
         }
 
+        // Set the dagtip to the current chaintip but if a grove
+        // is found then get the active dag tip from it.
+        //
+        // If we only used GetActiveDagTip() then we'd always get back the chain active tip
+        // and so dagTipHash would always be chain active rather than the summary block
+        // we've specified.
+        uint256 dagTipHash = blockhash;
+        if (setBestDag.size() != (size_t)nUncles)
+        {
+            CTailstormGroveRef grove = nullptr;
+            if (tailstormForest.GetGrove(blockhash, grove))
+            {
+                dagTipHash = GetActiveDagTip(setBestDag);
+            }
+        }
+
         int64_t nUnlinkedSubblocks = tailstormForest.GetUnlinkedSubblocks();
         int64_t nUnlinkedSummaryBlocks = tailstormForest.GetUnlinkedSummaryBlocks();
-        tailstormForest.GetInternals(ret);
+
+        std::set<CTreeNodeRef> setFullDag;
+        tailstormForest.GetFullDagFor(blockhash, setFullDag);
+
+        if (fVerbose == 1)
+            tailstormForest.GetInternals(ret);
 
         ret.pushKV("chaintip", tip->GetBlockHash().GetHex());
         ret.pushKV("chaintipheight", (int64_t)tip->height());
         ret.pushKV("dagtip", dagTipHash.GetHex());
+        ret.pushKV("bestdag", (int64_t)setBestDag.size());
+        ret.pushKV("fulldag", (int64_t)setFullDag.size());
+        ret.pushKV("uncles", nUncles);
         ret.pushKV("total", (int64_t)tailstormForest.Size());
         ret.pushKV("unlinked_subblocks", nUnlinkedSubblocks);
         ret.pushKV("unlinked_summaryblocks", nUnlinkedSummaryBlocks);
-        ret.pushKV("uncles", nUncles);
-        ret.pushKV("bestdag", (int64_t)setBestDag.size());
     }
 
     return ret;
@@ -2811,20 +2843,25 @@ UniValue tailstormInfoToJSON()
 
 UniValue gettailstorminfo(const UniValue &params, bool fHelp)
 {
-    if (fHelp || params.size() != 0)
+    if (fHelp || params.size() > 2)
         throw std::runtime_error(
-            "gettailstorminfo\n"
+            "gettailstorminfo (blockhash) (verbosity)\n"
+            "\nArguments:\n"
+            "1. \"blockhash\"  (string, optional) The hash of the block that ends the window.\n"
+            "2. verbosity      (bool, optional, default=false) true = list of all subblocks and the\n"
+            "                  height and hash of the summary block they are connected to.\n"
             "\nReturns details on the active state of the Tailstorm subblock pool.\n"
             "\nResult:\n"
             "{\n"
-            "  \"chaintip\": x,                (numeric) Current summary block tip hash\n"
-            "  \"chaintipheight\": x,          (numeric) Height of the current summary block tip\n"
+            "  \"chaintip\": x,                (string optional, default=chaintip) summary block hash.\n"
+            "  \"chaintipheight\": x,          (numeric) Height of the current summary block tip.\n"
             "  \"dagtip\": x                   (numeric) Current dag tip hash\n"
+            "  \"bestdag\": x                  (numeric) Number of subblocks in the best dag (active dag)\n"
+            "  \"fulldag\": x                  (numeric) Number of subblocks in the full dag (includes uprocessed)\n"
+            "  \"uncles\": x                   (numeric) Number of uncle blocks in the best dag (active dag)\n"
             "  \"total\": x,                   (numeric) Current total subblock count in the forest\n"
             "  \"unlinked_subblocks\": x       (numeric) Number of subblocks not linked in the forest \n"
-            "  \"unlinked_summaryblocks\": x   (numeric) Number of subblocks not linked in the forest \n"
-            "  \"uncles\": x                   (numeric) Number of uncle blocks in the best dag (active dag)\n"
-            "  \"bestdag\": x                  (numeric) Number of subblocks in the best dag (active dag)\n"
+            "  \"unlinked_summaryblocks\": x   (numeric) Number of summary blocks not connected \n"
             "}\n"
             "\nExamples:\n" +
             HelpExampleCli("gettailstorminfo", "") + HelpExampleRpc("gettailstorminfo", ""));
@@ -2832,7 +2869,53 @@ UniValue gettailstorminfo(const UniValue &params, bool fHelp)
     if (!fTailstormEnabled)
         throw runtime_error("tailstorm is not enabled\n");
 
-    return tailstormInfoToJSON();
+    // if not grab the block by hash
+    uint256 hash;
+    bool fVerbose = 0;
+    if (params.size() == 1)
+    {
+        std::string strHash;
+        if (params[0].isStr())
+        {
+            strHash = params[0].get_str();
+            boost::algorithm::to_lower(strHash);
+        }
+
+        static const std::set<std::string> boolStrings{"0", "1", "no", "yes", "false", "true", "n", "y", "t", "f"};
+        if (!params[0].isStr() || boolStrings.count(strHash) > 0)
+        {
+            if (params[0].isStr())
+                fVerbose = InterpretBool(strHash);
+            else if (params[0].isNum())
+                fVerbose = (params[0].get_int() != 0);
+            else
+                fVerbose = params[0].get_bool();
+        }
+        else
+        {
+            hash = ParseHashV(strHash, "blockhash");
+            if (hash.IsNull())
+                throw runtime_error("Hash must not be null\n");
+        }
+    }
+    else if (params.size() == 2)
+    {
+        std::string strHash;
+        if (params[0].isStr())
+            strHash = params[0].get_str();
+        hash = ParseHashV(strHash, "blockhash");
+        if (hash.IsNull())
+            throw runtime_error("Hash must not be null\n");
+
+        if (params[1].isStr())
+            fVerbose = InterpretBool(params[1].get_str());
+        else if (params[1].isNum())
+            fVerbose = (params[1].get_int() != 0);
+        else
+            fVerbose = params[1].get_bool();
+    }
+
+    return tailstormInfoToJSON(hash, fVerbose);
 }
 
 

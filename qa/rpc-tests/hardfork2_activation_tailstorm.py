@@ -501,8 +501,8 @@ class TailstormActivationTest(BitcoinTestFramework):
         mocktime = mocktime + 30
         self.setmocktime(mocktime)
         summaryblock_hash = self.nodes[0].generate(1)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 0)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 0)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo(True)['bestdag'] == 0)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(False)['bestdag'] == 0)
         blockdata = self.nodes[0].getblock(summaryblock_hash[0])
         assert(txidem1 in blockdata['txidem'])
         assert(txidem2 in blockdata['txidem'])
@@ -702,18 +702,28 @@ class TailstormActivationTest(BitcoinTestFramework):
         # blocks' dag.
         logging.info("Test reorgs between between a summary block race and their two different dags")
 
-        # Mine the next 3 subblocks and share them between peers before disconnecting.
-        subblock_hash_node0 = self.nodes[0].generate(3)
+        # Disconnect the peers and mine two subblocks on each node. These will when reconnected
+        # create a full dag on each side of the fork along with one orphaned subblock which will be
+        # an uncle for the next epoch.
+        disconnect_all(self.nodes[0])
+        waitFor(waitTime, lambda: len(self.nodes[0].getpeerinfo()) == 0)
+        self.nodes[0].generate(2)
+        self.nodes[1].generate(2)
 
+        # check we have all subblocks
+        interconnect_nodes(self.nodes)
+        waitFor(waitTime, lambda: len(self.nodes[0].getpeerinfo()) != 0)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 3)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['fulldag'] == 4)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['fulldag'] == 4)
 
-        # Disconnect peers.
+        # Disconnect peers again so we can mine two different fork blocks.
         disconnect_all(self.nodes[0])
         waitFor(waitTime, lambda: len(self.nodes[0].getpeerinfo()) == 0)
 
-        # Generate a new summary block and then start
-        # a new tree by mining a subblock on each peer.
+        # Generate a different summary block on each peer and then start
+        # a new tree on top of each one.
         node0_count = self.nodes[0].getblockcount()
         node1_count = self.nodes[1].getblockcount()
         summary_block_node0 = self.nodes[0].generate(1)
@@ -734,8 +744,10 @@ class TailstormActivationTest(BitcoinTestFramework):
         subblock_hash_node0 = self.nodes[0].generate(1)
         subblock_hash_node1 = self.nodes[1].generate(1)
         assert_not_equal(subblock_hash_node0[0], subblock_hash_node1[0])
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 1)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 1)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 2)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 2)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['uncles'] == 1)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['uncles'] == 1)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
 
@@ -743,10 +755,34 @@ class TailstormActivationTest(BitcoinTestFramework):
         # but each peer should stay on it's own previous chain tip.
         interconnect_nodes(self.nodes)
         waitFor(waitTime, lambda: len(self.nodes[0].getpeerinfo()) != 0)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 1)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 1)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 2)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 2)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['uncles'] == 1)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['uncles'] == 1)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['unlinked_subblocks'] == 0)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['unlinked_subblocks'] == 0)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['chaintip'] == node0_chaintip)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['chaintip'] == node1_chaintip)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['chaintipheight'] == self.nodes[0].getblockcount())
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['chaintipheight'] == self.nodes[1].getblockcount())
+
+        # check that the inactive fork blocks also have 2 subblocks in their respective full dag and 1 uncle
+        # but only 1 in the bestdag (which is the uncle). There's only 1 in the bestdag because the additional
+        # subblock has not yet been processed since the fork is not the active fork.
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo(node1_chaintip)['fulldag'] == 2)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(node0_chaintip)['fulldag'] == 2)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo(node1_chaintip)['bestdag'] == 1)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(node0_chaintip)['bestdag'] == 1)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo(node1_chaintip)['uncles'] == 1) 
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(node0_chaintip)['uncles'] == 1)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo(node1_chaintip)['chaintip'] == node1_chaintip)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(node0_chaintip)['chaintip'] == node0_chaintip)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo(node1_chaintip)['chaintipheight'] == self.nodes[1].getblockcount())
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(node0_chaintip)['chaintipheight'] == self.nodes[0].getblockcount())
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo(node1_chaintip)['dagtip'] == node1_chaintip)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(node0_chaintip)['dagtip'] == node0_chaintip)
 
         # now mine 1 additional subblock on one of the nodes and this should
         # cause the other node to re-org as evidenced by both having the same
@@ -758,23 +794,14 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[0].getbestblockhash() == node1_chaintip)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['chaintip'] == node1_chaintip)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 2)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 3)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['chaintip'] == node1_chaintip)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 2)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
 
         # After mining a new subblock and re-orging the miningcandidate should have updated on both peers
         assert_not_equal(commitment_before0['headerCommitment'], self.nodes[0].getminingcandidate()['headerCommitment']);
         assert_not_equal(commitment_before1['headerCommitment'], self.nodes[1].getminingcandidate()['headerCommitment']);
-
-        # mine a subblock
-        subblock_hash_node1 = self.nodes[1].generate(1)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['chaintip'], node1_chaintip)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['chaintip'] == node1_chaintip)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 3)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
 
         # mine the summary block
         summary_hash = self.nodes[1].generate(1)
@@ -817,9 +844,9 @@ class TailstormActivationTest(BitcoinTestFramework):
         subblock_hash_node1 = self.nodes[1].generate(1)
         subblock_hash_node1 = self.nodes[1].generate(1)
         subblock_hash_node1 = self.nodes[1].generate(1)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(True)['bestdag'] == 3)
         summary_block_node1 = self.nodes[1].generate(1)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 0)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(False)['bestdag'] == 0)
 
         mocktime = mocktime + 30
         self.setmocktime(mocktime)
@@ -841,6 +868,10 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 0)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 0)
         waitFor(waitTime, lambda: self.nodes[0].getblockcount() == self.nodes[1].getblockcount())
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(summary_block_node1[0])['chaintip'] == summary_block_node1[0])
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo(summary_block_node1[0])['chaintip'] == summary_block_node1[0])
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(summary_block_node1[0])['dagtip'] == summary_block_node1[0])
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo(summary_block_node1[0])['dagtip'] == summary_block_node1[0])
 
         ###### Test double spent subblocks 1
         logging.info("Double spend subblocks where ds is in a subblock of same dag height")
@@ -974,9 +1005,10 @@ class TailstormActivationTest(BitcoinTestFramework):
 
         # now mine the next subblock on one node causing the other to re-org their dag tree
         # and so both peers should end up on the same dagtip.
+        total_before = self.nodes[0].gettailstorminfo()['total']
         subblock_hash_node0 = self.nodes[0].generate(1);
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == 22)
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == 22)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] == total_before + 1)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] == total_before + 1)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 3)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
@@ -1307,8 +1339,8 @@ class TailstormActivationTest(BitcoinTestFramework):
         assert(node1_ds_hash == blockdata['hash'])
 
         # Check that both chains which are on the same summary block tip, have the same uncle.
-        uncle_node0 = self.nodes[0].gettailstorminfo()['uncles_to_grove_summaryblock']
-        uncle_node1 = self.nodes[1].gettailstorminfo()['uncles_to_grove_summaryblock']
+        uncle_node0 = self.nodes[0].gettailstorminfo("true")['uncles_to_grove_summaryblock']
+        uncle_node1 = self.nodes[1].gettailstorminfo("true")['uncles_to_grove_summaryblock']
         assert(uncle_node0 == uncle_node1)
         assert(any(self.nodes[0].gettailstorminfo()['chaintip'] in v for v in uncle_node0.values()))
 
