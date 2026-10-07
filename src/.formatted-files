@@ -349,6 +349,7 @@ test/exploit_tests.cpp
 test/fastfilter_tests.cpp
 test/getarg_tests.cpp
 test/hash_tests.cpp
+test/headervalidation_tests.cpp
 test/key_tests.cpp
 test/limitedmap_tests.cpp
 test/lcg_tests.cpp
