@@ -1534,6 +1534,37 @@ bool CTailstormGrove::GetFullDag(std::set<CTreeNodeRef> &dag)
     return true;
 }
 
+bool CTailstormGrove::GetDagForReorg(std::set<CTreeNodeRef> &dag)
+{
+    AssertLockHeld(tailstormForest.cs_forest);
+
+    dag.clear();
+    if (tree->dag.empty() && tree->mapUncles.empty())
+    {
+        return false;
+    }
+
+    uint32_t nNumSubblocksToReturn = Params().GetConsensus().tailstorm_k - 1;
+
+    // Insert the uncles first.
+    for (auto &mi : tree->mapUncles)
+    {
+        dag.insert(mi.second);
+        if (dag.size() == nNumSubblocksToReturn)
+            return true;
+    }
+
+    // Insert nodes from the current dag.
+    for (auto &mi : tree->dag)
+    {
+        dag.insert(mi.second);
+        if (dag.size() == nNumSubblocksToReturn)
+            return true;
+    }
+
+    return true;
+}
+
 bool CTailstormGrove::GetBestTipHash(uint256 &tiphash)
 {
     AssertLockHeld(tailstormForest.cs_forest);
@@ -2304,6 +2335,26 @@ bool CTailstormForest::GetFullDagFor(const uint256 &hash, std::set<CTreeNodeRef>
     return false;
 }
 
+bool CTailstormForest::GetDagForReorg(const uint256 &hash, std::set<CTreeNodeRef> &dag)
+{
+    LOCK(cs_forest);
+    dag.clear();
+    CTailstormGroveRef grove = nullptr;
+    if (GetGrove(hash, grove))
+    {
+        if (!grove->GetDagForReorg(dag))
+        {
+            LOG(DAG, "%s(): get dag for reorg returned false", __func__);
+            return false;
+        }
+        return true;
+    }
+    LOG(DAG, "%s(): did not get grove", __func__);
+
+    return false;
+}
+
+
 bool CTailstormForest::GetDagForBlock(ConstCBlockRef &pblock, std::set<CTreeNodeRef> &dag, CTailstormTreeRef *ptree)
 {
     LOCK(cs_forest);
@@ -2540,7 +2591,7 @@ void CTailstormForest::_CheckForReorg()
         //
         // The chainwork includes "all" subblocks for the full dag, so uncles as well as dag blocks.
         std::set<CTreeNodeRef> tipdag;
-        GetFullDagFor(*startingChainTip->phashBlock, tipdag);
+        GetDagForReorg(*startingChainTip->phashBlock, tipdag);
         unsigned int subblockCount = 0;
         for (auto node : tipdag)
         {
@@ -2567,7 +2618,7 @@ void CTailstormForest::_CheckForReorg()
 
             arith_uint256 nTreeChainWork = pindexSummaryRoot->chainWork();
             std::set<CTreeNodeRef> dag;
-            GetFullDagFor(grove->roothash, dag);
+            GetDagForReorg(grove->roothash, dag);
             // Add work for every subblock we know about, but no more than will fit in a summary block.
             // This way a fork with extra subblocks will not have more work than a fork with the correct number
             // of subblocks + a summary block.
