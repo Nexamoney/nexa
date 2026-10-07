@@ -97,7 +97,7 @@ bool CheckTailstormSummaryBlockProofOfWork(const Consensus::Params &consensusPar
     {
         if (ret.prevOfprevhash == uint256())
         {
-            return state.DoS(50, error("%s: proof of work failed - uncles exist, but uncle parent hash is 0"),
+            return state.DoS(50, error("%s: proof of work failed - uncles exist, but uncle parent hash is 0", __func__),
                 REJECT_INVALID, "bad-blk-invalid-uncle-parent");
         }
     }
