@@ -1037,7 +1037,14 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
     }
 
     // push uncles to the next epoch if it already exists.
-    auto setUncles = tailstormForest.PushUncles(newNode);
+    auto setPushedUncles = tailstormForest.PushUncles(newNode);
+    for (auto &treenode : setPushedUncles)
+    {
+        // Notify the dagviewer of any "pushed" uncles.
+        uint32_t nDagHeight = 1; // uncles should always be viewed at this height.
+        uiInterface.NotifyDagViewerUncle(
+            !IsInitialSyncComplete(), nDagHeight, 0, treenode->subblock->GetBlockHeader(), treenode->roothash);
+    }
 
     if (fAddedSubblock)
         return newNode;
@@ -2940,9 +2947,12 @@ std::set<CTreeNodeRef> CTailstormForest::PushUncles(CTreeNodeRef treenode)
                 CTreeNodeRef orphan = MakeTreeNodeRef(*mi.second);
                 orphan->roothash = grove->roothash;
                 orphan->fUncle = true;
-                grove->tree->mapUncles.emplace(mi.first, orphan);
-                setPushedUncles.insert(orphan);
-                LOG(DAG, "%s: pushed uncle %s", __func__, mi.first.ToString());
+                if (!grove->tree->mapUncles.count(mi.first))
+                {
+                    grove->tree->mapUncles.emplace(mi.first, orphan);
+                    setPushedUncles.insert(orphan);
+                    LOG(DAG, "%s: pushed uncle %s", __func__, mi.first.ToString());
+                }
             }
         }
     }
