@@ -2835,19 +2835,13 @@ std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTailstormGroveRef g
     // Find and include subblock uncles
     if (grove)
     {
-        auto pblock = ReadBlockFromDisk(grove->tree->pindexSummaryRoot, Params().GetConsensus());
-        if (!pblock)
-        {
-            LOG(DAG, "%s():  failed to read block from disk to %s", __func__,
-                grove->tree->pindexSummaryRoot->phashBlock->ToString());
-            return {};
-        }
+        auto header = grove->tree->pindexSummaryRoot->GetBlockHeader();
 
         // First we need the "full" set of dag blocks from the prev summary block (A) to compare
         // to our current summary block (B). Then we can determine which subblocks in the previous dag (A)
         // were not found in our block (B) and which are therefore orphans (uncles).
         std::set<uint256> setSummaryBlockMiningHashes;
-        auto ret = ParseSummaryBlockMinerData(pblock->minerData);
+        auto ret = ParseSummaryBlockMinerData(header.minerData);
         for (const auto &pair : ret.vSubblockProofs)
         {
             const auto &miningHeaderCommitment = pair.first;
@@ -2857,7 +2851,7 @@ std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTailstormGroveRef g
         }
 
         std::vector<CTreeNodeRef> prevDag;
-        GetFullDagFor(pblock->hashPrevBlock, prevDag);
+        GetFullDagFor(header.hashPrevBlock, prevDag);
         for (auto prevnode : prevDag)
         {
             // Ignoring any uncles in the previous epoch, check whether the node's mininghash
