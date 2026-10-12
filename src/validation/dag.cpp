@@ -2926,35 +2926,18 @@ std::set<CTreeNodeRef> CTailstormForest::PushUncles(CTreeNodeRef treenode)
     if (targetGroves.empty())
         return {};
 
-    // Find the uncles that would be specific for each grove (if any) and push them into those groves
+    // Find the uncles that would be specific for each target grove (if any) and push them into those groves
     std::set<CTreeNodeRef> setPushedUncles;
     for (auto &grove : targetGroves)
     {
-        // Get the dag for the target groves summary block
-        const CBlockHeader &header = grove->tree->pindexSummaryRoot->GetBlockHeader();
-        std::set<CTreeNodeRef> setDag;
-        CTailstormTreeRef dagTree = nullptr;
-        if (!GetDagForBlock(header, setDag, &dagTree))
+        std::map<uint256, CTreeNodeRef> mapUncles = GetUncles(grove);
+        for (auto &mi : mapUncles)
         {
-            continue;
-        }
-
-        // compare the the target dag with our current grove to find which uncles need to be pushed
-        // if any.
-        for (auto &mi : mygrove->tree->dag)
-        {
-            if (!setDag.count(mi.second) && !mi.second->fUncle)
+            auto res = grove->tree->mapUncles.emplace(mi.first, mi.second);
+            if (res.second)
             {
-                // If it's an uncle then push it to the target grove.
-                CTreeNodeRef orphan = MakeTreeNodeRef(*mi.second);
-                orphan->roothash = grove->roothash;
-                orphan->fUncle = true;
-                if (!grove->tree->mapUncles.count(mi.first))
-                {
-                    grove->tree->mapUncles.emplace(mi.first, orphan);
-                    setPushedUncles.insert(orphan);
-                    LOG(DAG, "%s: pushed uncle %s", __func__, mi.first.ToString());
-                }
+                setPushedUncles.insert(mi.second);
+                LOG(DAG, "%s: pushed uncle %s", __func__, mi.first.ToString());
             }
         }
     }
