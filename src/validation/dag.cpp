@@ -2822,6 +2822,8 @@ uint256 CTailstormForest::GetDagActiveTip()
 
 std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTreeNodeRef treenode)
 {
+    AssertLockHeld(cs_forest);
+
     CTailstormGroveRef grove = nullptr;
     if (!GetGrove(treenode->hash, grove))
         return {};
@@ -2830,6 +2832,8 @@ std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTreeNodeRef treenod
 
 std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTailstormGroveRef grove)
 {
+    AssertLockHeld(cs_forest);
+
     std::map<uint256, CTreeNodeRef> mapUncles;
 
     // Find and include subblock uncles
@@ -2882,6 +2886,8 @@ std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTailstormGroveRef g
 
 std::set<CTreeNodeRef> CTailstormForest::PushUncles(CTreeNodeRef treenode)
 {
+    AssertLockHeld(cs_forest);
+
     CTailstormGroveRef mygrove = nullptr;
     if (!GetGrove(treenode->hash, mygrove))
     {
@@ -2933,6 +2939,17 @@ std::set<CTreeNodeRef> CTailstormForest::PushUncles(CTreeNodeRef treenode)
                 setPushedUncles.insert(mi.second);
                 LOG(DAG, "%s: pushed uncle %s", __func__, mi.first.ToString());
             }
+        }
+
+        // If the target grove now has more than k-1 subblocks AND it's the chaintip
+        // then regenerate the groves data.
+        if ((grove->tree->mapUncles.size() + grove->tree->dag.size() >= Params().GetConsensus().tailstorm_k) &&
+            grove->tree->pindexSummaryRoot == chainActive.Tip())
+        {
+            // Stop txadmission so the subblocks are layered against the tip's coins view when
+            // we regenerate the dag data.
+            TxAdmissionPause txlock;
+            ReGenerateDagData(grove);
         }
     }
 
