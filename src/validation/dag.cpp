@@ -1519,36 +1519,38 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
         return {}; // nothing to do
     }
 
+    // By grouping orphans by prevBlockHash we can prevent unnecessary repeated insert calls
+    // failing by checking the prevBlockHash once in advance before processing that group.
+    // This only avoids unneeded work - calling _Insert is still free to fail.
+    auto canInsertForPrev = [this](const uint256 &prevhash, const CChainParams &chainparams) -> bool
+    {
+        auto pindex = LookupBlockIndex(prevhash);
+        if (!pindex)
+            return false;
+        {
+            READLOCK(cs_mapBlockIndex);
+            if (!pindex->IsLinked())
+                return false;
+        }
+        if (pindex->height() >= chainActive.Height() - chainparams.GetConsensus().tailstormEnforceDepth)
+            return true;
+
+        CTailstormGroveRef grove = nullptr;
+        if (GetGrove(*(pindex->phashBlock), grove))
+            return true;
+        if (pindex->pprev && (pindex->height() != 0) && GetGrove(*(pindex->pprev->phashBlock), grove))
+            return true;
+        return false;
+    };
+
     processingOrphans = true;
     std::set<uint256> setAllLinked;
+    const CChainParams &chainparams = Params();
     while (true)
     {
         // Process subblock orphans
         std::set<uint256> setLinked;
 
-        // By grouping orphans by prevBlockHash we can prevent unnecessary repeated insert calls
-        // failing by checking the prevBlockHash once in advance before processing that group.
-        // This only avoids unneeded work - calling _Insert is still free to fail.
-        auto canInsertForPrev = [this](const uint256 &prevhash) -> bool
-        {
-            auto pindex = LookupBlockIndex(prevhash);
-            if (!pindex)
-                return false;
-            {
-                READLOCK(cs_mapBlockIndex);
-                if (!pindex->IsLinked())
-                    return false;
-            }
-            if (pindex->height() == chainActive.Height())
-                return true;
-
-            CTailstormGroveRef grove = nullptr;
-            if (GetGrove(*(pindex->phashBlock), grove))
-                return true;
-            if (pindex->pprev && (pindex->height() != 0) && GetGrove(*(pindex->pprev->phashBlock), grove))
-                return true;
-            return false;
-        };
 
         // Group the orphans by the prev summary block they wait on, so a blocked group costs one
         // lookup instead of a failed insert per member.
@@ -1568,7 +1570,7 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
             const uint256 &prevhash = group.first;
             std::vector<CTreeNodeRef> &pending = group.second;
 
-            if (!canInsertForPrev(prevhash))
+            if (!canInsertForPrev(prevhash, chainparams))
             {
                 for (auto &node : pending)
                     AddSubblockOrphan(node);
