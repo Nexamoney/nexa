@@ -591,9 +591,9 @@ public:
         }
         */
 
-#if 1
-        // recalculate GB if needed (note that this code will not work with the java nexa shared library because it
-        // must start before the random numbers (initialized in ECC_Start are hooked up).
+#if 0
+        // Note: dynamic generation of the genesis block causes a hang in libnexa.dll under windows
+        // (you cannot seed the random number generator inside global variable initialization).
         ECC_Start();
         bool worked = MineIt(genesis, 1 << 23, consensus);
         assert(worked);
