@@ -1192,7 +1192,22 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
             view.GetBestBlock();
             roCoinsTip.GetBestBlock();
 
-            nValueIn = tx->GetValueIn();
+            try
+            {
+                nValueIn = tx->GetValueIn();
+            }
+            catch (const std::runtime_error &)
+            {
+                // Declared input amounts come from the peer and are not range checked by CheckTransaction
+                if (debugger)
+                {
+                    debugger->AddInvalidReason("bad-txns-inputvalues-outofrange");
+                    debugger->mineable = false;
+                    debugger->futureMineable = false;
+                    return false;
+                }
+                return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputvalues-outofrange");
+            }
             // NOTE this view function MUST be executed, so we can cache all inputs, before SetBackend(dummy)
             CAmount viewValueIn = view.GetValueIn(*tx);
             if (nValueIn != viewValueIn)
@@ -1232,7 +1247,21 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                 }
             }
 
-            nValueOut = tx->GetValueOut();
+            try
+            {
+                nValueOut = tx->GetValueOut();
+            }
+            catch (const std::runtime_error &)
+            {
+                if (debugger)
+                {
+                    debugger->AddInvalidReason("bad-txns-outputvalues-outofrange");
+                    debugger->mineable = false;
+                    debugger->futureMineable = false;
+                    return false;
+                }
+                return state.DoS(100, false, REJECT_INVALID, "bad-txns-outputvalues-outofrange");
+            }
             nFees = viewValueIn - nValueOut;
             LOG(MEMPOOL, "Value In: %d  Out: %d  Fees: %d\n", nValueIn, nValueOut, nFees);
             nModifiedFees = nFees; // nModifiedFees includes any fee deltas from PrioritiseTransaction
