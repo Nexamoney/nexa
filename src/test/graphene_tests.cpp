@@ -297,6 +297,63 @@ BOOST_AUTO_TEST_CASE(item_rank_encodes_and_decodes)
     BOOST_CHECK_EQUAL_COLLECTIONS(outputItems.begin(), outputItems.end(), inputItems.begin(), inputItems.end());
 }
 
+BOOST_AUTO_TEST_CASE(graphene_set_rejects_invalid_item_rank)
+{
+    uint64_t version = MAX_GRAPHENE_SET_VERSION;
+    std::vector<uint256> items;
+    for (int i = 0; i < 5; i++)
+        items.push_back(SerializeHash(i));
+    CGrapheneSet senderGrapheneSet(5, 5, items, 0, 0, version, 0, false, true, true);
+
+    std::set<uint64_t> receiverSet;
+    CIblt localIblt(*senderGrapheneSet.GetIblt());
+    localIblt.reset();
+    std::vector<uint64_t> senderCheapHashes;
+    for (const uint256 &item : items)
+    {
+        uint64_t cheapHash = senderGrapheneSet.GetShortID(item);
+        senderCheapHashes.push_back(cheapHash);
+        receiverSet.insert(cheapHash);
+        localIblt.insert(cheapHash, IBLT_NULL_VALUE);
+    }
+    auto reconcile = [&](const std::vector<unsigned char> &encodedRank)
+    { return CGrapheneSet::Reconcile(receiverSet, localIblt, senderGrapheneSet.GetIblt(), encodedRank, true); };
+
+    std::vector<unsigned char> encodedRank = senderGrapheneSet.GetEncodedRank();
+    std::vector<uint64_t> reconciled = reconcile(encodedRank);
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        reconciled.begin(), reconciled.end(), senderCheapHashes.begin(), senderCheapHashes.end());
+
+    // 5 items use 3-bit ranks, so ranks 5 to 7 are encodable but out of range
+    BOOST_CHECK_THROW(reconcile(CGrapheneSet::EncodeRank({0, 1, 2, 3, 7}, 3)), std::runtime_error);
+    BOOST_CHECK_THROW(reconcile(CGrapheneSet::EncodeRank({0, 1, 2, 3, 3}, 3)), std::runtime_error);
+
+    std::vector<unsigned char> shortRank(encodedRank.begin(), encodedRank.end() - 1);
+    BOOST_CHECK_THROW(reconcile(shortRank), std::runtime_error);
+    BOOST_CHECK_THROW(reconcile(std::vector<unsigned char>()), std::runtime_error);
+    std::vector<unsigned char> longRank(encodedRank);
+    longRank.push_back(0);
+    BOOST_CHECK_THROW(reconcile(longRank), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(item_rank_size_is_exact_for_large_sets)
+{
+    // 21 * 1048589 bits is not exactly representable as a float, which used to size the
+    // encoding one byte short and let decoding read past the end of its bit array.
+    const size_t nItems = 1048589;
+    const uint16_t nBits = 21;
+    std::vector<uint64_t> items(nItems);
+    for (size_t i = 0; i < nItems; i++)
+        items[i] = nItems - 1 - i;
+
+    std::vector<unsigned char> encoded = CGrapheneSet::EncodeRank(items, nBits);
+    BOOST_CHECK_EQUAL(encoded.size(), (nBits * nItems + 7) / 8);
+    BOOST_CHECK(CGrapheneSet::DecodeRank(encoded, nItems, nBits) == items);
+
+    encoded.pop_back();
+    BOOST_CHECK_THROW(CGrapheneSet::DecodeRank(encoded, nItems, nBits), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(compute_optimized_graphene_set_can_serde)
 {
     uint64_t version = MAX_GRAPHENE_SET_VERSION;
