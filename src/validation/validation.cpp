@@ -2519,7 +2519,8 @@ static bool AcceptBlock(ConstCBlockRef pblock,
 
     if ((!CheckBlock(chainparams.GetConsensus(), pblock, state)))
     {
-        if (state.IsInvalid() && !state.CorruptionPossible())
+        // Sub-blocks have no block index entry to mark
+        if (pindex && state.IsInvalid() && !state.CorruptionPossible())
         {
             {
                 WRITELOCK(cs_mapBlockIndex);

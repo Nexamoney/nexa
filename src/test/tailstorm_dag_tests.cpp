@@ -4063,4 +4063,40 @@ BOOST_AUTO_TEST_CASE(renumber_dag_ranks_by_descendant_score)
     }
 }
 
+BOOST_AUTO_TEST_CASE(invalid_subblock_body_is_rejected_without_index)
+{
+    // AcceptBlockHeader leaves no index entry for a sub-block, so a body failing
+    // CheckBlock must be rejected without marking an index invalid.
+    const CBlockIndex *genesis = chainActive.Genesis();
+    CBlockRef block = MakeBlockRef();
+    block->hashPrevBlock = genesis->GetBlockHash();
+    block->height = 1;
+    block->nTime = genesis->GetBlockTime() + 1;
+    block->minerData = {DEFAULT_MINER_DATA_SUBBLOCK_VERSION};
+    block->nBits = GetNextWorkRequired(genesis, block.get(), Params().GetConsensus());
+    block->UpdateHeader();
+    // Sub-block PoW commits to the parent hash, which MineBlock skips without Tailstorm
+    const uint256 commitment = block->GetMiningHeaderCommitment();
+    uint32_t count = 0;
+    block->nonce.resize(3);
+    while (!CheckProofOfWork(
+        ::GetMiningHash(commitment, block->nonce), block->hashPrevBlock, block->nBits, Params().GetConsensus()))
+    {
+        BOOST_REQUIRE(++count < (1 << 23));
+        for (unsigned int x = 0; x < block->nonce.size(); x++)
+            block->nonce[x] = (count >> (x * 8)) & 255;
+    }
+    BOOST_REQUIRE(block->IsSubblock());
+    BOOST_REQUIRE(block->vtx.empty());
+
+    LOCK(cs_main);
+    CValidationState state;
+    CBlockIndex *pindex = nullptr;
+    BOOST_CHECK(!ProcessAcceptBlock(nullptr, block, state, Params(), &pindex, nullptr));
+    BOOST_CHECK(pindex == nullptr);
+    BOOST_CHECK(state.IsInvalid());
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-blk-length");
+    BOOST_CHECK(LookupBlockIndex(block->GetHash()) == nullptr);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
