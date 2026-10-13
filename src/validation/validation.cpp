@@ -3666,15 +3666,14 @@ void InvalidBlockFound(CBlockIndex *pindex, const CValidationState &state)
 
             if (node)
             {
-                // External blocks are never rejected with internal reject codes
-                // It is possible for an internal block to be rejected with bad-txns-inputs-missingorspent,
-                // specifically REJECT_CONFLICT, because the candidate being mined was stale.
-                assert(state.GetRejectCode() < REJECT_INTERNAL);
+                // Peer blocks can fail with internal codes, e.g. REJECT_CONFLICT for missing inputs.
+                // These do not fit the wire format, so report them as invalid.
+                unsigned char rejectCode =
+                    state.GetRejectCode() < REJECT_INTERNAL ? state.GetRejectCode() : REJECT_INVALID;
 
                 // TODO get the block request's msgCookie
-                node->PushMessage(NetMsgType::REJECT, (std::string)NetMsgType::BLOCK,
-                    (unsigned char)state.GetRejectCode(), state.GetRejectReason().substr(0, MAX_REJECT_MESSAGE_LENGTH),
-                    pindex->GetBlockHash());
+                node->PushMessage(NetMsgType::REJECT, (std::string)NetMsgType::BLOCK, rejectCode,
+                    state.GetRejectReason().substr(0, MAX_REJECT_MESSAGE_LENGTH), pindex->GetBlockHash());
                 if (nDoS > 0)
                     dosMan.Misbehaving(node.get(), nDoS, BanReasonInvalidBlock);
             }

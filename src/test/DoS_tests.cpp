@@ -16,6 +16,7 @@
 #include "serialize.h"
 #include "txorphanpool.h"
 #include "util.h"
+#include "validation/validation.h"
 
 #include "test/test_nexa.h"
 
@@ -29,6 +30,9 @@ CService ip(uint32_t i)
     s.s_addr = i;
     return CService(CNetAddr(s), Params().GetDefaultPort());
 }
+
+extern std::map<uint256, NodeId> mapBlockSource;
+void InvalidBlockFound(CBlockIndex *pindex, const CValidationState &state);
 
 BOOST_FIXTURE_TEST_SUITE(DoS_tests, TestingSetup)
 
@@ -568,6 +572,57 @@ BOOST_AUTO_TEST_CASE(DoS_mapNonFinals)
     orphanpool.LimitPoolSize(0, txSz);
     BOOST_CHECK(orphanpool.mapNonFinals.empty());
     BOOST_CHECK_EQUAL(orphanpool.nPoolBytes, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(DoS_invalid_block_internal_reject_code)
+{
+    // A peer block can fail connection with an internal reject code. The peer gets a
+    // wire-compatible reject and is penalized, and the block is still marked invalid.
+    CAddress addr(ip(0xa0b0c003));
+    CNode dummyNode(INVALID_SOCKET, addr, "", true);
+    dummyNode.nVersion = 1;
+    {
+        LOCK(cs_vNodes);
+        vNodes.push_back(&dummyNode);
+    }
+
+    LOCK(cs_main);
+    const CBlockIndex *genesis = chainActive.Genesis();
+    CBlockHeader header;
+    header.hashPrevBlock = genesis->GetBlockHash();
+    header.height = 1;
+    header.nTime = genesis->GetBlockTime() + 1;
+    header.nBits = genesis->nBits;
+    header.size = 1000;
+    header.chainWork = ArithToUint256(genesis->chainWork() + GetWorkForDifficultyBits(header.nBits));
+    CBlockIndex *pindex = AddToBlockIndex(Params(), header);
+    BOOST_REQUIRE(pindex != nullptr);
+    mapBlockSource[pindex->GetBlockHash()] = dummyNode.GetId();
+
+    CValidationState state;
+    state.DoS(100, false, REJECT_CONFLICT, "bad-txns-inputs-missingorspent");
+    InvalidBlockFound(pindex, state);
+
+    BOOST_CHECK(pindex->nStatus & BLOCK_FAILED_VALID);
+    BOOST_CHECK_EQUAL(std::floor(dummyNode.nMisbehavior.load()), 100);
+
+    CSerializeData reply;
+    BOOST_REQUIRE(dummyNode.vLowPrioritySendMsg.pop_front(reply));
+    CDataStream r(reply.begin() + CMessageHeader::HEADER_SIZE, reply.end(), SER_NETWORK, PROTOCOL_VERSION);
+    std::string msg, reason;
+    unsigned char code;
+    uint256 hash;
+    r >> msg >> code >> reason >> hash;
+    BOOST_CHECK_EQUAL(msg, NetMsgType::BLOCK);
+    BOOST_CHECK_EQUAL(code, REJECT_INVALID);
+    BOOST_CHECK_EQUAL(reason, "bad-txns-inputs-missingorspent");
+    BOOST_CHECK(hash == pindex->GetBlockHash());
+
+    mapBlockSource.erase(pindex->GetBlockHash());
+    {
+        LOCK(cs_vNodes);
+        vNodes.clear();
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
