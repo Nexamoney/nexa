@@ -12,7 +12,7 @@
 #include <QApplication>
 #include <QGraphicsItem>
 #include <QGraphicsPathItem>
-#include <QGraphicsProxyWidget>
+#include <QGraphicsTextItem>
 #include <QGraphicsView>
 #include <QLabel>
 #include <QPainterPath>
@@ -75,6 +75,8 @@ DagWidget::DagWidget(QWidget *parent) : QWidget(parent)
     view->setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
     view->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
 
+    charcoal = QColor(78, 78, 78);
+
     greenBrush = QBrush(QColor(143, 188, 143)); // qt6 - QColorConstants::Svg::darkseagreen
     greyBrush = QBrush(QColor(220, 220, 220)); // qt6 - QColorConstants::Svg::gainsboro
     redBrush = QBrush(QColor(250, 128, 114)); // qt6 - QColorConstants::Svg::salmon
@@ -83,7 +85,7 @@ DagWidget::DagWidget(QWidget *parent) : QWidget(parent)
     violetBrush = QBrush(QColor(216, 191, 216)); // qt6 - QColorConstants::Svg::thistle
     whiteBrush = QBrush(QColor(255, 255, 255));
     blackBrush = QBrush(QColor(0, 0, 0));
-    charcoalBrush = QBrush(QColor(78, 78, 78));
+    charcoalBrush = QBrush(charcoal);
     // steelBlueBrush = QBrush(QColor(70, 130, 180));
     steelBlueBrush = QBrush(QColor(176, 196, 222)); // qt6 - QColorConstants::Svg::lightsteelblue
 
@@ -1055,7 +1057,7 @@ void DagWidget::AddItem(uint256 hash,
                     mapInfo[link.prevBlock]->item->setBrush(prevBrush);
                     mapInfo[link.prevBlock]->item->update();
 
-                    if (fQLabelsEnabled && mapInfo[link.prevBlock]->itemText1 && mapInfo[link.prevBlock]->itemText2)
+                    if (fQTextItemsEnabled && mapInfo[link.prevBlock]->itemText1 && mapInfo[link.prevBlock]->itemText2)
                     {
                         mapInfo[link.prevBlock]->itemText1->update();
                         mapInfo[link.prevBlock]->itemText2->update();
@@ -1083,7 +1085,7 @@ void DagWidget::AddItem(uint256 hash,
                 mapInfo[hash]->item->setPen(pen);
                 mapInfo[hash]->item->setBrush(brush);
                 mapInfo[hash]->item->update();
-                if (fQLabelsEnabled && mapInfo[hash]->itemText1 && mapInfo[hash]->itemText2)
+                if (fQTextItemsEnabled && mapInfo[hash]->itemText1 && mapInfo[hash]->itemText2)
                 {
                     mapInfo[hash]->itemText1->update();
                     mapInfo[hash]->itemText2->update();
@@ -1165,7 +1167,7 @@ void DagWidget::AddItem(uint256 hash,
                     mapInfo[link.prevBlock]->item->setBrush(prevBrush);
                     mapInfo[link.prevBlock]->item->update();
 
-                    if (fQLabelsEnabled && mapInfo[link.prevBlock]->itemText1 && mapInfo[link.prevBlock]->itemText2)
+                    if (fQTextItemsEnabled && mapInfo[link.prevBlock]->itemText1 && mapInfo[link.prevBlock]->itemText2)
                     {
                         mapInfo[link.prevBlock]->itemText1->update();
                         mapInfo[link.prevBlock]->itemText2->update();
@@ -1196,7 +1198,7 @@ void DagWidget::AddItem(uint256 hash,
                 mapInfo[hash]->item->setPen(pen);
                 mapInfo[hash]->item->setBrush(brush);
                 mapInfo[hash]->item->update();
-                if (fQLabelsEnabled && mapInfo[hash]->itemText1 && mapInfo[hash]->itemText2)
+                if (fQTextItemsEnabled && mapInfo[hash]->itemText1 && mapInfo[hash]->itemText2)
                 {
                     mapInfo[hash]->itemText1->update();
                     mapInfo[hash]->itemText2->update();
@@ -1358,19 +1360,20 @@ void DagWidget::AddText(uint256 hash, QPen pen, qreal x, qreal y, uint8_t blockT
 
     if (blockType == LEGACY_BLOCK || blockType == SUMMARY)
     {
-        QFont font("IBM Plex Mono", 15);
-        font.setHintingPreference(QFont::HintingPreference::PreferNoHinting);
-        font.setStyleStrategy(QFont::PreferAntialias);
-        font.setKerning(true);
-        font.setWeight(60);
-        font.setPixelSize(15);
         std::string strHash = hash.ToString();
         std::transform(strHash.begin(), strHash.end(), strHash.begin(), ::toupper);
         std::string strPartHash1(strHash.begin(), strHash.begin() + 4);
         std::string strPartHash2(strHash.begin() + 4, strHash.begin() + 8);
 
-        if (!fQLabelsEnabled)
+        if (!fQTextItemsEnabled)
         {
+            QFont font("IBM Plex Mono", 15);
+            font.setHintingPreference(QFont::HintingPreference::PreferNoHinting);
+            font.setStyleStrategy(QFont::PreferAntialias);
+            font.setKerning(true);
+            font.setWeight(60);
+            font.setPixelSize(15);
+
             QPainterPath path;
             path.addText(x + 12, y + 8, font, QString::fromLocal8Bit(strPartHash1.c_str()));
             path.addText(x + 12, y + 28, font, QString::fromLocal8Bit(strPartHash2.c_str()));
@@ -1378,54 +1381,53 @@ void DagWidget::AddText(uint256 hash, QPen pen, qreal x, qreal y, uint8_t blockT
         }
         else
         {
-            /* TODO: This section of code uses QLabels instead of drawing text directly on the
-                      block images. Using QLabels produces better and clearer fonts however it
-                      also causes strange problems in Windows which results in a hang or crash. We
-                      could just disable this feature for Windows but the fonts already used are adequate
-                      and looks quite good on Linux.  So for now we can leave things as they are
-                      but also keep this section of code commented out for future research and experimentation.
-            */
+#ifdef WIN32
+            QFont font("Consolas", 15); // san serif onospace font that ships with windows
+#else
+            QFont font("DejaVu Sans Mono", 15); // san serif monospace font that ships with linux
+#endif
+            font.setStyleHint(QFont::TypeWriter); // If font not available then use fall back
+            font.setStyleStrategy(QFont::PreferAntialias);
+            font.setKerning(true);
+            font.setWeight(70);
+            font.setPixelSize(15);
 
             // if we dont have the hash in mapInfo then do not create the labels for it
             if (mapInfo.count(hash))
             {
-                QLabel *label = new QLabel();
-                label->setStyleSheet("QLabel { background-color : rgba(143, 188, 143, 0); color: black}");
-
-                label->setText(strPartHash1.c_str());
-                label->setFont(font);
-                label->move(x + 12, y - 7);
-                QGraphicsProxyWidget *itemText1 = scene->addWidget(label);
+                QGraphicsTextItem *itemText1 = new QGraphicsTextItem(strPartHash1.c_str());
                 if (itemText1)
                 {
+                    itemText1->setFont(font);
+                    itemText1->setDefaultTextColor(charcoal);
+#ifdef WIN32
+                    itemText1->setPos(x + 10, y - 9);
+#else
+                    itemText1->setPos(x + 8, y - 9);
+#endif
+
+                    scene->addItem(itemText1);
+
                     itemText1->setZValue(1);
                     itemText1->update();
                     mapInfo[hash]->itemText1 = itemText1;
                 }
-                else
-                {
-                    // itemText1 is a nullptr which means addWidget had a failure, delete the
-                    // QLabel because its no longer used
-                    delete label;
-                }
 
-                QLabel *label2 = new QLabel();
-                label2->setStyleSheet("QLabel { background-color : rgba(143, 188, 143, 0); color: black}");
-                label2->setText(strPartHash2.c_str());
-                label2->setFont(font);
-                label2->move(x + 12, y + 13);
-                QGraphicsProxyWidget *itemText2 = scene->addWidget(label2);
+                QGraphicsTextItem *itemText2 = new QGraphicsTextItem(strPartHash2.c_str());
                 if (itemText2)
                 {
-                    itemText2->setZValue(2);
+                    itemText2->setFont(font);
+                    itemText2->setDefaultTextColor(charcoal);
+#ifdef WIN32
+                    itemText2->setPos(x + 10, y + 9);
+#else
+                    itemText2->setPos(x + 8, y + 9);
+#endif
+                    scene->addItem(itemText2);
+
+                    itemText2->setZValue(1);
                     itemText2->update();
                     mapInfo[hash]->itemText2 = itemText2;
-                }
-                else
-                {
-                    // itemText2 is a nullptr which means addWidget had a failure, delete the
-                    // QLabel because its no longer used
-                    delete label2;
                 }
             }
         }

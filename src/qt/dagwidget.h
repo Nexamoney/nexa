@@ -94,8 +94,8 @@ public:
 
         QGraphicsPathItem *item = nullptr;
         QGraphicsPathItem *itemText = nullptr;
-        QGraphicsProxyWidget *itemText1 = nullptr;
-        QGraphicsProxyWidget *itemText2 = nullptr;
+        QGraphicsTextItem *itemText1 = nullptr;
+        QGraphicsTextItem *itemText2 = nullptr;
         std::set<QGraphicsLineItem *> setLineItems;
     };
 
@@ -198,6 +198,8 @@ private:
     QBrush steelBlueBrush;
     QBrush charcoalBrush;
 
+    QColor charcoal;
+
     // block dimensions
     const qreal subblockWidth = 28;
     const qreal subblockHeight = 24;
@@ -212,8 +214,8 @@ private:
     const qreal DEFAULT_WIDTH_OF_VIEW = 100 * 1000;
     /** The maximum number of blocks we keep in the graphics scene (make it a little bigger than the view can hold) */
     const size_t DEFAULT_MAX_BLOCKS = (DEFAULT_WIDTH_OF_VIEW * 1.05) / (size_t)(subblockWidth + distance);
-    /** Are QLabels enabled */
-    const bool fQLabelsEnabled = false;
+    /** Are QGraphicsTextItems enabled */
+    const bool fQTextItemsEnabled = true;
 
     QTimer *pollTimer;
     QTimer *pollTimer2;
