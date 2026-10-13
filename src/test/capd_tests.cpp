@@ -2,8 +2,6 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <tgmath.h>
-
 #include "capd/capd.h"
 #include "streams.h"
 #include "test/test_nexa.h"
@@ -60,15 +58,49 @@ BOOST_AUTO_TEST_CASE(vector_span)
 }
 
 
+BOOST_AUTO_TEST_CASE(capd_priority_round_trip)
+{
+    const arith_uint256 unitPriorityTarget = arith_uint256(1) << 248;
+    const arith_uint256 step = unitPriorityTarget >> (std::numeric_limits<double>::digits - 1);
+    const arith_uint256 targets[] = {
+        arith_uint256("005f43fde157a6dac834d7eb89900a4961dfe22d426fd4f2856f378b30a31270"),
+        arith_uint256(1) << 40,
+        arith_uint256(1) << 64,
+        arith_uint256(1) << 128,
+        arith_uint256(1) << 192,
+        unitPriorityTarget - step,
+        unitPriorityTarget,
+        unitPriorityTarget + step,
+        ~arith_uint256(),
+    };
+    const arith_uint256 scale(PRIORITY_CONVERSION_FRAC);
+    const size_t nominalSize = NOMINAL_MSG_SIZE;
+    for (const arith_uint256 &target : targets)
+    {
+        for (size_t msgSize : {nominalSize, nominalSize + 1, 2 * nominalSize})
+        {
+            BOOST_TEST_CONTEXT("target: " << target.GetHex() << ", size: " << msgSize)
+            {
+                const PriorityType priority = Priority(target, msgSize, 0);
+                const arith_uint256 converted = aPriorityToPowTarget(priority, msgSize);
+                const arith_uint256 error = converted > target ? converted - target : target - converted;
+                // Allow target/scale for priority truncation and scale for target truncation.
+                const arith_uint256 maxError = target / scale + scale;
+                BOOST_CHECK_MESSAGE(
+                    error <= maxError, "conversion error: " << error.GetHex() << ", limit: " << maxError.GetHex());
+            }
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(capd_msg_test_vectors)
 {
-    FastRandomContext insecure_rand;
     CapdMsgPool mp;
-
-    arith_uint256 CONVERSION_ERROR_MASK = ~arith_uint256((1024 * PRIORITY_CONVERSION_FRAC) - 1);
 
     // check that Priority() and PriorityToDifficulty() are inverse
     {
+        arith_uint256 CONVERSION_ERROR_MASK = ~arith_uint256((1024 * PRIORITY_CONVERSION_FRAC) - 1);
+
         {
             arith_uint256 tmp("0123456fffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
             PriorityType p = Priority(tmp, NOMINAL_MSG_SIZE, 0);
@@ -94,33 +126,6 @@ BOOST_AUTO_TEST_CASE(capd_msg_test_vectors)
             // check that the priority of an older message is smaller
             PriorityType p4 = Priority(tmp2, NOMINAL_MSG_SIZE, 20);
             BOOST_CHECK(p4 < p2);
-        }
-
-
-        uint256 tmp;
-        for (unsigned int i = 0; i < 100; i++)
-        {
-            // numbers that are too big overflow, and too small have rounding errors but difficulty will not
-            // be either of these extremes anyway.
-            int zeros = insecure_rand.rand32() % 26 + 2;
-
-            for (unsigned int j = 0; j < tmp.size(); j++)
-                if (j > tmp.size() - zeros)
-                    *(tmp.begin() + j) = 0;
-                else
-                    *(tmp.begin() + j) = insecure_rand.rand32() & 255;
-
-            auto utmp = UintToArith256(tmp);
-            auto priority = Priority(utmp, 2 * NOMINAL_MSG_SIZE, 0);
-            auto tmp2 = aPriorityToPowTarget(priority, 2 * NOMINAL_MSG_SIZE);
-
-            // since difficulty target to priority has precision errors, we need to test that the numbers are
-            // approximately equal by taking the log and then rounding to a few decimal places.
-            // printf("%f %f\n", log(UintToArith256(tmp).getdouble()), log(tmp2.getdouble()));
-            BOOST_CHECK(floorf(1000 * log(UintToArith256(tmp).getdouble())) == floorf(1000 * log(tmp2.getdouble())));
-            // printf("%f\n", priority);
-            // printf("%s\n", tmp.GetHex().c_str());
-            // printf("%s\n", tmp2.GetHex().c_str());
         }
     }
 
@@ -652,6 +657,73 @@ BOOST_AUTO_TEST_CASE(capd_p2p)
     BOOST_CHECK(capdNode1.sendMsgs.size() == 1);
 
     // Since CapdNode is stack allocated, remove it before destructing the CNode
+    node1.capd = nullptr;
+}
+
+// Send a hash query and return the hashes in the reply
+static std::vector<uint256> CapdHashQuery(CNode &node,
+    const std::vector<unsigned char> &content,
+    uint32_t start,
+    uint32_t quantity)
+{
+    CDataStream pkt = MsgMaker(node, NetMsgType::CAPDQUERY,
+        [&](auto &p)
+        { p << (uint32_t)1 << (uint8_t)CapdProtocol::CAPD_QUERY_TYPE_MSG_HASH << start << quantity << content; });
+    BOOST_CHECK(HandleCapdMessage(node, pkt));
+
+    CSerializeData reply;
+    BOOST_REQUIRE(node.vLowPrioritySendMsg.pop_front(reply));
+    CDataStream r(reply.begin() + CMessageHeader::HEADER_SIZE, reply.end(), SER_NETWORK, PROTOCOL_VERSION);
+    uint32_t cookie;
+    uint8_t type;
+    uint32_t total;
+    std::vector<uint256> hashes;
+    r >> cookie >> type >> total >> hashes;
+    BOOST_CHECK_EQUAL(type, CapdProtocol::CAPD_QUERY_TYPE_MSG_HASH);
+    return hashes;
+}
+
+BOOST_AUTO_TEST_CASE(capd_query_hash_range)
+{
+    SOCKET hSocket = INVALID_SOCKET;
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+    CAddress addr = CAddress(CService(ipv4Addr, 7777), NODE_NETWORK);
+    CNode node1(hSocket, addr, "", false);
+    CapdNode capdNode1(&node1);
+    node1.isCapdEnabled = true;
+    node1.capd = &capdNode1;
+
+    msgpool.clear();
+    for (int i = 0; i < 3; i++)
+    {
+        CapdMsg m("??range test " + std::to_string(i));
+        m.SetPowTarget(msgpool.GetRelayPowTarget());
+        m.Solve();
+        msgpool.add(MsgRefCopy(m));
+    }
+    std::vector<unsigned char> match = {'?', '?'};
+    std::vector<unsigned char> noMatch = {'#', '#'};
+    std::vector<CapdMsgRef> all = msgpool.find(match);
+    BOOST_REQUIRE_EQUAL(all.size(), 3UL);
+
+    BOOST_CHECK_EQUAL(CapdHashQuery(node1, match, 0, 10).size(), 3UL);
+    BOOST_CHECK_EQUAL(CapdHashQuery(node1, match, 0, 2).size(), 2UL);
+    BOOST_CHECK_EQUAL(CapdHashQuery(node1, match, 1, 1).size(), 1UL);
+    // quantity is a count, not an end index
+    std::vector<uint256> hashes = CapdHashQuery(node1, match, 2, 5);
+    BOOST_REQUIRE_EQUAL(hashes.size(), 1UL);
+    BOOST_CHECK(hashes[0] == all[2]->GetHash());
+    BOOST_CHECK(CapdHashQuery(node1, match, 0, std::numeric_limits<uint32_t>::max()).size() == 3UL);
+
+    // offsets past the end of the result set must return nothing
+    BOOST_CHECK(CapdHashQuery(node1, match, 3, 10).empty());
+    BOOST_CHECK(CapdHashQuery(node1, match, 4, 10).empty());
+    BOOST_CHECK(CapdHashQuery(node1, match, std::numeric_limits<uint32_t>::max(), 10).empty());
+    BOOST_CHECK(CapdHashQuery(node1, noMatch, 1, 10).empty());
+    BOOST_CHECK(CapdHashQuery(node1, noMatch, 0, 10).empty());
+
+    msgpool.clear();
     node1.capd = nullptr;
 }
 
