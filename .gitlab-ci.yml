@@ -850,6 +850,59 @@ build-win-64:
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
+# libnexa.dll with the Java (JNI) bindings, for desktop JVM users such as libnexakotlin.
+# Same configure flags as the gitian Windows release (contrib/gitian-descriptors/gitian-win.yml),
+# without Qt, plus -g: libnexa-debug.dll keeps the symbols for reading Windows crash/hang dumps
+# (x86_64-w64-mingw32-addr2line -f -C -i -e libnexa-debug.dll <ImageBase + RVA>); libnexa.dll is the stripped copy.
+# Builds only libnexa.la (not the full node / tests / benches) to avoid a second full Windows compile.
+build-win-64-libnexa-jvm:
+    stage: build
+    extends: [.ccache-win-64, .detect-cpus]
+    cache:
+        <<: *ccache_settings
+        key: ccache-win-64-libnexa-jvm
+    needs:
+        - job: build-win-64-depends
+          artifacts: true
+    script:
+        - test -f /usr/lib/jvm/java-17-openjdk-amd64/include/jni.h || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends openjdk-17-jdk-headless >/dev/null)
+        - export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+        - test -f "$JAVA_HOME/include/jni.h"
+        - ./autogen.sh
+        - mkdir build; cd build
+        - ../configure --prefix=$PWD/../depends/x86_64-w64-mingw32 --enable-reduce-exports --disable-bench --disable-gui-tests --disable-tests --enable-shared --enable-javalibnexa --with-gui=no CXXFLAGS=-g
+        # gitian wraps the -posix compilers; the DLL must use the posix thread model too
+        - |
+          cxx=$(awk '/^CXX = /{for (i = 3; i <= NF; i++) if ($i ~ /g\+\+$/) {print $i; exit}}' Makefile)
+          echo "compiler: $cxx"
+          $cxx -v 2>&1 | grep 'Thread model: posix'
+        - sed -i 's/-DDLL_EXPORT//g' libtool
+        - make -C src -j"$CPUS" libnexa.la
+        - ccache --show-stats
+        - ls -l src/.libs/*.dll
+        - cp src/.libs/libnexa-0.dll ../libnexa-debug.dll
+        - cd ..
+        - x86_64-w64-mingw32-strip --strip-unneeded -o libnexa.dll libnexa-debug.dll
+        # (bash ignores errexit for "! cmd", so each check below fails explicitly)
+        - x86_64-w64-mingw32-objdump -h libnexa-debug.dll | grep debug_info
+        - |
+          jni=$(x86_64-w64-mingw32-objdump -p libnexa.dll | grep -c ' Java_org_nexa_libnexakotlin_' || true)
+          echo "JNI exports: $jni"
+          if [ "$jni" -lt 60 ]; then echo "libnexa.dll exports too few JNI functions"; exit 1; fi
+        - |
+          imports=$(x86_64-w64-mingw32-objdump -p libnexa.dll | sed -n 's/^[[:space:]]*DLL Name: //p')
+          echo "imports:" $imports
+          if echo "$imports" | grep -viE '^(ADVAPI32|KERNEL32|msvcrt|WS2_32)\.dll$'; then echo "libnexa.dll imports a DLL the release DLL does not"; exit 1; fi
+        - sha256sum libnexa.dll libnexa-debug.dll | tee libnexa.dll.sha256
+    artifacts:
+        expire_in: 3 months
+        paths:
+            - libnexa.dll
+            - libnexa-debug.dll
+            - libnexa.dll.sha256
+    rules:
+      - if: $CI_PIPELINE_SOURCE != "schedule"
+
 ######################################################
 ######## macOS Intel X86_64
 ######################################################
