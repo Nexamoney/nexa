@@ -539,4 +539,35 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
     }
 }
 
+BOOST_AUTO_TEST_CASE(DoS_mapNonFinals)
+{
+    orphanpool.clear();
+    for (int i = 0; i < 50; i++)
+    {
+        CMutableTransaction tx;
+        tx.vin.resize(1);
+        tx.vin[0].prevout.hash = InsecureRand256();
+        tx.vin[0].scriptSig << OP_1;
+        tx.vout.resize(1);
+        tx.vout[0].nValue = 1 * CENT;
+        tx.nLockTime = 500000000 + i;
+
+        WRITELOCK(orphanpool.cs_orphanpool);
+        BOOST_CHECK(orphanpool.AddNonFinalTx(MakeTransactionRef(CTransaction(tx)), i));
+    }
+    uint64_t txSz = orphanpool.GetPoolBytes();
+    int avgTxRamSize = txSz / 50;
+
+    // Eviction must remove non-finals and their bytes, or LimitPoolSize never returns
+    WRITELOCK(orphanpool.cs_orphanpool);
+    BOOST_CHECK_EQUAL(orphanpool.LimitPoolSize(40, txSz + 1), 10U);
+    BOOST_CHECK_EQUAL(orphanpool.mapNonFinals.size(), 40UL);
+    orphanpool.LimitPoolSize(40, 7 * avgTxRamSize);
+    BOOST_CHECK(orphanpool.mapNonFinals.size() <= 8);
+    BOOST_CHECK(orphanpool.nPoolBytes <= (uint64_t)(7 * avgTxRamSize));
+    orphanpool.LimitPoolSize(0, txSz);
+    BOOST_CHECK(orphanpool.mapNonFinals.empty());
+    BOOST_CHECK_EQUAL(orphanpool.nPoolBytes, 0U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
