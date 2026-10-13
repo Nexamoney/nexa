@@ -4,11 +4,14 @@
 
 #include "chainparams.h"
 #include "crypto/common.h"
+#include "daa.h"
 #include "datastream.h"
+#include "main.h"
 #include "pow.h"
 #include "test/test_nexa.h"
 #include "validation/headervalidation.h"
 #include "validation/tailstorm.h"
+#include "validation/validation.h"
 
 #include <boost/test/unit_test.hpp>
 
@@ -92,6 +95,71 @@ struct SummaryPowTestingSetup : BasicTestingSetup
         BOOST_CHECK_EQUAL(score, dos);
         BOOST_CHECK_EQUAL(state.GetRejectCode(), REJECT_INVALID);
         BOOST_CHECK_EQUAL(state.GetRejectReason(), reason);
+    }
+};
+
+// A Tailstorm summary header on genesis with K-1 valid sub-block proofs, accepted through the
+// real header path. Genesis is made fork pending so summary miner data is allowed.
+struct SummaryHeaderTestingSetup : TestingSetup
+{
+    const Consensus::Params &params;
+    const uint64_t forkTime;
+    uint32_t nProofs; // sub-block proofs carried by Summary()
+
+    SummaryHeaderTestingSetup()
+        : TestingSetup(CBaseChainParams::REGTEST), params(Params().GetConsensus()), forkTime(nMiningForkTime),
+          nProofs(params.tailstorm_k - 1)
+    {
+        nMiningForkTime = chainActive.Genesis()->GetMedianTimePast();
+    }
+    ~SummaryHeaderTestingSetup() { nMiningForkTime = forkTime; }
+
+    std::vector<uint8_t> Solve(const uint256 &commitment, const uint256 &parent, uint32_t bits)
+    {
+        std::vector<uint8_t> nonce(4);
+        for (uint32_t i = 0; i < 100000; ++i)
+        {
+            WriteLE32(nonce.data(), i);
+            if (CheckProofOfWork(GetMiningHash(commitment, nonce), parent, bits, params))
+                return nonce;
+        }
+        BOOST_FAIL("Could not solve");
+        return {};
+    }
+
+    // nDeclared is the sub-block count written in the miner data; nProofs proofs are carried.
+    CBlockHeader Summary(uint8_t nDeclared, uint32_t salt)
+    {
+        const CBlockIndex *genesis = chainActive.Genesis();
+        CBlockHeader header;
+        header.hashPrevBlock = genesis->GetBlockHash();
+        header.hashAncestor = genesis->GetBlockHash();
+        header.height = 1;
+        header.nTime = genesis->GetBlockTime() + 1;
+        header.size = 1000;
+        header.txCount = 1;
+        header.minerData = {DEFAULT_MINER_DATA_SUMMARYBLOCK_VERSION};
+        header.nBits = GetNextWorkRequired(genesis, &header, params);
+
+        CSummaryBlockMinerData data;
+        data.nSubblocks = nDeclared;
+        data.nBitsSubblock = header.nBits;
+        for (uint32_t i = 0; i < nProofs; ++i)
+        {
+            const uint256 commitment = ArithToUint256(arith_uint256(salt + i));
+            data.vSubblockProofs.emplace_back(commitment, Solve(commitment, header.hashPrevBlock, data.nBitsSubblock));
+        }
+        CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+        stream << DEFAULT_MINER_DATA_SUMMARYBLOCK_VERSION << data.prevOfprevhash << data.nUncles << data.nBitsUncle
+               << data.nSubblocks << data.nBitsSubblock << data.vSubblockProofs;
+        header.minerData.assign(stream.begin(), stream.end());
+
+        // ContextualCheckBlockHeader requires the chain work implied by the declared counts
+        header.chainWork = ArithToUint256(genesis->chainWork() +
+                                          arith_uint256(nDeclared) * GetWorkForDifficultyBits(data.nBitsSubblock) +
+                                          GetWorkForDifficultyBits(header.nBits));
+        header.nonce = Solve(header.GetMiningHeaderCommitment(), header.hashPrevBlock, header.nBits);
+        return header;
     }
 };
 } // namespace
@@ -210,6 +278,80 @@ BOOST_AUTO_TEST_CASE(summary_null_uncle_parent)
     CheckRejected(Summary(), "bad-blk-invalid-uncle-parent");
     SetProofs(0);
     CheckAccepted();
+}
+
+BOOST_AUTO_TEST_CASE(summary_declared_counts_must_match_proofs)
+{
+    // K-1 proofs satisfy "size == K-1", so the declared sub-block count is never checked
+    // against the proofs. Declaring 255 sub-blocks claims work for 255 with K-1 proofs.
+    SetProofs(0);
+    CheckAccepted();
+    data.nSubblocks = 255;
+    CValidationState state;
+    BOOST_CHECK_MESSAGE(!CheckTailstormSummaryBlockProofOfWork(params, Summary(), state),
+        "summary with " << params.tailstorm_k - 1 << " proofs but nSubblocks=255 was accepted");
+
+    // Fewer than K-1 proofs is invalid even when the declared counts match them
+    SetProofs(0);
+    data.vSubblockProofs.pop_back();
+    data.nSubblocks = data.vSubblockProofs.size();
+    CheckRejected(Summary(), "bad-blk-wrong-number-of-subblocks", 100);
+}
+
+BOOST_FIXTURE_TEST_CASE(summary_header_chainwork_must_be_backed_by_proofs, SummaryHeaderTestingSetup)
+{
+    // Both headers carry K-1 sub-block proofs on genesis. The honest one declares K-1 and
+    // claims K blocks of work. The inflated one declares 255 and, if accepted, claims 256
+    // blocks of work and becomes the best header without any additional proof of work.
+    const uint8_t honestCount = params.tailstorm_k - 1;
+    LOCK(cs_main);
+
+    CValidationState state;
+    CBlockIndex *honest = nullptr;
+    BOOST_REQUIRE_MESSAGE(AcceptBlockHeader(Summary(honestCount, 1000), state, Params(), &honest),
+        "honest summary rejected: " << state.GetRejectReason());
+    BOOST_REQUIRE(honest != nullptr);
+    BOOST_CHECK(pindexBestHeader == honest);
+
+    state = CValidationState();
+    CBlockIndex *inflated = nullptr;
+    const bool accepted = AcceptBlockHeader(Summary(255, 2000), state, Params(), &inflated);
+    const arith_uint256 blockWork = GetWorkForDifficultyBits(chainActive.Genesis()->nBits);
+    BOOST_TEST_MESSAGE(
+        "honest summary work: " << ((honest->chainWork() - chainActive.Genesis()->chainWork()) / blockWork).GetLow64()
+                                << " blocks");
+    if (inflated)
+        BOOST_TEST_MESSAGE("inflated summary work: "
+                           << ((inflated->chainWork() - chainActive.Genesis()->chainWork()) / blockWork).GetLow64()
+                           << " blocks, best header is inflated: " << (pindexBestHeader == inflated));
+
+    BOOST_CHECK_MESSAGE(
+        !accepted, "summary declaring 255 sub-blocks with " << unsigned(honestCount) << " proofs was accepted");
+    BOOST_CHECK_MESSAGE(pindexBestHeader == honest, "best header moved to the inflated summary");
+}
+
+BOOST_FIXTURE_TEST_CASE(summary_header_without_proofs_is_rejected, SummaryHeaderTestingSetup)
+{
+    // A summary with no proofs and no declared uncles or sub-blocks used to pass the header rules: synced nodes
+    // deferred it forever while syncing nodes connected it. It must be rejected the same way before and after the
+    // fork, whether or not the initial sync is complete.
+    nProofs = 0;
+    LOCK(cs_main);
+    bool originalSyncComplete = IsInitialSyncComplete();
+    for (bool forkPending : {false, true})
+    {
+        for (bool syncComplete : {false, true})
+        {
+            nMiningForkTime = forkPending ? chainActive.Genesis()->GetMedianTimePast() : forkTime;
+            IsInitialSyncCompleteInit(&syncComplete);
+            CValidationState state;
+            CBlockIndex *pindex = nullptr;
+            BOOST_CHECK(!AcceptBlockHeader(Summary(0, 3000), state, Params(), &pindex));
+            BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-blk-wrong-number-of-subblocks");
+            BOOST_CHECK(pindex == nullptr);
+        }
+    }
+    IsInitialSyncCompleteInit(&originalSyncComplete);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
