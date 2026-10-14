@@ -174,6 +174,12 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
         return state.DoS(100, error("%s: premature miner data use", __func__), REJECT_INVALID, "bad-miner-data");
     }
 
+    // Accept sub-blocks only when the HF2 fork is pending or active for the parent
+    if (!fSummaryBlock && !IsUpgrade2Pending(pindexPrev) && !IsUpgrade2Activated(pindexPrev))
+    {
+        return state.DoS(100, error("%s: premature subblock", __func__), REJECT_INVALID, "bad-subblock-premature");
+    }
+
     // Once the fork is activated then old style legacy blocks are no longer accepted.
     if (IsUpgrade2Activated(pindexPrev) && fSummaryBlock && !IsTailstormSummaryBlock(block))
     {

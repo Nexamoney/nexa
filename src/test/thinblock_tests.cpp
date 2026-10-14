@@ -21,6 +21,7 @@
 #include "util.h"
 #include "utilstrencodings.h"
 #include "validation/tailstorm.h"
+#include "validation/validation.h"
 #include "version.h"
 
 #include "test/test_nexa.h"
@@ -140,6 +141,44 @@ static bool ReceiveRelayBlock(CNode &node, const CBlock &block, const std::strin
     }
     stream << CThinBlock(block, filter);
     return CThinBlock::HandleMessage(stream, &node);
+}
+
+BOOST_FIXTURE_TEST_CASE(relay_blocks_with_unknown_parent, TestChain100Setup)
+{
+    const Consensus::Params &consensus = Params().GetConsensus();
+    for (bool subblock : {false, true})
+    {
+        CBlock block = Params().GenesisBlock();
+        block.hashPrevBlock = InsecureRand256();
+        if (subblock)
+            block.minerData = {DEFAULT_MINER_DATA_SUBBLOCK_VERSION};
+        block.nBits = UintToArith256(consensus.powLimit).GetCompact();
+        block.nonce.resize(3);
+        block.UpdateHeader();
+        CValidationState state;
+        uint32_t count = 0;
+        while (!CheckBlockHeader(consensus, block, state))
+        {
+            BOOST_REQUIRE_EQUAL(state.GetRejectReason(), "high-hash");
+            BOOST_REQUIRE(++count < (1 << 23));
+            for (unsigned int x = 0; x < block.nonce.size(); x++)
+                block.nonce[x] = (count >> (x * 8)) & 255;
+            state = CValidationState();
+        }
+        BOOST_REQUIRE(LookupBlockIndex(block.hashPrevBlock) == nullptr);
+        const uint256 hash = block.GetHash();
+        for (const auto &command : {NetMsgType::THINBLOCK, NetMsgType::CMPCTBLOCK})
+        {
+            CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c005, 10000)), "", true);
+            const std::string thinType = command == NetMsgType::THINBLOCK ? NetMsgType::XTHINBLOCK : command;
+            BOOST_REQUIRE(thinrelay.AddBlockInFlight(&node, hash, thinType));
+            BOOST_CHECK(!ReceiveRelayBlock(node, block, command));
+            BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 0);
+            BOOST_CHECK(!node.fShouldBan.load());
+            BOOST_CHECK(!node.IsDisconnecting());
+            thinrelay.ClearAllBlockData(&node, hash);
+        }
+    }
 }
 
 // Unsolicited and late replies must neither retain reconstruction state nor penalize the peer.
