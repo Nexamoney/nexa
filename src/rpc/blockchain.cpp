@@ -1340,7 +1340,7 @@ UniValue dumputxoset(const UniValue &params, bool fHelp)
             filepath.string() + " already exists. if you are sure this is what you want, move it out of the way first");
     }
     std::ofstream file;
-    file.open(filepath.string().c_str());
+    file.open(filepath);
     if (!file.is_open())
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Cannot open utxo dump file");
 

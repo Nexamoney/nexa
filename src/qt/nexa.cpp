@@ -34,6 +34,7 @@
 #include "ui_interface.h"
 #include "util.h"
 #include "utiltranslate.h"
+#include "winargv.h"
 
 #ifdef ENABLE_WALLET
 #include "wallet/wallet.h"
@@ -624,6 +625,9 @@ bool TryMigrateQtAppSettings(const QString &oldOrg, const QString &oldApp, const
 #ifndef NEXA_QT_TEST
 int main(int argc, char *argv[])
 {
+#ifdef WIN32
+    WinCmdLineArgs winArgs(argc, argv);
+#endif
     SetupEnvironment();
 
     // Do not refer to data directory yet, this can be overridden by Intro::pickDataDirectory

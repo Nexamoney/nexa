@@ -145,7 +145,7 @@ namespace electrum
 std::string rostrum_path()
 {
     // look for rostrum in same path as nexad
-    std::filesystem::path nexad_dir(this_process_path());
+    fs::path nexad_dir(this_process_path());
     nexad_dir = nexad_dir.remove_filename();
 
     auto default_path = nexad_dir / ROSTRUM_BIN;
@@ -156,7 +156,7 @@ std::string rostrum_path()
         throw std::runtime_error("Path to electrum server executable not found. "
                                  "You can specify full path with -electrum.exec");
     }
-    if (!std::filesystem::exists(path))
+    if (!fs::exists(path))
     {
         std::stringstream ss;
         ss << "Cannot find electrum executable at " << path;

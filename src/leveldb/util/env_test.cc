@@ -7,6 +7,13 @@
 #include "port/port.h"
 #include "util/testharness.h"
 
+#include <algorithm>
+
+#if defined(LEVELDB_PLATFORM_WINDOWS)
+#include <windows.h>
+#undef DeleteFile
+#endif
+
 namespace leveldb {
 
 static const int kDelayMicros = 100000;
@@ -25,6 +32,52 @@ class EnvTest {
 
 static void SetBool(void* ptr) {
   reinterpret_cast<port::AtomicPointer*>(ptr)->NoBarrier_Store(ptr);
+}
+
+TEST(EnvTest, Utf8Paths) {
+  std::string root;
+  ASSERT_OK(env_->GetTestDirectory(&root));
+  std::string dir = root + "/utf8-\xed\x95\x9c\xea\xb8\x80";
+  std::string name = "file-\xed\x95\x9c\xea\xb8\x80";
+#if defined(LEVELDB_PLATFORM_WINDOWS)
+  // Windows counts native characters, not UTF-8 bytes, toward its path limit.
+  for (int i = 0; i < 30; ++i) dir += "\xed\x95\x9c";
+  for (int i = 0; i < 60; ++i) name += "\xed\x95\x9c";
+#endif
+  const std::string file = dir + "/" + name;
+  const std::string renamed = dir + "/renamed-\xea\xb8\x80";
+  if (!env_->FileExists(root)) ASSERT_OK(env_->CreateDir(root));
+  ASSERT_OK(env_->CreateDir(dir));
+#if defined(LEVELDB_PLATFORM_WINDOWS)
+  // A round trip through the same wrong encoding could hide a renamed path.
+  std::wstring nativeDir(dir.size() + 1, L'\0');
+  ASSERT_TRUE(MultiByteToWideChar(CP_UTF8, 0, dir.c_str(), -1,
+                                &nativeDir[0], nativeDir.size()) > 0);
+  ASSERT_TRUE(GetFileAttributesW(nativeDir.c_str()) != INVALID_FILE_ATTRIBUTES);
+#endif
+  WritableFile* output;
+  ASSERT_OK(env_->NewWritableFile(file, &output));
+  ASSERT_OK(output->Append("unicode path"));
+  ASSERT_OK(output->Close());
+  delete output;
+  ASSERT_TRUE(env_->FileExists(file));
+  uint64_t size;
+  ASSERT_OK(env_->GetFileSize(file, &size));
+  ASSERT_EQ(12, size);
+  std::vector<std::string> children;
+  ASSERT_OK(env_->GetChildren(dir, &children));
+  ASSERT_TRUE(std::find(children.begin(), children.end(), name) != children.end());
+  SequentialFile* input;
+  ASSERT_OK(env_->NewSequentialFile(file, &input));
+  char buffer[32];
+  Slice contents;
+  ASSERT_OK(input->Read(sizeof(buffer), &contents, buffer));
+  ASSERT_EQ("unicode path", contents.ToString());
+  delete input;
+  ASSERT_OK(env_->RenameFile(file, renamed));
+  ASSERT_TRUE(env_->FileExists(renamed));
+  ASSERT_OK(env_->DeleteFile(renamed));
+  ASSERT_OK(env_->DeleteDir(dir));
 }
 
 TEST(EnvTest, RunImmediately) {

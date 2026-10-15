@@ -69,7 +69,7 @@ FreespaceChecker::FreespaceChecker(Intro *_intro) { this->intro = _intro; }
 void FreespaceChecker::check()
 {
     QString dataDirStr = intro->getPathToCheck();
-    fs::path dataDir = GUIUtil::qstringToBoostPath(dataDirStr);
+    fs::path dataDir = GUIUtil::qstringToFilesystemPath(dataDirStr);
     uint64_t freeBytesAvailable = 0;
     int replyStatus = ST_OK;
     QString replyMessage = tr("A new data directory will be created.");
@@ -156,7 +156,7 @@ void Intro::setDataDirectory(const QString &dataDir)
     }
 }
 
-QString Intro::getDefaultDataDirectory() { return GUIUtil::boostPathToQString(GetDefaultDataDir()); }
+QString Intro::getDefaultDataDirectory() { return GUIUtil::filesystemPathToQString(GetDefaultDataDir()); }
 bool Intro::pickDataDirectory()
 {
     QSettings settings;
@@ -169,7 +169,7 @@ bool Intro::pickDataDirectory()
     /* 2) Allow QSettings to override default dir */
     dataDir = settings.value("strDataDir", dataDir).toString();
 
-    if (!fs::exists(GUIUtil::qstringToBoostPath(dataDir)) || GetBoolArg("-choosedatadir", DEFAULT_CHOOSE_DATADIR))
+    if (!fs::exists(GUIUtil::qstringToFilesystemPath(dataDir)) || GetBoolArg("-choosedatadir", DEFAULT_CHOOSE_DATADIR))
     {
         /* If current default data directory does not exist, let the user choose one */
         Intro intro;
@@ -186,7 +186,7 @@ bool Intro::pickDataDirectory()
             dataDir = intro.getDataDirectory();
             try
             {
-                TryCreateDirectories(GUIUtil::qstringToBoostPath(dataDir));
+                TryCreateDirectories(GUIUtil::qstringToFilesystemPath(dataDir));
                 break;
             }
             catch (const fs::filesystem_error &)
@@ -204,7 +204,9 @@ bool Intro::pickDataDirectory()
      * (to be consistent with bitcoind behavior)
      */
     if (dataDir != getDefaultDataDirectory())
-        SoftSetArg("-datadir", GUIUtil::qstringToBoostPath(dataDir).string()); // use OS locale for path setting
+    {
+        SetArg("-datadir", fsPathToStdString(GUIUtil::qstringToFilesystemPath(dataDir)));
+    }
     return true;
 }
 

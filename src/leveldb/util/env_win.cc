@@ -202,23 +202,32 @@ public:
 };
 
 void ToWidePath(const std::string& value, std::wstring& target) {
-	wchar_t buffer[MAX_PATH];
-	MultiByteToWideChar(CP_ACP, 0, value.c_str(), -1, buffer, MAX_PATH);
-	target = buffer;
+    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                       value.c_str(), -1, NULL, 0);
+    target.resize(size);
+    if (size > 0) {
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.c_str(), -1,
+                            &target[0], size);
+        target.resize(size - 1);
+    }
 }
 
 void ToNarrowPath(const std::wstring& value, std::string& target) {
-	char buffer[MAX_PATH];
-	WideCharToMultiByte(CP_ACP, 0, value.c_str(), -1, buffer, MAX_PATH, NULL, NULL);
-	target = buffer;
+    // A native filename can require more than MAX_PATH bytes in UTF-8.
+    const int size = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1,
+                                       NULL, 0, NULL, NULL);
+    target.resize(size);
+    if (size > 0) {
+        WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, &target[0], size, NULL, NULL);
+        target.resize(size - 1);
+    }
 }
 
 std::string GetCurrentDir()
 {
-    CHAR path[MAX_PATH];
-    ::GetModuleFileNameA(::GetModuleHandleA(NULL),path,MAX_PATH);
-    *strrchr(path,'\\') = 0;
-    return std::string(path);
+    std::string path;
+    ToNarrowPath(GetCurrentDirW(), path);
+    return path;
 }
 
 std::wstring GetCurrentDirW()
@@ -764,14 +773,16 @@ uint64_t Win32Env::NowMicros()
 static Status CreateDirInner( const std::string& dirname )
 {
     Status sRet;
-    DWORD attr = ::GetFileAttributes(dirname.c_str());
+    std::wstring path;
+    ToWidePath(dirname, path);
+    DWORD attr = ::GetFileAttributesW(path.c_str());
     if (attr == INVALID_FILE_ATTRIBUTES) { // doesn't exist:
       std::size_t slash = dirname.find_last_of("\\");
       if (slash != std::string::npos){
 	sRet = CreateDirInner(dirname.substr(0, slash));
 	if (!sRet.ok()) return sRet;
       }
-      BOOL result = ::CreateDirectory(dirname.c_str(), NULL);
+      BOOL result = ::CreateDirectoryW(path.c_str(), NULL);
       if (result == FALSE) {
 	sRet = Status::IOError(dirname, "Could not create directory.");
 	return sRet;
@@ -783,10 +794,9 @@ static Status CreateDirInner( const std::string& dirname )
 Status Win32Env::CreateDir( const std::string& dirname )
 {
     std::string path = dirname;
-    if(path[path.length() - 1] != '\\'){
-        path += '\\';
-    }
     ModifyPath(path);
+    // A trailing separator would make CreateDirInner recurse on itself.
+    while (path.size() > 3 && path.back() == '\\') path.pop_back();
 
     return CreateDirInner(path);
 }

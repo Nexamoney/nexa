@@ -2320,7 +2320,7 @@ static const uint64_t TXPOOL_DUMP_VERSION = 1;
 bool LoadTxPool(void)
 {
     int64_t nExpiryTimeout = txPoolExpiry.Value() * 60 * 60;
-    FILE *fileTxpool = fopen((GetDataDir() / "txpool.dat").string().c_str(), "rb");
+    FILE *fileTxpool = fsbridge::fopen((GetDataDir() / "txpool.dat"), "rb");
     if (!fileTxpool)
     {
         LOGA("Failed to open txpool file from disk. Continuing anyway.\n");
@@ -2420,7 +2420,7 @@ bool DumpTxPool(void)
 
     try
     {
-        FILE *fileTxpool = fopen((GetDataDir() / "txpool.dat.new").string().c_str(), "wb");
+        FILE *fileTxpool = fsbridge::fopen((GetDataDir() / "txpool.dat.new"), "wb");
         if (!fileTxpool)
         {
             LOGA("Could not dump txpool, failed to open the txpool file from disk. Continuing anyway.\n");

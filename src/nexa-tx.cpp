@@ -25,6 +25,7 @@
 #include "util.h"
 #include "utilmoneystr.h"
 #include "utilstrencodings.h"
+#include "winargv.h"
 #include <univalue.h>
 
 #include <stdio.h>
@@ -171,7 +172,7 @@ static void RegisterLoad(const string &strInput)
     string key = strInput.substr(0, pos);
     string filename = strInput.substr(pos + 1, string::npos);
 
-    FILE *f = fopen(filename.c_str(), "r");
+    FILE *f = fsbridge::fopen(filename.c_str(), "r");
     if (!f)
     {
         string strErr = "Cannot open file " + filename;
@@ -746,6 +747,9 @@ static int CommandLineRawTx(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+#ifdef WIN32
+    WinCmdLineArgs winArgs(argc, argv);
+#endif
     SetupEnvironment();
 
     try

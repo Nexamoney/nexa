@@ -17,6 +17,7 @@
 #include "util.h"
 #include "utilstrencodings.h"
 #include "utiltranslate.h"
+#include "winargv.h"
 
 #include <stdio.h>
 
@@ -140,6 +141,9 @@ int CommandLineRPC(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+#ifdef WIN32
+    WinCmdLineArgs winArgs(argc, argv);
+#endif
     SetupEnvironment();
     if (!SetupNetworking())
     {

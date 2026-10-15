@@ -88,7 +88,7 @@ bool GenerateAuthCookie(std::string *cookie_out)
      */
     std::ofstream file;
     fs::path filepath = GetAuthCookieFile();
-    file.open(filepath.string().c_str());
+    file.open(filepath);
     if (!file.is_open())
     {
         LOGA("Unable to open cookie authentication file %s for writing\n", filepath.string());
@@ -108,7 +108,7 @@ bool GetAuthCookie(std::string *cookie_out)
     std::ifstream file;
     std::string cookie;
     fs::path filepath = GetAuthCookieFile();
-    file.open(filepath.string().c_str());
+    file.open(filepath);
     if (!file.is_open())
         return false;
     std::getline(file, cookie);

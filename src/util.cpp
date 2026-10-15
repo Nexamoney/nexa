@@ -51,7 +51,13 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 
+#else // ifdef WIN32
+
+#ifdef UNICODE
+typedef LPWSTR LPTSTR;
 #else
+typedef LPSTR LPTSTR;
+#endif
 
 #ifdef _MSC_VER
 #pragma warning(disable : 4786)
@@ -338,13 +344,15 @@ const fs::path &GetDataDir(bool fNetSpecific)
     if (!path.empty())
         return path;
 
-    if (mapArgs.count("-datadir"))
+    const std::string datadir = GetArg("-datadir", "");
+    if (!datadir.empty())
     {
-        path = fs::absolute(mapArgs["-datadir"]);
+        path = fs::absolute(stdStringToFsPath(datadir));
         if (!fs::exists(path) || !fs::is_directory(path))
         {
+            const std::string strPath = fsPathToStdString(path);
             std::stringstream err;
-            err << "datadir path " << path << " is not a directory or it does not exist";
+            err << "datadir path " << strPath << " is not a directory or it does not exist";
             throw std::invalid_argument(err.str());
         }
     }
@@ -354,7 +362,7 @@ const fs::path &GetDataDir(bool fNetSpecific)
     }
     if (fNetSpecific)
     {
-        path /= BaseParams().DataDir();
+        path /= stdStringToFsPath(BaseParams().DataDir());
         // InitLogging calls GetDataDir(true) which will set this if something has not
         // previously done so
         if (pathDebugLog.empty())
@@ -403,7 +411,7 @@ static void CreateConfigFile(const fs::path &path)
 
 fs::path GetConfigFile(const std::string &confPath)
 {
-    fs::path pathConfigFile(confPath);
+    fs::path pathConfigFile = stdStringToFsPath(confPath);
     if (pathConfigFile.is_relative())
         pathConfigFile = GetDataDir(false) / pathConfigFile;
 
@@ -418,7 +426,7 @@ fs::path GetConfigFile(const std::string &confPath)
  */
 fs::path GetForksCsvFile()
 {
-    fs::path pathCsvFile(GetArg("-forks", FORKS_CSV_FILENAME));
+    fs::path pathCsvFile = stdStringToFsPath(GetArg("-forks", FORKS_CSV_FILENAME));
     if (pathCsvFile.is_relative())
         pathCsvFile = GetDataDir(false) / pathCsvFile;
 
@@ -444,7 +452,9 @@ void ReadConfigFile(std::map<std::string, std::string> &mapSettingsRet,
         InterpretNegativeSetting(strKey, strValue);
         allowedArgs.checkArg(strKey.substr(1), strValue);
         if (mapSettingsRet.count(strKey) == 0)
+        {
             mapSettingsRet[strKey] = strValue;
+        }
         mapMultiSettingsRet[strKey].push_back(strValue);
     }
     // If datadir is changed in .conf file:
@@ -474,7 +484,7 @@ void CreatePidFile(const fs::path &path, pid_t pid)
 bool RenameOver(fs::path src, fs::path dest)
 {
 #ifdef WIN32
-    return MoveFileExA(src.string().c_str(), dest.string().c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+    return MoveFileExW(src.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
 #else
     int rc = std::rename(src.string().c_str(), dest.string().c_str());
     return (rc == 0);
@@ -632,13 +642,15 @@ void ShrinkDebugFile()
 #ifdef WIN32
 fs::path GetSpecialFolderPath(int nFolder, bool fCreate)
 {
-    char pszPath[MAX_PATH] = "";
+    LPTSTR pszPath = (LPTSTR)std::malloc(MAX_PATH * sizeof(LPTSTR));
 
     if (SHGetSpecialFolderPathA(nullptr, pszPath, nFolder, fCreate))
     {
-        return fs::path(pszPath);
+        fs::path retPath(pszPath);
+        free(pszPath);
+        return retPath;
     }
-
+    free(pszPath);
     LOGA("SHGetSpecialFolderPathA() failed, could not obtain requested path.\n");
     return fs::path("");
 }
