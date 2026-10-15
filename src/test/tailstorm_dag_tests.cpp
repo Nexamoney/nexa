@@ -680,8 +680,8 @@ BOOST_AUTO_TEST_CASE(regeneration_retries_cross_branch_spend)
     // Uppercase names are subblocks; lowercase names in brackets are transactions.
     //
     // A carries p, which spends a summary-root coin. B carries c, which spends p's
-    // output, but B does not reference A. Insert B first, then A, and regenerate
-    // in both sequence orders. Both transactions must apply, leaving only c's output.
+    // output, but B does not reference A. Seed both sequence orders before rebuilding.
+    // Regeneration must restore hash order and apply both transactions, leaving only the output of c.
     DoubleSpendTestCoin coin(coinsCache);
     const CBlockIndex &summary = coin.chain.previousSummary;
     const CTransactionRef provider = coin.SpendCoin(800);
@@ -720,11 +720,13 @@ BOOST_AUTO_TEST_CASE(regeneration_retries_cross_branch_spend)
     BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, provider->GetId()));
     BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, spender->GetId()));
 
+    // These unrelated sub-blocks both score one, so the lower hash must come first.
+    const uint32_t expectedProviderId = providerNode->hash < spenderNode->hash ? 1u : 2u;
     // Regeneration clears the DAG view, so neither order can reuse the insertion result.
     Coin parentFirstCoin;
     for (const bool childFirst : {false, true})
     {
-        BOOST_TEST_CONTEXT("child first=" << childFirst)
+        BOOST_TEST_CONTEXT("initial child first=" << childFirst)
         {
             providerNode->nSequenceId = childFirst ? 2 : 1;
             spenderNode->nSequenceId = childFirst ? 1 : 2;
@@ -732,9 +734,8 @@ BOOST_AUTO_TEST_CASE(regeneration_retries_cross_branch_spend)
 
             BOOST_CHECK(providerNode->fProcessed);
             BOOST_CHECK(spenderNode->fProcessed);
-            // Recover the spend by retrying, not by changing the requested sequence order.
-            BOOST_CHECK_EQUAL(providerNode->nSequenceId, childFirst ? 2u : 1u);
-            BOOST_CHECK_EQUAL(spenderNode->nSequenceId, childFirst ? 1u : 2u);
+            BOOST_CHECK_EQUAL(providerNode->nSequenceId, expectedProviderId);
+            BOOST_CHECK_EQUAL(spenderNode->nSequenceId, 3u - expectedProviderId);
             BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, provider->GetId()));
             BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, spender->GetId()));
             // Both inputs must be spent; only the spender's output should remain.
@@ -831,7 +832,28 @@ static void CheckCrossBranchRegeneration(CCoinsViewCache &coinsCache, size_t spe
     for (const auto &tx : {provider, child, grandchild})
         BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, tx->GetId()));
 
-    // Keep subblock ancestors first, even when transaction providers come later.
+    std::vector<CTreeNodeRef> expectedOrder;
+    if (branchA.size() == branchB.size())
+    {
+        // Equal chains have equal scores; longer remaining descendant lists rank first.
+        // This places both roots before their children, with lower hash first at each depth.
+        for (size_t i = 0; i < branchA.size(); ++i)
+        {
+            CTreeNodeRef first = branchA[i];
+            CTreeNodeRef second = branchB[i];
+            if (second->hash < first->hash)
+                std::swap(first, second);
+            expectedOrder.insert(expectedOrder.end(), {first, second});
+        }
+    }
+    else
+    {
+        // Every sub-block in the four-node chain scores four, ahead of the three-node chain.
+        expectedOrder = branchB;
+        expectedOrder.insert(expectedOrder.end(), branchA.begin(), branchA.end());
+    }
+
+    // Seed different sequence ids; each rebuild must restore the same canonical order.
     std::vector<std::vector<CTreeNodeRef> > orders{branchA, branchB, {}};
     orders[0].insert(orders[0].end(), branchB.begin(), branchB.end());
     orders[1].insert(orders[1].end(), branchA.begin(), branchA.end());
@@ -846,7 +868,7 @@ static void CheckCrossBranchRegeneration(CCoinsViewCache &coinsCache, size_t spe
     Coin providerFirstCoin;
     for (size_t order = 0; order < orders.size(); ++order)
     {
-        BOOST_TEST_CONTEXT("replay order=" << order)
+        BOOST_TEST_CONTEXT("initial sequence order=" << order)
         {
             const auto &nodes = orders[order];
             for (size_t i = 0; i < nodes.size(); ++i)
@@ -854,10 +876,10 @@ static void CheckCrossBranchRegeneration(CCoinsViewCache &coinsCache, size_t spe
             // Rebuild from summary-root coins rather than reusing the insertion view.
             tailstormForest.ReGenerateDagData(grove);
 
-            for (size_t i = 0; i < nodes.size(); ++i)
+            for (size_t i = 0; i < expectedOrder.size(); ++i)
             {
-                BOOST_CHECK(nodes[i]->fProcessed);
-                BOOST_CHECK_EQUAL(nodes[i]->nSequenceId, i + 1);
+                BOOST_CHECK(expectedOrder[i]->fProcessed);
+                BOOST_CHECK_EQUAL(expectedOrder[i]->nSequenceId, i + 1);
             }
             for (const auto &tx : {provider, child, grandchild})
                 BOOST_CHECK(CTailstormForestTest::HasDagTx(*tree, tx->GetId()));
@@ -894,8 +916,8 @@ BOOST_AUTO_TEST_CASE(regeneration_retries_longer_branches)
     //
     // p spends a summary-root coin; c spends p's output; d spends c's output.
     // The branches have no subblock ancestry link. Insert branch B before A,
-    // then regenerate A-first, B-first and interleaved. Each order must apply
-    // all three transactions and leave only d's output.
+    // then seed A-first, B-first and interleaved sequence ids before rebuilding.
+    // Each rebuild must restore canonical order, apply all three transactions and leave only the output of d.
     CheckCrossBranchRegeneration(coinsCache, 3);
 }
 
@@ -909,9 +931,9 @@ BOOST_AUTO_TEST_CASE(regeneration_retries_unequal_branches)
     //
     // p spends a summary-root coin; c spends p's output; d spends c's output.
     // The branches have no subblock ancestry link, and B3 adds a step between
-    // c's and d's subblocks. Insert B before A, then regenerate A-first, B-first
-    // and interleaved. All seven subblocks must remain selected, with p, c and d
-    // applied and only d's output left in every order.
+    // the sub-blocks carrying c and d. Insert B before A, then seed A-first, B-first
+    // and interleaved sequence ids before rebuilding. All seven sub-blocks must remain
+    // selected in canonical order, with p, c and d applied and only the output of d left.
     CheckCrossBranchRegeneration(coinsCache, 4);
 }
 
