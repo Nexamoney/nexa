@@ -9,6 +9,7 @@
 #include "uint256.h"
 
 #include <boost/assert.hpp>
+#include <boost/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 
 using namespace std;
@@ -32,6 +33,30 @@ bool is_null_key(const vector<unsigned char> &key)
 }
 
 BOOST_FIXTURE_TEST_SUITE(dbwrapper_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(dbwrapper_unicode_path)
+{
+    const fs::path root = fs::temp_directory_path() / randString();
+    BOOST_SCOPE_EXIT(&root) { fs::remove_all(root); }
+    BOOST_SCOPE_EXIT_END
+    const fs::path path = root / stdStringToFsPath("\xed\x95\x9c\xea\xb8\x80");
+    {
+        CDBWrapper db(path, 1 << 20, false);
+        BOOST_REQUIRE(db.Write('k', std::string("value")));
+    }
+    // The backend must use the native directory, not a reinterpreted filename.
+    BOOST_REQUIRE(fs::exists(path / "CURRENT"));
+    {
+        CDBWrapper db(path, 1 << 20, false);
+        std::string value;
+        BOOST_REQUIRE(db.Read('k', value));
+        BOOST_CHECK_EQUAL(value, "value");
+    }
+    {
+        CDBWrapper db(path, 1 << 20, false, true);
+        BOOST_CHECK(!db.Exists('k'));
+    }
+}
 
 BOOST_AUTO_TEST_CASE(dbwrapper)
 {

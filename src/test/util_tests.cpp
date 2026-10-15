@@ -15,6 +15,7 @@
 #include "unlimited.h"
 #include "utilmoneystr.h"
 #include "utilstrencodings.h"
+#include "winargv.h"
 
 #include <stdint.h>
 #include <vector>
@@ -242,6 +243,23 @@ BOOST_AUTO_TEST_CASE(util_ParseParameters)
     BOOST_CHECK(mapArgs["-reindex"] == "" && mapArgs["-connect"] == "multiple");
     BOOST_CHECK(mapMultiArgs["-connect"].size() == 2);
 }
+
+#ifdef WIN32
+BOOST_AUTO_TEST_CASE(windows_utf8_arguments)
+{
+    // Parse wide arguments before the ANSI code page can replace characters.
+    int argc = 0;
+    char **argv = nullptr;
+    WinCmdLineArgs args(argc, argv, L"nexa-cli \"-datadir=C:\\caf\u00e9\\\ud55c\uae00 dir\" echo \"\" \"\U0001f600\"");
+    BOOST_REQUIRE_EQUAL(argc, 5);
+    BOOST_CHECK_EQUAL(argv[0], "nexa-cli");
+    BOOST_CHECK_EQUAL(argv[1], "-datadir=C:\\caf\xc3\xa9\\\xed\x95\x9c\xea\xb8\x80 dir");
+    BOOST_CHECK_EQUAL(argv[2], "echo");
+    BOOST_CHECK_EQUAL(argv[3], "");
+    BOOST_CHECK_EQUAL(argv[4], "\xf0\x9f\x98\x80");
+    BOOST_CHECK(argv[argc] == nullptr);
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(util_GetArg)
 {

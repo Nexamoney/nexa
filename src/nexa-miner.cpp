@@ -25,6 +25,7 @@
 #include "util.h"
 #include "utilstrencodings.h"
 #include "utiltranslate.h"
+#include "winargv.h"
 
 #include <cstdlib>
 #include <functional>
@@ -832,6 +833,9 @@ int CpuMiner(int threadNum)
 
 int main(int argc, char *argv[])
 {
+#ifdef WIN32
+    WinCmdLineArgs winArgs(argc, argv);
+#endif
     int ret = EXIT_FAILURE;
 
     Secp256k1Init secp;

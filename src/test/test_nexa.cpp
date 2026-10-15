@@ -50,8 +50,8 @@ BasicTestingSetup::BasicTestingSetup(const std::string &chainName)
 {
     // Do not place the data created by these unit tests on top of any existing chain,
     // by overriding datadir to use a temporary if it isn't already overridden
-    if (mapArgs.count("-datadir") == 0)
-        mapArgs["-datadir"] = GetTempPath().string();
+    if (GetArg("-datadir", "").empty())
+        SetArg("-datadir", fsPathToStdString(GetTempPath()));
     SHA256AutoDetect();
     RandomInit();
     ECC_Start();

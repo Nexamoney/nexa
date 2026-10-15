@@ -262,7 +262,7 @@ std::vector<CapdMsgRef> CapdMsgPool::find(const std::vector<unsigned char> &v) c
 static const uint64_t MSGPOOL_DUMP_VERSION = 1;
 bool CapdMsgPool::LoadMsgPool(void)
 {
-    FILE *fileMsgpool = fopen((GetDataDir() / "msgpool.dat").string().c_str(), "rb");
+    FILE *fileMsgpool = fsbridge::fopen((GetDataDir() / "msgpool.dat"), "rb");
     if (!fileMsgpool)
     {
         LOGA("Failed to open msgpool file from disk. Continuing anyway.\n");
@@ -323,7 +323,7 @@ bool CapdMsgPool::DumpMsgPool(void)
 
     try
     {
-        FILE *fileMsgpool = fopen((GetDataDir() / "msgpool.dat.new").string().c_str(), "wb");
+        FILE *fileMsgpool = fsbridge::fopen((GetDataDir() / "msgpool.dat.new"), "wb");
         if (!fileMsgpool)
         {
             LOGA("Could not dump txpool, failed to open the msgpool file from disk. Continuing anyway.\n");

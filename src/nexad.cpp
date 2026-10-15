@@ -23,6 +23,7 @@
 #include "util.h"
 #include "utilstrencodings.h"
 #include "utiltranslate.h"
+#include "winargv.h"
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <thread>
@@ -130,7 +131,7 @@ bool AppInit(int argc, char *argv[])
     {
         if (!fs::is_directory(GetDataDir(false)))
         {
-            fprintf(stderr, "Error: Specified data directory \"%s\" does not exist.\n", mapArgs["-datadir"].c_str());
+            fprintf(stderr, "Error: Specified data directory \"%s\" does not exist.\n", GetArg("-datadir", "").c_str());
             return false;
         }
         try
@@ -273,6 +274,9 @@ bool AppInit(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+#ifdef WIN32
+    WinCmdLineArgs winArgs(argc, argv);
+#endif
     SetupEnvironment();
 
     // Connect nexad signal handlers

@@ -253,7 +253,7 @@ static const uint64_t ORPHANPOOL_DUMP_VERSION = 1;
 bool CTxOrphanPool::LoadOrphanPool()
 {
     uint64_t nExpiryTimeout = orphanPoolExpiry.Value() * 60 * 60;
-    FILE *fileOrphanpool = fopen((GetDataDir() / "orphanpool.dat").string().c_str(), "rb");
+    FILE *fileOrphanpool = fsbridge::fopen((GetDataDir() / "orphanpool.dat"), "rb");
     if (!fileOrphanpool)
     {
         LOGA("Failed to open orphanpool file from disk. Continuing anyway.\n");
@@ -328,7 +328,7 @@ bool CTxOrphanPool::DumpOrphanPool()
 
     try
     {
-        FILE *fileOrphanpool = fopen((GetDataDir() / "orphanpool.dat.new").string().c_str(), "wb");
+        FILE *fileOrphanpool = fsbridge::fopen((GetDataDir() / "orphanpool.dat.new"), "wb");
         if (!fileOrphanpool)
         {
             LOGA("Failed to dump orphanpool, failed to open orphanpool file from disk. Continuing anyway.\n");

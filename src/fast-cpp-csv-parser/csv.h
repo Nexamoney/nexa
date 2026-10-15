@@ -49,6 +49,8 @@
 #include <cerrno>
 #include <istream>
 
+#include "fs.h"
+
 namespace io{
         ////////////////////////////////////////////////////////////////////////////
         //                                 LineReader                             //
@@ -333,7 +335,7 @@ namespace io{
                 static std::unique_ptr<ByteSourceBase> open_file(const char*file_name){
                         // We open the file in binary mode as it makes no difference under *nix
                         // and under Windows we handle \r\n newlines ourself.
-                        FILE*file = std::fopen(file_name, "rb");
+                        FILE*file = fsbridge::fopen(file_name, "rb");
                         if(file == 0){
                                 int x = errno; // store errno as soon as possible, doing it after constructor call can fail.
                                 error::can_not_open_file err;
@@ -1267,4 +1269,3 @@ namespace io{
         };
 }
 #endif
-

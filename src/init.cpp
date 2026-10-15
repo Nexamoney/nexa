@@ -1176,7 +1176,11 @@ bool AppInit2(Config &config)
 
     try
     {
+#ifdef WIN32
+        static boost::interprocess::file_lock lock(pathLockFile.wstring().c_str());
+#else
         static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
+#endif
         if (!lock.try_lock())
             return InitError(strprintf(_("Cannot obtain a lock on data directory %s. %s is probably already running."),
                 strDataDir, _(PACKAGE_NAME)));
@@ -1207,7 +1211,8 @@ bool AppInit2(Config &config)
 
     // bip135 begin
     // check for fork deployment CSV file, read it
-    string ForksCsvFile = GetForksCsvFile().string();
+    const fs::path ForksCsvFile = GetForksCsvFile();
+    const std::string strForksCsvFile = ForksCsvFile.string();
 
     if (fs::exists(ForksCsvFile))
     {
@@ -1215,30 +1220,30 @@ bool AppInit2(Config &config)
         bool CsvReadOk = true;
         try
         {
-            csvFile.open(ForksCsvFile.c_str(), ios::in);
+            csvFile.open(ForksCsvFile, ios::in);
             if (csvFile.fail())
             {
                 throw std::runtime_error("unable to open deployment file for reading");
             }
 
-            LOGA("Reading deployment configuration CSV file at '%s'\n", ForksCsvFile);
+            LOGA("Reading deployment configuration CSV file at '%s'\n", strForksCsvFile);
             // read the CSV file and apply the parameters for current network
             CsvReadOk = ReadForksCsv(chainparams.NetworkIDString(), csvFile, chainparams.GetModifiableConsensus());
             csvFile.close();
         }
         catch (const std::exception &e)
         {
-            LOGA("Unable to read '%s'\n", ForksCsvFile);
+            LOGA("Unable to read '%s'\n", strForksCsvFile);
             // if unable to read file which is present: abort
             return InitError(strprintf(
-                _("Warning: Could not open deployment configuration CSV file '%s' for reading"), ForksCsvFile));
+                _("Warning: Could not open deployment configuration CSV file '%s' for reading"), strForksCsvFile));
         }
         // if the deployments data doesn't validate correctly, shut down for safety reasons.
         if (!CsvReadOk)
         {
-            LOGA("Validation of '%s' failed\n", ForksCsvFile);
+            LOGA("Validation of '%s' failed\n", strForksCsvFile);
             return InitError(strprintf(
-                _("Deployment configuration file '%s' contained invalid data - see debug.log"), ForksCsvFile));
+                _("Deployment configuration file '%s' contained invalid data - see debug.log"), strForksCsvFile));
         }
     }
     else
@@ -1246,12 +1251,12 @@ bool AppInit2(Config &config)
         if (strcmp(GetArg("-forks", FORKS_CSV_FILENAME).c_str(), FORKS_CSV_FILENAME) == 0)
         {
             // Be noisy, but don't fail if file is absent - use built-in defaults.
-            LOGA("No deployment configuration found at '%s' - using defaults\n", ForksCsvFile);
+            LOGA("No deployment configuration found at '%s' - using defaults\n", strForksCsvFile);
         }
         else
         {
             // Fail only when we've configured a file but it doesn't exit.
-            return InitError(strprintf(_("Deployment configuration file '%s' not found"), ForksCsvFile));
+            return InitError(strprintf(_("Deployment configuration file '%s' not found"), strForksCsvFile));
         }
     }
 

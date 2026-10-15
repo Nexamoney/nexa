@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <boost/algorithm/string.hpp>
+#include <boost/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 
 BOOST_FIXTURE_TEST_SUITE(getarg_tests, BasicTestingSetup)
@@ -41,6 +42,71 @@ static void ResetArgs(const std::string &strArg, Kind kind = NEXAD)
         ParseParameters(vecChar.size(), &vecChar[0], AllowedArgs::Nexad(&tweaks));
     else
         ParseParameters(vecChar.size(), &vecChar[0], AllowedArgs::NexaCli());
+}
+
+BOOST_AUTO_TEST_CASE(path_arguments)
+{
+    // Path options stay UTF-8 until use; command-line values override the config file.
+    const auto originalArgs = mapArgs;
+    const auto originalMultiArgs = mapMultiArgs;
+    const fs::path temp = fs::temp_directory_path() / ("nexa-path-args-" + InsecureRand256().GetHex());
+    BOOST_SCOPE_EXIT(&originalArgs, &originalMultiArgs, &temp)
+    {
+        mapArgs = originalArgs;
+        mapMultiArgs = originalMultiArgs;
+        ClearDatadirCache();
+        fs::remove_all(temp);
+    }
+    BOOST_SCOPE_EXIT_END
+
+    const fs::path unicode = stdStringToFsPath("\xed\x95\x9c\xea\xb8\x80 dir");
+    const fs::path cliDir = temp / unicode;
+    const fs::path configDir = temp / "config" / unicode;
+    fs::create_directories(cliDir);
+    fs::create_directories(configDir);
+    const fs::path configName = unicode.native() + fs::path(".conf").native();
+    const fs::path forksName = unicode.native() + fs::path(".csv").native();
+    const fs::path configPath = cliDir / configName;
+    {
+        fs_ofstream config(configPath);
+        config << "datadir=" << fsPathToStdString(configDir) << "\n";
+        BOOST_REQUIRE(config.good());
+    }
+
+    const auto parse = [](const std::vector<std::string> &args)
+    {
+        std::vector<const char *> argv;
+        for (const auto &arg : args)
+            argv.push_back(arg.c_str());
+        ParseParameters(argv.size(), argv.data(), AllowedArgs::Nexad(&tweaks));
+        ClearDatadirCache();
+    };
+    const std::string cliPath = fsPathToStdString(cliDir);
+    const std::string configuredPath = fsPathToStdString(configDir);
+    parse({"nexad", "-datadir=" + configuredPath, "-datadir=" + cliPath, "-conf=" + fsPathToStdString(configName),
+        "-forks=" + fsPathToStdString(forksName)});
+    BOOST_CHECK_EQUAL(GetArg("-datadir", ""), cliPath);
+    BOOST_REQUIRE_EQUAL(mapMultiArgs.at("-datadir").size(), 2u);
+    BOOST_CHECK_EQUAL(mapMultiArgs.at("-datadir").front(), configuredPath);
+    BOOST_CHECK_EQUAL(mapMultiArgs.at("-datadir").back(), cliPath);
+    BOOST_CHECK(GetDataDir(false) == cliDir);
+    BOOST_CHECK(GetConfigFile(GetArg("-conf", "")) == configPath);
+    BOOST_CHECK(GetForksCsvFile() == cliDir / forksName);
+    ReadConfigFile(mapArgs, mapMultiArgs, AllowedArgs::ConfigFile(&tweaks));
+    BOOST_CHECK_EQUAL(GetArg("-datadir", ""), cliPath);
+    BOOST_CHECK(GetDataDir(false) == cliDir);
+    BOOST_CHECK_EQUAL(mapMultiArgs.at("-datadir").size(), 3u);
+
+    // Re-parsing must not retain the previous command-line data directory.
+    parse({"nexad", "-conf=" + fsPathToStdString(configPath), "-forks=" + fsPathToStdString(cliDir / forksName)});
+    BOOST_CHECK(mapArgs.count("-datadir") == 0);
+    BOOST_CHECK(GetConfigFile(GetArg("-conf", "")) == configPath);
+    BOOST_CHECK(GetForksCsvFile() == cliDir / forksName);
+    ReadConfigFile(mapArgs, mapMultiArgs, AllowedArgs::ConfigFile(&tweaks));
+    BOOST_CHECK_EQUAL(GetArg("-datadir", ""), configuredPath);
+    BOOST_CHECK(GetDataDir(false) == configDir);
+    BOOST_REQUIRE_EQUAL(mapMultiArgs.at("-datadir").size(), 1u);
+    BOOST_CHECK_EQUAL(mapMultiArgs.at("-datadir").front(), configuredPath);
 }
 
 BOOST_AUTO_TEST_CASE(boolarg)

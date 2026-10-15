@@ -243,6 +243,7 @@ BITCOIN_CORE_H = \
   tweak.h \
   requestManager.h \
   util.h \
+  winargv.h \
   utilmoneystr.h \
   utiltime.h \
   utiltranslate.h \

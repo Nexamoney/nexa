@@ -39,16 +39,16 @@ size_t GetNumberBanEntries()
     return banmap.size();
 }
 
-bool DoesBanlistFileExist() { return std::filesystem::exists(std::filesystem::path(GetDataDir() / "banlist.dat")); }
+bool DoesBanlistFileExist() { return fs::exists(fs::path(GetDataDir() / "banlist.dat")); }
 bool RemoveBanlistFile()
 {
-    std::filesystem::path path(GetDataDir() / "banlist.dat");
+    fs::path path(GetDataDir() / "banlist.dat");
     try
     {
-        if (std::filesystem::exists(path))
+        if (fs::exists(path))
         {
             // if the file already exists, remove it
-            std::filesystem::remove(path);
+            fs::remove(path);
         }
 
         // if we get here, we either successfully deleted the file, or it didn't exist

@@ -19,9 +19,20 @@ typedef std::ofstream fs_ofstream;  // Because when we convert to std, it will b
 
 /** Bridge operations to C stdio */
 namespace fsbridge {
+#ifdef WIN32
+    // windows string conversion functions
+    std::wstring charToWstring(const char *cstr);
+    std::wstring stringToWstring(const std::string str);
+    std::string wcharToString(const wchar_t *wcstr);
+    std::string wstringToString(const std::wstring wstr);
+#endif
+
     FILE *fopen(const fs::path& p, const char *mode);
     FILE *freopen(const fs::path& p, const char *mode, FILE *stream);
 };
+
+std::string fsPathToStdString(const fs::path &path);
+fs::path stdStringToFsPath(const std::string &strPath);
 
 bool RenameOver(fs::path src, fs::path dest);
 
