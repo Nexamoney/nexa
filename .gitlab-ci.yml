@@ -904,15 +904,7 @@ build-win-64-libnexa-jvm:
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
-# Native Windows build + unit tests on jQrgen's self-hosted runner (windows-shell-THINKCENTRE,
-# tag `windows`, shell executor / PowerShell), as agreed with sickpig: ONLY for commits on the
-# default branch, never for merge requests (the runner is a single private machine).
-# Toolchain: MSYS2 MINGW64 (native msys/mingw route, cf. doc/build-windows-mingw.md).
-# Runner prerequisites: MSYS2 at C:\msys64 (override with MSYS2_ROOT) with
-#   pacman -S --needed base-devel git autoconf automake libtool make pkgconf \
-#     mingw-w64-x86_64-toolchain mingw-w64-x86_64-boost mingw-w64-x86_64-libevent \
-#     mingw-w64-x86_64-openssl mingw-w64-x86_64-gmp mingw-w64-x86_64-db mingw-w64-x86_64-zeromq
-# allow_failure until the native build/test is known green.
+# Native MSYS2 build + unit tests; dev only, never MRs.
 build-test-win-64-native:
     stage: windows_native
     needs: []
