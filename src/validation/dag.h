@@ -86,7 +86,7 @@ std::set<uint256> GetTxnExclusionSet(const std::vector<CTreeNodeRef> &sortedNode
 /** Dag order of the passed nodes: by dependency (parents before children), then by the highest score among a
     subblock and its descendants (not counting descendants shared with the subblock it is compared to), then by
     lower hash. Only links among the passed nodes are considered, and only setAncestors is read.
-    @returns fewer nodes than passed if their links contain a cycle.
+    @returns The subblocks in dependency, score, hash order.
 */
 std::vector<CTreeNodeRef> OrderDag(const std::vector<CTreeNodeRef> &nodes);
 

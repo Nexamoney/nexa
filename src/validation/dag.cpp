@@ -208,6 +208,7 @@ void CDagConflictRegistry::clear()
 
 bool CTailstormTree::HasAncestryDoubleSpend(const CTreeNodeRef &newNode)
 {
+    AssertLockHeld(tailstormForest.cs_forest);
     if (!newNode)
         return false;
     return conflictRegistry.ScanSpends(newNode, false);
@@ -215,6 +216,7 @@ bool CTailstormTree::HasAncestryDoubleSpend(const CTreeNodeRef &newNode)
 
 void CTailstormTree::IndexSpends(const CTreeNodeRef &newNode)
 {
+    AssertLockHeld(tailstormForest.cs_forest);
     if (newNode)
         conflictRegistry.ScanSpends(newNode, true);
 }
@@ -222,6 +224,7 @@ void CTailstormTree::IndexSpends(const CTreeNodeRef &newNode)
 // Admit a subblock to the dag: ancestry check, insert, renumber, and index its spends.
 bool CTailstormTree::checkUpdateAncestryInsertIntoDag(const CTreeNodeRef &newNode)
 {
+    AssertLockHeld(tailstormForest.cs_forest);
     // A subblock's transactions after the coinbase must be in increasing txid order. The dag connects
     // transactions without their subblocks (ConnectDagTransactions), so check it here, for every subblock
     // linked, however it is later connected.
@@ -334,6 +337,8 @@ std::set<uint256> GetTxnExclusionSet(const std::vector<CTreeNodeRef> &sortedNode
     const CCoinsViewCache *pcoins,
     std::set<uint256> *pLosers)
 {
+    // We do not need to be holding a lock like tailstormForest.cs_forest, because all the information is
+    // provided to us in the passed parameters: the node list and the coins cache.
     std::set<uint256> excluded;
     if (sortedNodes.empty())
         return excluded;
@@ -460,6 +465,7 @@ bool AnalyzeSummaryDag(const uint256 &hashSummaryRoot,
 {
     vOrdered.clear();
     setTxnExclusions.clear();
+    strReject.clear();
 
     // Fresh nodes: no forest links, not uncles, no nSequenceId.
     std::map<uint256, CTreeNodeRef> mapNodes;
@@ -543,6 +549,7 @@ static bool ConnectDagTransactions(const std::map<uint256, CTransactionRef> &txs
 // The number of dag subblocks a summary commits: the tailstorm_k - 1 places the uncles leave.
 size_t CTailstormTree::SelectionSize() const
 {
+    AssertLockHeld(tailstormForest.cs_forest);
     const size_t nMaxSubblocks = Params().GetConsensus().tailstorm_k - 1;
     return nMaxSubblocks - std::min(mapUncles.size(), nMaxSubblocks);
 }
@@ -551,6 +558,7 @@ size_t CTailstormTree::SelectionSize() const
 // SelectionSize() in dag order.
 bool CTailstormTree::NeedsRegeneration() const
 {
+    AssertLockHeld(tailstormForest.cs_forest);
     const size_t nSelection = SelectionSize();
     for (const auto &mi : dag)
     {
@@ -562,6 +570,7 @@ bool CTailstormTree::NeedsRegeneration() const
 
 std::vector<CTreeNodeRef> CTailstormTree::SortedDag() const
 {
+    AssertLockHeld(tailstormForest.cs_forest);
     std::vector<CTreeNodeRef> sorted(dag.size());
     bool fDense = true;
     for (const auto &mi : dag)
