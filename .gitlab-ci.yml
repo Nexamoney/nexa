@@ -653,6 +653,33 @@ build-ubuntu-tests-clang:
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
+build-ubuntu-tests-ubsan:
+    stage: build_tests
+    extends: [.ubuntu-clang-env, .detect-cpus]
+    needs: []
+    # Keep advisory until the existing UBSan findings are resolved.
+    allow_failure: true
+    cache:
+        <<: *ccache_settings
+        key: ubuntu_cache_clang_ubsan
+    variables:
+        CFLAGS: "-O1 -g -fno-omit-frame-pointer -fsanitize=undefined -fno-sanitize-recover=undefined"
+        CXXFLAGS: "-O1 -g -fno-omit-frame-pointer -fsanitize=undefined -fno-sanitize-recover=undefined"
+        LDFLAGS: "-fsanitize=undefined"
+    script:
+        - ./autogen.sh
+        - mkdir build; cd build
+        - ../configure --with-gui=no --disable-bench
+        - make -j"$CPUS" -C src test/test_nexa
+        - ./src/test/test_nexa --log_level=test_suite
+    artifacts:
+        when: on_failure
+        paths:
+            - ./build/config.log
+            - ./build/src/test/test_nexa
+    rules:
+      - if: $CI_PIPELINE_SOURCE != "schedule"
+
 ######################################################
 ######## ARM64
 ######################################################
