@@ -257,6 +257,18 @@ BOOST_AUTO_TEST_CASE(treeExpansion)
     treeExpansionTest<CHash256, 32>(); // REQ6
 }
 
+BOOST_AUTO_TEST_CASE(indexDeeperThan64Bits)
+{
+    // Index bits past depth 63 wrap around instead of being dropped
+    MerkleProof<CSHA256, 32> mp;
+    VchType one(32);
+    one[0] = 1;
+    VchType proof(64, MULTIPROOF_RIGHT_IS_EMPTY);
+    proof.push_back(MULTIPROOF_LEFT_IS_EMPTY);
+    std::vector<uint64_t> indexes;
+    BOOST_CHECK(!mp.computeMultiproofRoot({one}, proof, &indexes).empty());
+    BOOST_CHECK_EQUAL(indexes[0], 1);
+}
 
 /* This test case demonstrates how to add a new element into a subtree that is empty */
 BOOST_AUTO_TEST_CASE(emptyExpansion)
@@ -737,6 +749,31 @@ static void CheckPass(uint32_t flags, const Stack &original_stack, const CScript
         ScriptImportedState sis2(&checker2);
         bool r2 = EvalScript(stack2, script, flags, MAX_OPS_PER_SCRIPT, sis2, &err2);
         tfm::printf("err result %d %d", r2, err2);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(merkleProofIndexShiftBoundary)
+{
+    VchType leaf(32);
+    leaf[0] = 1;
+    const VchType emptyHash{0};
+    const std::vector<std::pair<uint64_t, uint64_t> > cases{{63, uint64_t{1} << 63}, {64, 1}, {65, 2}};
+    for (const auto &test : cases)
+    {
+        BOOST_TEST_CONTEXT("index shift depth=" << test.first)
+        {
+            VchType proof(test.first, MULTIPROOF_RIGHT_IS_EMPTY);
+            proof.push_back(MULTIPROOF_LEFT_IS_EMPTY);
+            VchType expectedRoot = leaf;
+            for (uint64_t i = 0; i < test.first; i++)
+                expectedRoot = sha256(expectedRoot, emptyHash);
+            expectedRoot = sha256(emptyHash, expectedRoot);
+
+            const CScript script = CScript() << proof << leaf << 1
+                                             << merkleRootOption(MerkleRootAlg::SHA256, MerkleRootFlags::RETURN_INDEX)
+                                             << OP_MERKLEROOT;
+            CheckPass(MANDATORY_SCRIPT_VERIFY_FLAGS, Stack(), script, {{IntStack, test.second}, expectedRoot});
+        }
     }
 }
 
