@@ -46,7 +46,7 @@ static const unsigned int MAX_PACKAGE_FAILURES = 1000;
 /** The point at which we start triggering for package failures when filling a block */
 static const float MAX_BLOCKSIZE_RATIO = 0.95;
 
-extern CTweak<unsigned int> xvalTweak;
+extern CTweak<bool> xvalTweak;
 extern CTweak<uint32_t> dataCarrierSize;
 extern CTweak<uint64_t> miningPrioritySize;
 extern CTweak<bool> fastBlockTemplate;
