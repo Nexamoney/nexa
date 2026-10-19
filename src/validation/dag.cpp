@@ -1851,7 +1851,7 @@ bool CTailstormForest::GetDagForBlock(ConstCBlockRef &pblock, std::vector<CTreeN
     bool fMatch = false;
     CTailstormGroveRef grove = nullptr;
     dag.clear();
-    if (GetGrove(pblock.hashPrevBlock, grove))
+    if (GetGrove(pblock->hashPrevBlock, grove))
     {
         // Check the dag tree for a full set of treenodes that match the block. If we find
         // a match then break and return a positive result. If we don't match then keep
