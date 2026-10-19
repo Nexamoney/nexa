@@ -186,6 +186,58 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
         return state.DoS(100, error("%s: premature transaction filter use", __func__), REJECT_INVALID, "bad-txfilter");
     }
 
+
+    // You can not take subblocks which were already used in the previous block and reuse them as uncles.
+    // So check that the uncles in the current header are not one of the previous blocks subblocks.
+    if (pindexPrev)
+    {
+        auto prevHeader = pindexPrev->GetBlockHeader();
+        if (IsTailstormSummaryBlock(prevHeader) && IsTailstormSummaryBlock(block))
+        {
+            auto retPrev = ParseSummaryBlockMinerData(prevHeader.minerData);
+            auto ret = ParseSummaryBlockMinerData(block.minerData);
+
+            // Create a set of subblock mining hashes from the prev summary block.
+            std::set<uint256> prevHashes;
+            for (auto pair : retPrev.vSubblockProofs)
+            {
+                prevHashes.insert(GetMiningHash(pair.first, pair.second));
+            }
+            // Add the prev summary mining hash since it too is its own subblock
+            auto prevSummaryHash = GetMiningHash(prevHeader.GetMiningHeaderCommitment(), prevHeader.nonce);
+            prevHashes.insert(prevSummaryHash);
+
+            // compare that set with the uncles set from the current block
+            for (size_t i = 0; i < ret.vSubblockProofs.size(); i++)
+            {
+                if (i < ret.nUncles)
+                {
+                    auto pair = ret.vSubblockProofs[i];
+                    uint256 uncleHash = GetMiningHash(pair.first, pair.second);
+                    if (prevHashes.count(uncleHash))
+                        return state.DoS(100,
+                            error("%s: included uncle can not be from a previous block: mining hash: %s, ", __func__,
+                                uncleHash.ToString()),
+                            REJECT_INVALID, "bad-blk-uncle");
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+        else if (IsTailstormSummaryBlock(block))
+        {
+            // Special case for the first fork block. Should have no uncles.
+            auto ret = ParseSummaryBlockMinerData(block.minerData);
+            if (ret.nUncles > 0)
+            {
+                return state.DoS(
+                    100, error("%s: uncles present in fork block", __func__), REJECT_INVALID, "bad-blk-uncles-present");
+            }
+        }
+    }
+
     // Ensure for both Summary and Subblocks, that the blocksize is within limits according to the adaptive
     // block size algorithm.
     if (fSummaryBlock && pindexPrev && block.size > pindexPrev->GetNextMaxBlockSize())
@@ -227,12 +279,12 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
 
     if (fSummaryBlock)
     {
-        auto minerData = ParseSummaryBlockMinerData(block.minerData);
+        auto ret = ParseSummaryBlockMinerData(block.minerData);
 
         if (IsTailstormSummaryBlock(block))
         {
-            if ((minerData.vSubblockProofs.size() != chainparams.GetConsensus().tailstorm_k - 1) &&
-                (minerData.vSubblockProofs.size() != (minerData.nUncles + minerData.nSubblocks)))
+            if ((ret.vSubblockProofs.size() != chainparams.GetConsensus().tailstorm_k - 1) &&
+                (ret.vSubblockProofs.size() != (ret.nUncles + ret.nSubblocks)))
             {
                 return state.DoS(
                     100, error("%s(): incomplete miner data", __func__), REJECT_INVALID, "bad-miner-data-size");
@@ -241,7 +293,7 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
             // The genesis block and block 1 have no grandparent so the minerData field MUST be 0
             if (nHeight < 2)
             {
-                if (minerData.prevOfprevhash != uint256())
+                if (ret.prevOfprevhash != uint256())
                 {
                     return state.DoS(100, error("%s: height too low for grandparent hash", __func__), REJECT_INVALID,
                         "bad-miner-data-grandparent-hash");
@@ -250,9 +302,9 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
             // After that the minerData prevOfprevhash field MUST be correct if we have uncles.
             else
             {
-                if (minerData.nUncles != 0)
+                if (ret.nUncles != 0)
                 {
-                    if (minerData.prevOfprevhash != pindexPrev->pprev->GetHash())
+                    if (ret.prevOfprevhash != pindexPrev->pprev->GetHash())
                     {
                         return state.DoS(100, error("%s: height>=2 but incorrect grandparent hash", __func__),
                             REJECT_INVALID, "bad-miner-data-uncles-but-incorrect-grandparent-hash");
@@ -260,8 +312,7 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
                 }
                 else // We don't have uncles so the field must be correct or 0
                 {
-                    if (!(minerData.prevOfprevhash == pindexPrev->pprev->GetHash() ||
-                            minerData.prevOfprevhash == uint256()))
+                    if (!(ret.prevOfprevhash == pindexPrev->pprev->GetHash() || ret.prevOfprevhash == uint256()))
                     {
                         return state.DoS(100,
                             error("%s: height>=2, no uncles but incorrect grandparent hash", __func__), REJECT_INVALID,
@@ -279,9 +330,8 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
                 nExpectedChainWork = pindexPrev->chainWork();
 
             // add up the work from all the block types.
-            nExpectedChainWork += (arith_uint256(minerData.nUncles) * GetWorkForDifficultyBits(minerData.nBitsUncle));
-            nExpectedChainWork +=
-                (arith_uint256(minerData.nSubblocks) * GetWorkForDifficultyBits(minerData.nBitsSubblock));
+            nExpectedChainWork += (arith_uint256(ret.nUncles) * GetWorkForDifficultyBits(ret.nBitsUncle));
+            nExpectedChainWork += (arith_uint256(ret.nSubblocks) * GetWorkForDifficultyBits(ret.nBitsSubblock));
             nExpectedChainWork += (GetWorkForDifficultyBits(block.nBits));
         }
 
