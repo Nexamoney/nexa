@@ -2894,10 +2894,8 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
         }
         tailstormForest.RemoveSummaryBlockOrphan(pblock);
 
-        // The forest only supplied the subblocks. Analyze the ones this summary commits on their own. The
-        // epoch a committed block belongs to is read from its header: a block on the summary root is one
-        // of this epoch's subblocks, and a block on the root before it is an uncle, which is only a proof
-        // of work. The summary must list its uncles first and state their count.
+        // Although the subblock data was taken from the local forest, analyze the subblocks committed in minerData
+        // independently of it.  To do this, we first build a lookup table between the mining hash and it subblock.
         std::map<uint256, ConstCBlockRef> mapDagByMiningHash;
         for (const auto &treenode : setDag)
         {
@@ -2905,6 +2903,10 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
             const auto &nonce = treenode->subblock->GetBlockHeader().nonce;
             mapDagByMiningHash.emplace(GetMiningHash(miningHeaderCommitment, nonce), treenode->subblock);
         }
+
+        // Check that the subblocks are properly connected to the expected parent summary block.
+        // Note that the first nUncles entries are uncles built on the grandparent summary block, so they
+        // should have different parentage than a normal subblock.
         const uint256 hashUncleRoot = pindex->pprev->pprev ? pindex->pprev->pprev->GetBlockHash() : uint256();
         std::vector<ConstCBlockRef> vSubblocks;
         for (size_t i = 0; i < ret.vSubblockProofs.size(); i++)
