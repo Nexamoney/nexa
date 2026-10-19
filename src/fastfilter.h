@@ -87,6 +87,9 @@ public:
         bool unset = 0; // If any position is not set, then this will be true
         for (unsigned int i = 0; i < nHashFuncs; i++, pos += 4)
         {
+            // After a rotation pos starts at word 1, so word 8 would be past the end
+            if (pos == rotHash.end())
+                pos = rotHash.begin();
             uint32_t val = FastFilterWord(pos);
             uint32_t idx = val % (nFilterBits - 1);
             uint32_t bit = (1 << (idx & 7));
@@ -112,6 +115,9 @@ public:
         const unsigned char *pos = rotHash.begin();
         for (unsigned int i = 0; i < nHashFuncs; i++, pos += 4)
         {
+            // After a rotation pos starts at word 1, so word 8 would be past the end
+            if (pos == rotHash.end())
+                pos = rotHash.begin();
             uint32_t val = FastFilterWord(pos);
             uint32_t idx = val % (nFilterBits - 1);
             vData[idx >> 3] |= (1 << (idx & 7));
@@ -133,6 +139,9 @@ public:
         bool unset = 0; // If any position is not set, then this will be true
         for (unsigned int i = 0; i < nHashFuncs; i++, pos += 4)
         {
+            // After a rotation pos starts at word 1, so word 8 would be past the end
+            if (pos == rotHash.end())
+                pos = rotHash.begin();
             uint32_t val = FastFilterWord(pos);
             uint32_t idx = val % (nFilterBits - 1);
             unset |= (0 == (vData[idx >> 3] & (1 << (idx & 7))));
