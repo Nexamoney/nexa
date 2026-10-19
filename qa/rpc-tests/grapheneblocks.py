@@ -62,7 +62,7 @@ class GrapheneBlockTest(BitcoinTestFramework):
 
     def assert_success(self):
         # Nodes 0 and 1 should have received one block from node 2.
-        assert '1 inbound and 0 outbound graphene blocks' in self.extract_stats_fields(self.nodes[0])['summary'], "actually " + str(self.extract_stats_fields(self.nodes[1]))
+        assert '1 inbound and 0 outbound graphene blocks' in self.extract_stats_fields(self.nodes[0])['summary'], "actually " + str(self.extract_stats_fields(self.nodes[0]))
         assert '1 inbound and 0 outbound graphene blocks' in self.extract_stats_fields(self.nodes[1])['summary'], "actually " + str(self.extract_stats_fields(self.nodes[1]))
 
         # Node 2 should have sent a block to the two other nodes
@@ -76,6 +76,11 @@ class GrapheneBlockTest(BitcoinTestFramework):
 
         raise AssertionError('graphene block failure was expected but not encountered')
 
+    def send_and_wait(self, send_to):
+        # sendmany returns before the tx is admitted, so sync_all can pass on empty pools
+        txidem = self.nodes[0].sendmany("", send_to)
+        waitFor(30, lambda: all(txidem in n.getrawtxpool() for n in self.nodes))
+
     def run_test(self):
         # Generate blocks so we can send a few transactions.  We need some transactions in a block
         # before a graphene block can be sent and created, otherwise we'll just end up sending a regular
@@ -87,8 +92,7 @@ class GrapheneBlockTest(BitcoinTestFramework):
         send_to = {}
         for i in range(10):
             send_to[self.nodes[1].getnewaddress()] = Decimal("1000000.01")
-        self.nodes[0].sendmany("", send_to)
-        self.sync_all()
+        self.send_and_wait(send_to)
 
         self.nodes[1].generate(1)
         self.sync_all()
@@ -101,8 +105,7 @@ class GrapheneBlockTest(BitcoinTestFramework):
         send_to = {}
         for i in range(10):
             send_to[self.nodes[2].getnewaddress()] = Decimal("1000000.01")
-        self.nodes[0].sendmany("", send_to)
-        self.sync_all()
+        self.send_and_wait(send_to)
 
         self.nodes[2].generate(1)
         self.sync_all()
