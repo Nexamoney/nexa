@@ -6,14 +6,10 @@ import sys
 import shutil
 PROJECT_NAME = "rostrum"
 GIT_REPO = "https://gitlab.com/nexa/{}.git".format(PROJECT_NAME)
-# When changing this variable, also remember to update
-# job `test-ubuntu-qa-rostrum` in .gitlab.yml so that the correct
-# integration tests are run.
-#
-# It is also possible to set GIT_BRANCH to None to run the latest `master`
-# of Rostrum. When set to None the EXPECT_HEAD hash check is disabled)
-GIT_BRANCH = "v14.0.1"
-EXPECT_HEAD = "06b88a6d39a8b1a77a8e181dc0d583cda1e410c8"
+# Set EXPECT_HEAD to None to build the latest GIT_BRANCH revision.
+# CI archives the same revision for the functional tests.
+GIT_BRANCH = "master"
+EXPECT_HEAD = None
 
 ROOT_DIR = os.path.realpath(
         os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
@@ -59,7 +55,7 @@ def check_dependencies():
     import shutil
     if shutil.which("cargo") is None:
         logging.error("Cannot find 'cargo', will not be able to build {}".format(PROJECT_NAME))
-        logging.error("You need to install rust (1.38+) https://rustup.rs/")
+        logging.error("You need to install rust (1.95+) https://rustup.rs/")
         logging.error("Tip: On Debian/Ubuntu you need to install cargo")
         bail("rust not found")
 
@@ -85,6 +81,10 @@ def verify_repo(allow_modified):
 
     if EXPECT_HEAD == None:
         logging.warning("Rostrum is not fixed to a specific revision.  Please assign the EXPECT_HEAD variable in build_rostrum.py before releasing.")
+        if not allow_modified:
+            logging.info("Updating %s to %s", ROSTRUM_DIR, GIT_BRANCH or "master")
+            repo.git.fetch(GIT_REPO, GIT_BRANCH or "master")
+            repo.git.checkout("--detach", "FETCH_HEAD")
     if EXPECT_HEAD != None and repo.head.object.hexsha != EXPECT_HEAD:
         # TODO: Add command line option to reset HEAD to GIT_BRANCH at EXPECT_HEAD
         logging.error("Validation failed - %s HEAD differs from expected (%s vs %s).  You probably need to (cd ../rostrum; git pull; git checkout %s)",
