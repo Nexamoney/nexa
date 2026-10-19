@@ -39,7 +39,7 @@ void AcceptSubblock(ConstCBlockRef pblock);
 
 /** Create the miner data field that goes into the block header */
 std::vector<uint8_t> GenerateMinerData(const uint32_t tailstorm_k,
-    const std::set<CTreeNodeRef> &setBestDag,
+    const std::vector<CTreeNodeRef> &setBestDag,
     const uint256 &prevOfprevhash);
 
 /** Get a vector of all prev hashes that this block references (subblocks could have more than one).

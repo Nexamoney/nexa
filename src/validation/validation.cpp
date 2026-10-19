@@ -2763,7 +2763,7 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
     CBlockIndex *pindex,
     CCoinsViewCache &view,
     const CChainParams &chainparams,
-    std::set<CTreeNodeRef> &setDag,
+    std::vector<CTreeNodeRef> &setDag,
     bool fJustCheck)
 {
     int64_t nTimeStart = GetStopwatchMicros();
@@ -2831,8 +2831,7 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
 
         LOCK(tailstormForest.cs_forest);
         setDag.clear();
-        CTailstormTreeRef dagTree = nullptr;
-        if (!tailstormForest.GetDagForBlock(pblock, setDag, &dagTree))
+        if (!tailstormForest.GetDagForBlock(pblock, setDag))
         {
             // Some subblocks were not found in the dag that match this blocks minerData
             tailstormForest.AddSummaryBlockOrphan(pblock);
@@ -2895,30 +2894,91 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
         }
         tailstormForest.RemoveSummaryBlockOrphan(pblock);
 
+        // Although the subblock data was taken from the local forest, analyze the subblocks committed in minerData
+        // independently of it.  To do this, we first build a lookup table between the mining hash and it subblock.
+        std::map<uint256, ConstCBlockRef> mapDagByMiningHash;
+        for (const auto &treenode : setDag)
+        {
+            const auto &miningHeaderCommitment = treenode->subblock->GetMiningHeaderCommitment();
+            const auto &nonce = treenode->subblock->GetBlockHeader().nonce;
+            mapDagByMiningHash.emplace(GetMiningHash(miningHeaderCommitment, nonce), treenode->subblock);
+        }
+
+        // Check that the subblocks are properly connected to the expected parent summary block.
+        // Note that the first nUncles entries are uncles built on the grandparent summary block, so they
+        // should have different parentage than a normal subblock.
+        const uint256 hashUncleRoot = pindex->pprev->pprev ? pindex->pprev->pprev->GetBlockHash() : uint256();
+        std::vector<ConstCBlockRef> vSubblocks;
+        for (size_t i = 0; i < ret.vSubblockProofs.size(); i++)
+        {
+            const auto &pair = ret.vSubblockProofs[i];
+            const ConstCBlockRef &subblock = mapDagByMiningHash.at(GetMiningHash(pair.first, pair.second));
+            // First must come any uncles.  Uncles prev block must match our grandparent
+            if (i < ret.nUncles)
+            {
+                if (subblock->hashPrevBlock != hashUncleRoot)
+                {
+                    return state.DoS(100,
+                        error("summary block lists non-uncle %s in uncle slot", subblock->GetHash().ToString()),
+                        REJECT_INVALID, "bad-summary-uncle");
+                }
+            }
+            else // Then normal subblocks.  A normal subblock's parent is the same as this summary block
+            {
+                if (subblock->hashPrevBlock != pblock->hashPrevBlock)
+                {
+                    return state.DoS(100,
+                        error("summary block lists non-child subblock %s", subblock->GetHash().ToString()),
+                        REJECT_INVALID, "bad-summary-nonchild-subblock");
+                }
+                vSubblocks.push_back(subblock);
+            }
+        }
+
+        // The view is at the previous block (asserted above), which is the summary root.
+        std::vector<ConstCBlockRef> vOrderedSubblocks;
+        std::set<uint256> setTxnExclusions;
+        std::string strReject;
+        if (!AnalyzeSummaryDag(pblock->hashPrevBlock, vSubblocks, view, vOrderedSubblocks, setTxnExclusions, strReject))
+        {
+            return state.DoS(100, error("%s : summary block subblocks are not a valid dag: %s", __func__, strReject),
+                REJECT_INVALID, strReject);
+        }
+        // The summary must list its subblocks (after the uncles) in the analyzed dag order.
+        for (size_t i = 0; i < vSubblocks.size(); i++)
+        {
+            if (vSubblocks[i]->GetHash() != vOrderedSubblocks[i]->GetHash())
+            {
+                return state.DoS(100,
+                    error("%s : summary block lists subblock %s at position %d, but dag order puts %s there", __func__,
+                        vSubblocks[i]->GetHash().ToString(), (int)i, vOrderedSubblocks[i]->GetHash().ToString()),
+                    REJECT_INVALID, "bad-summary-dag-order");
+            }
+        }
+
         // Check that all the transactions in the given subblocks are in the summary block.
         std::set<uint256> setBlockHashes;
-        std::map<uint256, CTransactionRef> mapDagTxns;
-        tailstormForest.GetDagTxns(setDag, mapDagTxns);
         for (unsigned int i = 1; i < pblock->vtx.size(); i++)
         {
             setBlockHashes.insert(pblock->vtx[i]->GetId());
         }
-        // Parked subblocks are already in the spend index. GetTxnExclusionSet
-        // uses that index, so unprocessed members of setDag are included.
-        // GetDagForBlock returning true guarantees the tree.
-        assert(dagTree);
-        std::set<uint256> setTxnExclusions = GetTxnExclusionSet(setDag, *dagTree);
-        for (auto &mi : mapDagTxns)
+        for (const auto &subblock : vOrderedSubblocks)
         {
-            // Don't check for excluded txns. These would be double spends that were not the ones
-            // chosen to be included in the final summary block
-            if (setTxnExclusions.count(mi.first))
-                continue;
-
-            if (!setBlockHashes.count(mi.first))
+            for (const auto &ptx : subblock->vtx)
             {
-                return state.DoS(100, error("%s : transaction in subblock not found in block", __func__),
-                    REJECT_INVALID, "bad-blk-missing-txn");
+                if (ptx->IsCoinBase())
+                    continue;
+                const uint256 txid = ptx->GetId();
+                // Don't check for excluded txns. These would be double spends that were not the ones
+                // chosen to be included in the final summary block
+                if (setTxnExclusions.count(txid))
+                    continue;
+
+                if (!setBlockHashes.count(txid))
+                {
+                    return state.DoS(100, error("%s : transaction in subblock not found in block", __func__),
+                        REJECT_INVALID, "bad-blk-missing-txn");
+                }
             }
         }
     }
@@ -3410,7 +3470,7 @@ bool ConnectBlock(ConstCBlockRef pblock,
     boost::thread::id this_id(boost::this_thread::get_id());
 
     // If this is a summary block then use the same dag set for validation throughout ConnectBlock()
-    std::set<CTreeNodeRef> setDag;
+    std::vector<CTreeNodeRef> setDag;
     if (!ConnectBlockPrevalidations(pblock, state, pindex, view, chainparams, setDag, fJustCheck))
         return false;
 

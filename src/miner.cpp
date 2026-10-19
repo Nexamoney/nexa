@@ -91,7 +91,7 @@ int64_t UpdateTime(CBlockHeader *pblock, const Consensus::Params &consensusParam
     return nNewTime - nOldTime;
 }
 
-bool ValidateSummaryBlockCoinbase(CAmount nBlockReward, ConstCBlockRef pblock, std::set<CTreeNodeRef> &setBestDag)
+bool ValidateSummaryBlockCoinbase(CAmount nBlockReward, ConstCBlockRef pblock, std::vector<CTreeNodeRef> &setBestDag)
 {
     CScript scriptPubKeySummaryBlock; // just a placeholder for the summary block
 
@@ -215,7 +215,9 @@ bool ValidateSummaryBlockCoinbase(CAmount nBlockReward, ConstCBlockRef pblock, s
 }
 
 BlockAssembler::BlockAssembler(const CChainParams &_chainparams) : chainparams(_chainparams) {}
-void BlockAssembler::resetBlock(const CScript &scriptPubKeyIn, int64_t coinbaseSize, std::set<CTreeNodeRef> *setBestDag)
+void BlockAssembler::resetBlock(const CScript &scriptPubKeyIn,
+    int64_t coinbaseSize,
+    std::vector<CTreeNodeRef> *setBestDag)
 {
     inBlock.clear();
     nonFinalChains.clear();
@@ -233,7 +235,7 @@ void BlockAssembler::resetBlock(const CScript &scriptPubKeyIn, int64_t coinbaseS
 
 uint64_t BlockAssembler::reserveBlockSize(const CScript &scriptPubKeyIn,
     int64_t coinbaseSize,
-    std::set<CTreeNodeRef> *setBestDag)
+    std::vector<CTreeNodeRef> *setBestDag)
 {
     CBlockHeader h;
     uint64_t nHeaderSize, nCoinbaseSize, nCoinbaseReserve = 0;
@@ -279,7 +281,7 @@ uint64_t BlockAssembler::reserveBlockSize(const CScript &scriptPubKeyIn,
 CTransactionRef BlockAssembler::coinbaseTx(const CScript &scriptPubKeyIn,
     int _nHeight,
     CAmount nValue,
-    std::set<CTreeNodeRef> *setBestDag)
+    std::vector<CTreeNodeRef> *setBestDag)
 {
     CMutableTransaction tx;
     tx.vin.resize(0);
@@ -420,8 +422,8 @@ static bool SpendsBlockedOutpoint(const CTransactionRef &ptx, const std::set<COu
 // (winner or loser — a competing spend of an ancestral coin is rejected at
 // insert), plus outputs of excluded txs (those coins are not in the view).
 // A read-only input does not consume its coin, so it blocks nothing.
-static void CollectDagBlockedOutpoints(const std::set<CTreeNodeRef> &setBestDag,
-    const std::set<CTreeNodeRef> &setFullDag,
+static void CollectDagBlockedOutpoints(const std::vector<CTreeNodeRef> &setBestDag,
+    const std::vector<CTreeNodeRef> &setFullDag,
     const std::set<uint256> &setTxnExclusions,
     std::set<COutPoint> &blocked)
 {
@@ -451,7 +453,7 @@ static void CollectDagBlockedOutpoints(const std::set<CTreeNodeRef> &setBestDag,
     {
         if (!treenode || !treenode->subblock || treenode->fUncle)
             continue;
-        if (setBestDag.count(treenode))
+        if (std::find(setBestDag.begin(), setBestDag.end(), treenode) != setBestDag.end())
             continue;
         for (size_t i = 1; i < treenode->subblock->vtx.size(); i++)
         {
@@ -470,7 +472,7 @@ static void CollectDagBlockedOutpoints(const std::set<CTreeNodeRef> &setBestDag,
 
 // Unique included dag transactions. Duplicates and excluded txs are dropped.
 // vtx order is applied later: ConnectBlockCanonicalOrdering requires hash order.
-static std::vector<CTransactionRef> IncludedDagTxs(const std::set<CTreeNodeRef> &setBestDag,
+static std::vector<CTransactionRef> IncludedDagTxs(const std::vector<CTreeNodeRef> &setBestDag,
     const std::set<uint256> &setTxnExclusions)
 {
     std::vector<CTransactionRef> dagTxs;
@@ -513,16 +515,52 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript &sc
     // Best dag for this tip. Fewer than tailstorm_k - 1 nodes means a subblock template.
     // Take cs_forest once for the dag, the exclusions and the blocked outpoints: the tree's
     // conflict registry is read under it, and holding it across all three keeps them consistent.
-    std::set<CTreeNodeRef> setBestDag;
-    std::set<CTreeNodeRef> setFullDag;
+    std::vector<CTreeNodeRef> setBestDag;
+    std::vector<CTreeNodeRef> setFullDag;
     std::set<uint256> setTxnExclusions;
     {
         LOCK(tailstormForest.cs_forest);
         CTailstormTreeRef dagTree = nullptr;
         tailstormForest.GetBestDagFor(pindexPrev->GetBlockHash(), setBestDag, &dagTree);
-        // Transactions the summary must omit: conflict losers and unsourced txs.
+        // Transactions the summary must omit: conflict losers and unsourced txs. Computed exactly as
+        // validation will compute them, from the committed subblocks alone, so the two cannot disagree.
         if (dagTree)
-            setTxnExclusions = GetTxnExclusionSet(setBestDag, *dagTree);
+        {
+            std::vector<ConstCBlockRef> vSubblocks;
+            for (const auto &node : setBestDag)
+            {
+                if (!node->fUncle)
+                    vSubblocks.push_back(node->subblock);
+            }
+            std::vector<ConstCBlockRef> vOrderedSubblocks;
+            std::string strReject;
+            // pcoinsTip is at pindexPrev, the summary root, while cs_main is held.
+            if (!AnalyzeSummaryDag(
+                    pindexPrev->GetBlockHash(), vSubblocks, *pcoinsTip, vOrderedSubblocks, setTxnExclusions, strReject))
+            {
+                // The best dag is a dependency-closed prefix of the tree, so this should not happen.
+                LOG(DAG, "%s: best dag is not a valid summary dag: %s", __func__, strReject);
+                setTxnExclusions = GetTxnExclusionSet(setBestDag, *dagTree);
+            }
+            else
+            {
+                // Validation requires the summary's minerData to list the subblocks in the analyzed order,
+                // and GenerateMinerData lists them in setBestDag order: keep the uncles first, then
+                // put the subblocks in that order.
+                std::map<uint256, CTreeNodeRef> mapSubblockNodes;
+                std::vector<CTreeNodeRef> vReordered;
+                for (const auto &node : setBestDag)
+                {
+                    if (node->fUncle)
+                        vReordered.push_back(node);
+                    else
+                        mapSubblockNodes.emplace(node->hash, node);
+                }
+                for (const auto &subblock : vOrderedSubblocks)
+                    vReordered.push_back(mapSubblockNodes.at(subblock->GetHash()));
+                setBestDag = std::move(vReordered);
+            }
+        }
         tailstormForest.GetFullDagFor(pindexPrev->GetBlockHash(), setFullDag);
     }
     assert(setBestDag.size() <= conparams.tailstorm_k - 1);

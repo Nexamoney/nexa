@@ -17,8 +17,7 @@
  
   Tailstorm makes both of those rules harder to honour, because a summary block is validated
   flat while its subblocks are validated one at a time, each layered onto the coins view left
-  behind by the previous one (CTailstormTree::Insert() and
-  CTailstormForest::ReGenerateDagDataForSubblocks() both call ConnectBlockCanonicalOrdering()
+  behind by the previous one (CTailstormTree::Insert() calls ConnectBlockCanonicalOrdering()
   with the DAG's running view).  Resolving RO inputs against that running view would make the
   DAG disagree with the summary block in both directions:
  
@@ -105,13 +104,13 @@ CBlockRef MakeTestBlock(const CBlockIndex *pindexPrev,
 }
 
 /* Make the miner data that marks a block as a subblock referencing the passed parents. */
-std::vector<uint8_t> SubblockMinerData(const std::set<CTreeNodeRef> &parents)
+std::vector<uint8_t> SubblockMinerData(const std::vector<CTreeNodeRef> &parents)
 {
     return GenerateMinerData(Params().GetConsensus().tailstorm_k, parents, uint256());
 }
 
 /* Make the miner data that marks a block as the tailstorm summary block of the passed dag. */
-std::vector<uint8_t> SummaryMinerData(const std::set<CTreeNodeRef> &dag, const CBlockIndex *pindexPrev)
+std::vector<uint8_t> SummaryMinerData(const std::vector<CTreeNodeRef> &dag, const CBlockIndex *pindexPrev)
 {
     return GenerateMinerData(Params().GetConsensus().tailstorm_k, dag, pindexPrev->pprev->GetBlockHash());
 }
@@ -201,9 +200,9 @@ BOOST_AUTO_TEST_CASE(readonly_input_created_in_epoch_is_rejected)
     BOOST_CHECK(subblock3->IsSubblock());
 
     // Subblocks: each one connects onto the view left by the previous one.
-    // This mirrors CTailstormForest::ReGenerateDagDataForSubblocks(): one coins view for the
-    // whole DAG, subblocks layered into it one at a time, and a growing map of transactions
-    // that are already in the DAG.
+    // This mirrors CTailstormTree::Insert(): one coins view for the whole DAG, subblocks
+    // layered into it one at a time, and a growing map of transactions that are already in
+    // the DAG.
     CCoinsViewCache dagView(pcoinsTip);
     std::map<uint256, CTransactionRef> mapDagTxns;
 
@@ -236,7 +235,7 @@ BOOST_AUTO_TEST_CASE(readonly_input_created_in_epoch_is_rejected)
     // This is why the subblock has to be rejected:
     // Had the DAG accepted subblock 2, the epoch's summary block -- which carries the union of
     // the subblocks' transactions and is validated as one flat block -- could never validate.
-    std::set<CTreeNodeRef> setBestDag = {node1, node2, node3};
+    std::vector<CTreeNodeRef> setBestDag = {node1, node2, node3};
     CBlockRef summaryBlock =
         MakeTestBlock(pindexSummaryRoot, {tx1, tx2}, 4, SummaryMinerData(setBestDag, pindexSummaryRoot));
     BOOST_CHECK(summaryBlock->IsTailstormSummaryBlock());
@@ -275,7 +274,7 @@ BOOST_AUTO_TEST_CASE(readonly_input_spent_by_same_summary_block_is_allowed)
     CBlockRef subblock3 = MakeTestBlock(pindexSummaryRoot, {}, 3, SubblockMinerData({node2}));
     CTreeNodeRef node3 = MakeTreeNodeRef(ConstCBlockRef(subblock3));
 
-    std::set<CTreeNodeRef> setBestDag = {node1, node2, node3};
+    std::vector<CTreeNodeRef> setBestDag = {node1, node2, node3};
     CBlockRef summaryBlock =
         MakeTestBlock(pindexSummaryRoot, {tx3, tx4}, 4, SummaryMinerData(setBestDag, pindexSummaryRoot));
 
@@ -383,7 +382,7 @@ BOOST_AUTO_TEST_CASE(subblock_outputs_use_the_epoch_height)
     BOOST_CHECK_EQUAL(dagCoin.height(), nEpochHeight);
 
     // The summary block that confirms the very same transaction must stamp it identically.
-    std::set<CTreeNodeRef> setBestDag = {node1, node2, node3};
+    std::vector<CTreeNodeRef> setBestDag = {node1, node2, node3};
     CBlockRef summaryBlock =
         MakeTestBlock(pindexSummaryRoot, {tx1}, 4, SummaryMinerData(setBestDag, pindexSummaryRoot));
     BOOST_CHECK_EQUAL((int64_t)summaryBlock->height, nEpochHeight);

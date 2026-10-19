@@ -1271,7 +1271,7 @@ void DagWidget::ProcessOrphans()
         if ((blockType == SUMMARY))
         {
             bool fErased = false;
-            std::set<CTreeNodeRef> dag;
+            std::vector<CTreeNodeRef> dag;
             tailstormForest.GetBestDagFor(header.hashPrevBlock, dag);
             if (dag.size() == Params().GetConsensus().tailstorm_k - 1)
             {

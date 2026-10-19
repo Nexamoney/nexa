@@ -42,58 +42,76 @@ static inline CTailstormGroveRef MakeTailstormGroveRef(Grove &&groveIn)
 // Return a map of all the subblock scores for any nodes in the dag
 // NOTE: An int32_t is used because scores can temporarily go negative during the calculation process.
 std::map<CTreeNodeRef, uint32_t> GetDagScores(const std::vector<CTreeNodeRef> &dagNodes);
-// Adapter for callers that hold the dag as a set.
-std::map<CTreeNodeRef, uint32_t> GetDagScores(const std::set<CTreeNodeRef> &dagNodes);
 
 /** Get the transactions in the passed dag that are considered potentially invalid and must not be included in the
-    summary block.  These are conflict losers (where a conflicting tx exists with a lower score) and txs whose inputs
-    are unknown, because we cannot easily tell a doublespend from a bogus input.
+    summary block.  These are conflict losers (a later spend, in dag order, of an outpoint an earlier transaction
+    already spends) and txs whose inputs are unknown, because we cannot easily tell a doublespend from a bogus input.
 
     Transactions that are unambiguously invalid still invalidate the entire subblock, so would not appear here because
     their subblock would not even be in the setBestDag.
 
-    Pass the tree that produced this dag; its conflict registry and its coins at the summary root are read from it.
+    Pass the tree that produced this dag; its coins at the summary root are read from it.
     Obtain that tree from the same call that produced the dag: [GetBestDagFor] and [GetDagForBlock] both return it.
-    cs_forest must be held for the duration of the call, because the tree's registry is read under it.
+    cs_forest must be held for the duration of the call.
 
-    @param dag The DAG to analyze
+    @param sortedNodes The DAG's subblocks to analyze, in nSequenceId order. Uncles may be included, as the dag
+                       getters return them first; they are only proofs of work and are skipped
     @param tree The tree that this DAG is a subset of (used to get the DAG root summary block coins view).
     @param losers The transactions that are being rejected due to a preferred double spend.  So this set does not count
                   their descendants or transactions with unknown inputs.
 
     @returns all transactions that must be excluded from the summary block or any coins view
 */
-std::set<uint256> GetTxnExclusionSet(std::vector<CTreeNodeRef> dagNodes,
-    const CTailstormTree &tree,
-    std::set<uint256> *losers = nullptr);
-// Adapter for callers that hold the dag as a set.
-std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &dagNodes,
+std::set<uint256> GetTxnExclusionSet(const std::vector<CTreeNodeRef> &sortedNodes,
     const CTailstormTree &tree,
     std::set<uint256> *losers = nullptr);
 
 /** Get the transactions in the passed dag that are considered potentially invalid and must not be included in the
-    summary block.  These are conflict losers (where a conflicting tx exists with a lower score) and txs whose inputs
-    are unknown, because we cannot easily tell a doublespend from a bogus input.
+    summary block.  These are conflict losers and txs whose inputs are unknown, because we cannot easily tell a
+    doublespend from a bogus input.
 
-    An invalid transaction invalidates its whole subblock, and connect rejects such a subblock at insert. A
-    transaction omitted at insert for a missing input escapes that check until it is retried from missingInputs;
-    if it fails then, the subblocks containing it are removed at the next regeneration, for consistency with the verdict
-    connect reaches when the input is present.
+    Subblocks are walked in the order given, and each one's transactions in turn. The first spend of an outpoint is
+    good; every later transaction spending that outpoint is a loser.
+
+    An invalid transaction invalidates its whole subblock: a connect that finds one removes every subblock
+    carrying it from the grove.
 
     This function also requires the UTXO set [CCoinsViewCache] at the point where this DAG should be applied,
     that is, it should at the root summary block.
 */
-// dagNodes is taken by value and sorted in place, so callers that no longer need
-// their vector should std::move() it in.
-std::set<uint256> GetTxnExclusionSet(std::vector<CTreeNodeRef> dagNodes,
-    const CDagConflictRegistry &registry,
+std::set<uint256> GetTxnExclusionSet(const std::vector<CTreeNodeRef> &sortedNodes,
     const CCoinsViewCache *pcoins = nullptr,
     std::set<uint256> *losers = nullptr);
-// Adapter for callers that hold the dag as a set.
-std::set<uint256> GetTxnExclusionSet(const std::set<CTreeNodeRef> &dagNodes,
-    const CDagConflictRegistry &registry,
-    const CCoinsViewCache *pcoins = nullptr,
-    std::set<uint256> *losers = nullptr);
+
+/** Dag order of the passed nodes: by dependency (parents before children), then by the highest score among a
+    subblock and its descendants (not counting descendants shared with the subblock it is compared to), then by
+    lower hash. Only links among the passed nodes are considered, and only setAncestors is read.
+    @returns The subblocks in dependency, score, hash order.
+*/
+std::vector<CTreeNodeRef> OrderDag(const std::vector<CTreeNodeRef> &nodes);
+
+/** Analyze the subblocks a summary block commits, independently of the forest.
+
+    The result depends only on the passed subblocks, the summary root hash and the coins at the summary root:
+    the dag is rebuilt from the subblock headers' prev hashes, so no nSequenceId, uncle flag or link to a
+    subblock outside the passed set is used.
+
+    @param hashSummaryRoot The summary block these subblocks build on (the summary's hashPrevBlock).
+    @param vSubblocks The committed subblocks of this epoch, uncles excluded, in any order.
+    @param coinsSummaryRoot The UTXO set as of hashSummaryRoot.
+    @param vOrdered Out: vSubblocks in dag order (see OrderDag), which decides double spends.
+    @param setTxnExclusions Out: the transactions that must be omitted from the summary (see GetTxnExclusionSet).
+    @param strReject Out: the reject reason when false is returned.
+
+    @returns false if the subblocks are not a self-contained dag: a duplicate, or a parent that is neither one
+             of them nor the summary root. A summary committing such a set is invalid.
+*/
+bool AnalyzeSummaryDag(const uint256 &hashSummaryRoot,
+    const std::vector<ConstCBlockRef> &vSubblocks,
+    const CCoinsViewCache &coinsSummaryRoot,
+    std::vector<ConstCBlockRef> &vOrdered,
+    std::set<uint256> &setTxnExclusions,
+    std::string &strReject);
 
 // Is the tailstorm dag activated and ready to receive subblocks
 bool IsTailstormDagActivated();
@@ -103,9 +121,12 @@ class CTreeNode
 public:
     uint256 hash; // the subblock hash that is this node
     uint32_t dagHeight = 0;
-    // nSequenceId is the order of arrival/insertion of this node into the tree it gets inserted into.
+    // nSequenceId is this node's 1-based position in its tree's dag order: by dependency (parents
+    // before children), then by the highest score among this node and its descendants, then by lower
+    // hash (see RenumberDag). RenumberDag assigns it whenever the dag changes, so it can move as
+    // subblocks arrive.  However, once k-1 subblocks are available, an arrival is just appended to the end;
+    // we have good subblocks.
     // If 0, this node is not in a tree.
-    // Within the tree, this is used to recover the order in which the subblock was received.
     uint32_t nSequenceId = 0;
     bool fProcessed = false;
     bool fUncle = false; // is this a subblock (uncle) from the previous summary block
@@ -149,18 +170,9 @@ struct CDagSpend
     CTreeNodeRef subblock;
 };
 
-// All distinct-txid spends of one outpoint. id is assigned when the group is
-// created and does not change, so lastWinner can detect a flip.
-struct CDagConflictGroup
-{
-    uint64_t id = 0;
-    COutPoint outpoint;
-    std::map<uint256, CTreeNodeRef> spenders;
-};
-
-/** DAG-wide spend index and conflict registry.
-    Every linked subblock (e.g. its in the DAG) is indexed, including parked ones.
-    A "group" is created for every outpoint that is doublespent (repeated transactions do not count).
+/** DAG-wide spend index, used to reject a subblock that double spends within its own ancestry.
+    Every linked subblock (e.g. its in the DAG) is indexed, including parked ones. A double spend
+    between unrelated branches is allowed; GetTxnExclusionSet picks the first in dag order.
 
     Owned by a CTailstormTree and guarded by tailstormForest.cs_forest like the rest of the tree's
     state; there is no internal locking. Every method asserts that lock, and callers of the inline
@@ -168,8 +180,6 @@ struct CDagConflictGroup
 */
 class CDagConflictRegistry
 {
-    uint64_t nextId = 1;
-
     // Every spend in a linked subblock, keyed by the outpoint spent. When several
     // subblocks contain the same transaction each one contributes its own entry, so
     // the ancestry check can test the subblock that actually linked rather than
@@ -182,22 +192,6 @@ class CDagConflictRegistry
 
     // Hashes of the subblocks whose transactions are already committed to the index.
     std::set<uint256> indexed;
-
-    std::map<COutPoint, CDagConflictGroup> groups;
-
-    // Last chosen winner txid per group. Missing or changed → rebuild coins.
-    std::map<uint64_t, uint256> lastWinner;
-
-    // Record that txidA and txidB both spend outpoint. subblockA and subblockB are
-    // the subblocks containing those two transactions.
-    void AddGroup(const COutPoint &outpoint,
-        const uint256 &txidA,
-        const CTreeNodeRef &subblockA,
-        const uint256 &txidB,
-        const CTreeNodeRef &subblockB);
-    // After Unlink removes spends, rewrite this outpoint's group from spendIndex.
-    // Erase the group if fewer than two distinct txids remain.
-    void UpdateGroup(const COutPoint &outpoint);
 
 public:
     /** Compare the passed newNode's spends to this index of spends.
@@ -214,56 +208,7 @@ public:
     void Unlink(const CTreeNodeRef &node);
     void clear();
 
-    bool Empty() const { return groups.empty(); }
-    size_t GroupCount() const { return groups.size(); }
     bool IsIndexed(const uint256 &hash) const { return indexed.count(hash) != 0; }
-
-    const std::map<COutPoint, CDagConflictGroup> &Groups() const { return groups; }
-    bool GetLastWinner(uint64_t id, uint256 &txid) const
-    {
-        auto it = lastWinner.find(id);
-        if (it == lastWinner.end())
-            return false;
-        txid = it->second;
-        return true;
-    }
-    void SetLastWinner(uint64_t id, const uint256 &txid);
-};
-
-/** DAG transactions excluded only because an input is not at all in the included set.
-    Doublespend "losers" are not included here because their input is not missing; we know about it, its just being
-    used by a different transaction.
-
-    TODO:
-    Why do we need this class?
-    When and Where is is used?
-
-    Owned by a CTailstormTree and guarded by tailstormForest.cs_forest like the rest of the tree's
-    state; there is no internal locking. Every method asserts that lock.
- */
-class CDagMissingInputIndex
-{
-    std::map<COutPoint, std::set<uint256> > waiting;
-    std::map<uint256, std::vector<COutPoint> > watchedByTx;
-    std::map<uint256, CTransactionRef> txById;
-    // txid -> hashes of every retained subblock containing that transaction. A transaction is
-    // routinely in more than one subblock, and stays indexed while any of them remains.
-    std::map<uint256, std::set<uint256> > subblockByTx;
-
-public:
-    // subblock is the hash of a subblock containing ptx. Adds that subblock; indexes ptx if new.
-    void Add(const CTransactionRef &ptx, const uint256 &subblock);
-    /** Adds all transaction IDs in excluded, except those in dsLosers.
-     The dsLosers do not actually have a missing input, its just that a different transaction "used" it.
-     */
-    void Add(const CTreeNodeRef &node, const std::set<uint256> &excluded, const std::set<uint256> &dsLosers);
-    void Remove(const uint256 &txid);
-    // Drop one subblock of txid; the transaction leaves the index only when no subblock remains.
-    void Remove(const uint256 &txid, const uint256 &subblock);
-    void clear();
-    // Take every tx waiting on this outpoint off the index. Each result pairs the
-    // transaction with the hashes of the subblocks containing it.
-    std::vector<std::pair<CTransactionRef, std::set<uint256> > > RemoveFor(const COutPoint &outpoint);
 };
 
 // All data members are protected by cs_forest
@@ -272,8 +217,8 @@ class CTailstormTree
     friend class CTailstormGrove;
     friend class CTailstormForest;
     friend class CTailstormForestTest;
-    // Reads conflictRegistry and _pcoinsSummaryRoot.
-    friend std::set<uint256> GetTxnExclusionSet(std::vector<CTreeNodeRef> dagNodes,
+    // Reads _pcoinsSummaryRoot.
+    friend std::set<uint256> GetTxnExclusionSet(const std::vector<CTreeNodeRef> &sortedNodes,
         const CTailstormTree &tree,
         std::set<uint256> *losers);
 
@@ -287,25 +232,13 @@ protected:
     // could be subblocks and/or summary blocks.
     std::map<uint256, CTreeNodeRef> mapUncles;
 
-    // map of unique transactions that are already in the dag for this tree. This
-    // data excludes double spend losers and their descendants, and transactions omitted
-    // for a missing input until a retry applies them. It is extended after a subblock
-    // connects or a retry applies a transaction, and rebuilt when the dag data is
-    // regenerated. It is used in connect block to skip the
-    // processing of a duplicate transaction which exists in some other subblock.
+    // map of unique transactions that are applied to the coins cache for this tree: those of the
+    // processed subblocks less the exclusion set. It is extended when a subblock is appended,
+    // and rebuilt when the dag data is regenerated.
     std::map<uint256, CTransactionRef> mapDagTxns;
 
-    // Spend index and doublespend conflicts. Every linked subblock is included.
+    // Spend index. Every linked subblock is included.
     CDagConflictRegistry conflictRegistry;
-    CDagMissingInputIndex missingInputs;
-
-    // Subblocks to remove at the next regeneration because a transaction they carry failed
-    // validation when retried from missingInputs. Connect rejects a subblock carrying an invalid
-    // transaction at insert; a transaction omitted there for a missing input is only validated on
-    // retry, so the same verdict is applied then, keeping this node consistent with nodes that held
-    // the input at insert. Validation is judged against pindexSummaryRoot, so the verdict holds for
-    // the life of the tree.
-    std::set<uint256> setBadSubblocks;
 
     // The block index of the summary block that this tree is built on top of.
     CBlockIndex *pindexSummaryRoot = nullptr;
@@ -322,6 +255,17 @@ public:
     CTailstormTree() {}
     ~CTailstormTree();
 
+    // The dag in nSequenceId order. RenumberDag keeps nSequenceId a dense 1..N, so each node is
+    // placed at its index rather than sorted.
+    std::vector<CTreeNodeRef> SortedDag() const;
+
+    // The number of dag subblocks a summary commits: the tailstorm_k - 1 places the uncles leave.
+    size_t SelectionSize() const;
+
+    // True unless the processed subblocks, which the coins cache embodies, are exactly the first
+    // SelectionSize() in dag order.
+    bool NeedsRegeneration() const;
+
 protected:
     // Returns new_node if inserted, the existing node if it was already inserted, or nullptr if insertion failed
     CTreeNodeRef Insert(CTreeNodeRef new_node);
@@ -330,48 +274,18 @@ protected:
     // makes the subblock bad. Reads the spend index only.
     bool HasAncestryDoubleSpend(const CTreeNodeRef &newNode);
 
-    // Record newNode's spends in the spend index and open a conflict group for each one that
-    // competes with a spend in an unrelated branch. Following the Nexa convention, transactions
-    // in a subblock are executed simultaneously, so a spend within the same subblock is not a
-    // conflict.
+    // Record newNode's spends in the spend index.
     void IndexSpends(const CTreeNodeRef &newNode);
 
     /** Admit a subblock to this dag.
 
-        Rejects the subblock if it double spends within its own ancestry. Otherwise gives it a
-        sequence id, inserts it, records its spends and any conflict group it opens against an
-        unrelated dag branch, recomputes the omit set over the whole dag, and indexes this
-        subblock's excluded non-loser transactions so they can be retried when their inputs
-        turn up.
+        Rejects the subblock if its transactions are not in txid order or it double spends within
+        its own ancestry. Otherwise inserts it, renumbers the dag (or, once the selection is full, places
+        it last), and records its spends. It is left unprocessed; the caller decides whether to apply it.
 
-        @param[out] excluded  Transactions the dag must not include.
-        @param[out] losers    The subset of those excluded for losing a double spend.
-        @return False if the subblock must not be linked; excluded and losers are untouched.
+        @return False if the subblock must not be linked.
     */
-    bool checkUpdateAncestryInsertIntoDag(const CTreeNodeRef &newNode,
-        std::set<uint256> &excluded,
-        std::set<uint256> &losers);
-    //! For callers that do not need the omit set afterwards.
-    bool checkUpdateAncestryInsertIntoDag(const CTreeNodeRef &newNode)
-    {
-        std::set<uint256> excluded;
-        std::set<uint256> losers;
-        return checkUpdateAncestryInsertIntoDag(newNode, excluded, losers);
-    }
-
-    void ConnectDependentTxs(const CTransactionRef &ptx, CCoinsViewCache &coins, const std::set<uint256> &losers);
-
-    void ConnectDependentTxsRecurse(CBlockIndex &indexEpoch,
-        const CTransactionRef &ptx,
-        CCoinsViewCache &coins,
-        const std::set<uint256> &losers);
-
-    // Omit txs that cannot spend against coins right now. Absent inputs go
-    // to missingInputs. Spent inputs are omitted only (cache still holds
-    // another spend). A tx already in mapDagTxns was applied from another
-    // subblock containing it, and is left to connect's mapDagTxns skip.
-    // Conflict groups are recorded by ScanSpends, not here.
-    void OmitUnapplyableTxs(const CTreeNodeRef &node, const CCoinsViewCache &coins, std::set<uint256> &omit);
+    bool checkUpdateAncestryInsertIntoDag(const CTreeNodeRef &newNode);
 };
 
 // All datamembers are protected by cs_forest
@@ -417,9 +331,9 @@ protected:
 
     // Returns nullptr if failed, newNode if inserted, or the existing node if already inserted
     CTreeNodeRef Insert(CTreeNodeRef newNode);
-    bool GetBestDag(std::set<CTreeNodeRef> &dag);
-    bool GetFullDag(std::set<CTreeNodeRef> &dag);
-    bool GetDagForReorg(std::set<CTreeNodeRef> &dag);
+    bool GetBestDag(std::vector<CTreeNodeRef> &dag);
+    bool GetFullDag(std::vector<CTreeNodeRef> &dag);
+    bool GetDagForReorg(std::vector<CTreeNodeRef> &dag);
     bool GetBestTipHash(uint256 &hash);
 };
 
@@ -511,11 +425,6 @@ public:
     bool Insert(const ConstCBlockRef &subblock);
     bool _Insert(const ConstCBlockRef &subblock);
     bool _Insert(CTreeNodeRef &newNode);
-    /* After a subblock is successfully "linked" into the DAG:
-       Connect dependent txs,
-       then rescore the full DAG,
-       and regenerate if we pick or change a doublespend winner. */
-    void RefreshTransactionsAfterSubblockInsertion(CTailstormGroveRef grove, const CTreeNodeRef &newNode);
 
     //! Add or remove a summary block to the orphan map
     void AddSummaryBlockOrphan(ConstCBlockRef pblock);
@@ -549,26 +458,27 @@ public:
     //! return a map of all tree nodes.
     std::map<uint256, CTreeNode> GetAllNodes();
 
-    //! Return a set of tree nodes of the best dag. If ptree is set it receives the tree that
+    //! Append the best dag, uncles first then subblocks in nSequenceId order. If ptree is set it receives the tree that
     //! produced them, for GetTxnExclusionSet. Only valid while cs_forest is held.
-    bool GetBestDagFor(const uint256 &hash, std::set<CTreeNodeRef> &dag, CTailstormTreeRef *ptree = nullptr);
+    bool GetBestDagFor(const uint256 &hash, std::vector<CTreeNodeRef> &dag, CTailstormTreeRef *ptree = nullptr);
 
-    //! Return the entire set of tree nodes and uncle nodes
-    bool GetFullDagFor(const uint256 &hash, std::set<CTreeNodeRef> &dag);
+    //! Append all uncle nodes then all tree nodes, in nSequenceId order
+    bool GetFullDagFor(const uint256 &hash, std::vector<CTreeNodeRef> &dag);
 
-    //! Return a set of nodes from a tree that matches what is in a block. If ptree is set it
+    //! Return the nodes from a tree that match what is in a block, uncles first then subblocks in
+    //! nSequenceId order. If ptree is set it
     //! receives the tree that produced them, for GetTxnExclusionSet.
-    bool GetDagForBlock(ConstCBlockRef &pblock, std::set<CTreeNodeRef> &dag, CTailstormTreeRef *ptree = nullptr);
+    bool GetDagForBlock(ConstCBlockRef &pblock, std::vector<CTreeNodeRef> &dag, CTailstormTreeRef *ptree = nullptr);
 
-    //! Return the set of tree nodes (uncles first then subblocks) that fit k-1 subblocks regardless of whether
-    //! those subblocks were processed or not.
-    bool GetDagForReorg(const uint256 &hash, std::set<CTreeNodeRef> &dag);
+    //! Return the tree nodes (uncles first then subblocks in nSequenceId order) that fit k-1 subblocks regardless of
+    //! whether those subblocks were processed or not.
+    bool GetDagForReorg(const uint256 &hash, std::vector<CTreeNodeRef> &dag);
 
     //! Return the current hash of the tip of the dag which contains this hash
     bool GetBestTipHashFor(const uint256 &hash, uint256 &tiphash);
 
     //! Return a map of all the transactions in the given dag
-    void GetDagTxns(const std::set<CTreeNodeRef> &dag, std::map<uint256, CTransactionRef> &mapDagTxns);
+    void GetDagTxns(const std::vector<CTreeNodeRef> &dag, std::map<uint256, CTransactionRef> &mapDagTxns);
 
     //! Return the dag height of a subblock given it's hash.
     uint32_t GetDagHeight(const uint256 &hash);
@@ -591,21 +501,26 @@ protected:
     void _CheckForReorg();
 
 public:
-    /** Regenerate coincache and mapDagTxn data for a tree. */
+    /** Regenerate coincache and mapDagTxn data for a tree: select the first subblocks in dag order,
+        as many as the tailstorm_k - 1 places the uncles leave, then connect every transaction they
+        carry, less the exclusion set, at once on top of the summary root, as the summary block that
+        commits them would. A subblock carrying a transaction that fails is removed and the selection
+        retried. */
     void ReGenerateDagData(CTailstormGroveRef grove);
-    /** Returns nullptr if it worked, and the bad subblock that should be removed if it did not */
-    CTreeNodeRef ReGenerateDagDataForSubblocks(CTailstormTree *tree,
-        std::vector<CTreeNodeRef> &sortedDag,
-        const std::set<uint256> &setTxnExclusions,
-        const std::set<uint256> &losers);
+
+    /** Fully resort and regenerate the dag built on the active chain tip, and update the dag active tip.
+        An arrival once the selection is full is placed last without reordering the dag, so this
+        forces the order a full resort would give. Returns false if there is no dag on the tip. */
+    bool ReconsiderDag();
 
     /** Removes a subblock and its descendants from the forest and the passed tree.
         Subblocks may need to be removed if they are invalid, for example. */
     void RemoveFromGrove(CTailstormGroveRef grove, CTreeNodeRef subblock);
 
-    /** Reassign nSequenceId as a dense 1..N over a tree's dag, keeping the current relative
-        order. Removing a subblock leaves a hole, and the numbering must stay dense: Check()
-        asserts it. Call after removing a subblock from a dag. */
+    /** Reassign nSequenceId as a dense 1..N over a tree's dag in dag order: by dependency
+        (parents before children), then by the highest score among a subblock and its descendants
+        (not counting descendants shared with the subblock it is compared to), then by lower hash.
+        Scores change as subblocks arrive, so call after any subblock is added to or removed from a dag. */
     void RenumberDag(CTailstormTree &tree);
 
     //! Set the main coins cache that we build our tailstorm tree views on top of.
@@ -653,6 +568,6 @@ public:
 extern CTailstormForest tailstormForest;
 
 //! Helper Function: Get the current best dag tip for mining on top of
-uint256 GetActiveDagTip(std::set<CTreeNodeRef> &dag);
+uint256 GetActiveDagTip(std::vector<CTreeNodeRef> &dag);
 
 #endif

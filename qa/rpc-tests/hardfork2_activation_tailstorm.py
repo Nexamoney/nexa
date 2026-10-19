@@ -967,7 +967,7 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[1].gettxpoolinfo()['size'] == 1)
 
         # connect peers. The nodes should share their subblocks but each peer
-        # should be having a different best dag tip because the sequence ids differ.
+        # should have the SAME dag tip even though the sequence the subblocks were given differs
         interconnect_nodes(self.nodes)
 
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 2)
@@ -976,8 +976,9 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['unlinked_subblocks'] <= 3)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] >= origNode0Total)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['unlinked_subblocks'] <= 3)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == self.nodes[1].gettailstorminfo()['dagtip'])
+        #waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
+        #waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
 
         # Both subblocks have equal scores, so the lower hash wins. Regeneration
         # evicts the previously applied loser and its pooled descendants; the
@@ -1096,6 +1097,7 @@ class TailstormActivationTest(BitcoinTestFramework):
 
         # Now give doublespend1 to one side of the network
         doublespend1_txidem = self.nodes[0].sendrawtransaction(doublespend1["hex"], True)
+        txidem_array_node1 = [ doublespend1_txidem ]
         waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 1)
 
         # create a small chain of txns using the output of the first doublespend
@@ -1204,27 +1206,27 @@ class TailstormActivationTest(BitcoinTestFramework):
         outputs = {}
         outputs[change_address] = Decimal("10000000.0") + doublespend_fee
         rawtx2 = self.nodes[0].createrawtransaction(inputs, outputs)
-        doublespend2 = self.nodes[0].signrawtransaction(rawtx2)
-        doublespend2_outputs_node1 = outputs[change_address]
-        assert_equal(doublespend2["complete"], True)
+        doublespend1 = self.nodes[0].signrawtransaction(rawtx2)
+        doublespend1_outputs_node1 = outputs[change_address]
+        assert_equal(doublespend1["complete"], True)
 
         # Change how we allocate the coins slightly
         outputs[change_address] = outputs[change_address] - Decimal("5000000.0")
         # And build a doublespend
         rawtx1 = self.nodes[0].createrawtransaction(inputs, outputs)
-        doublespend1 = self.nodes[0].signrawtransaction(rawtx1)
-        assert_equal(doublespend1["complete"], True)
+        doublespend0 = self.nodes[0].signrawtransaction(rawtx1)
+        assert_equal(doublespend0["complete"], True)
 
         # doublespends will have different idems because they change utxo state
         # (as opposed to malleated tx, which have same idem, but different id)
-        assert doublespend1["txidem"] != doublespend2["txidem"], "transactions are not different"
+        assert doublespend0["txidem"] != doublespend1["txidem"], "transactions are not different"
 
-        # Now give doublespend1 to one side of the network
-        doublespend1_txidem = self.nodes[0].sendrawtransaction(doublespend1["hex"], True)
+        # Now give doublespend0 to one side of the network
+        doublespend0_txidem = self.nodes[0].sendrawtransaction(doublespend0["hex"], True)
         waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 1)
 
         # create a small chain of txns using the output of the first doublespend
-        txidem_ds1_chain = doublespend1_txidem
+        txidem_ds1_chain = doublespend0_txidem
         tx_amount_ds1_chain = outputs[change_address]
         relayfee = 1000
         txidem_array_node0 = []
@@ -1250,42 +1252,46 @@ class TailstormActivationTest(BitcoinTestFramework):
 
         waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 3)
 
-        # Now give doublespend2 to other peer
-        doublespend2_txidem = self.nodes[1].sendrawtransaction(doublespend2["hex"], True)
+        # Now give doublespend1 to other peer
+        doublespend1_txidem = self.nodes[1].sendrawtransaction(doublespend1["hex"], True)
+        txidem_array_node1 = [ doublespend1_txidem ]
         waitFor(waitTime, lambda: self.nodes[1].gettxpoolinfo()['size'] == 1)
 
         # mine a subblock on both peers. These subblocks will double spend each other.
-        subblock_hash_node0 = self.nodes[0].generate(1);
-        subblock_hash_node1 = self.nodes[1].generate(1);
-        node0_ds_hash = subblock_hash_node0[0];
-        node1_ds_hash = subblock_hash_node1[0];
+        subblock_hash_node0 = self.nodes[0].generate(1)
+        # subblock_node0 = self.nodes[0].getblock(subblock_hash_node0[0])
+        subblock_hash_node1 = self.nodes[1].generate(1)
+        # subblock_node1 = self.nodes[1].getblock(subblock_hash_node1[0])
+        node0_ds_hash = subblock_hash_node0[0]
+        node1_ds_hash = subblock_hash_node1[0]
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 2)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 2)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] >= 14)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] >= 17)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == node0_ds_hash)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == node1_ds_hash)
 
         waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 3)
         waitFor(waitTime, lambda: self.nodes[1].gettxpoolinfo()['size'] == 1)
 
-        # connect peers. The nodes should share their subblocks but each peer
-        # should be having a different best dag tip because the sequence ids differ.
+        # connect peers. The nodes should share their subblocks but pick the same best dag tip
         interconnect_nodes(self.nodes)
 
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 3)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['bestdag'] == 3)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['total'] >= 16)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['total'] >= 19)
-        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == subblock_hash_node0[0])
-        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['dagtip'] == subblock_hash_node1[0])
-
-        # check conflicts were NOT removed.  This is because the conflicting
-        # subblocks are not considered at all because they are "overflow" subblocks
-        # which don't get included into the best dag.
-        waitFor(waitTime, lambda: self.nodes[0].gettxpoolinfo()['size'] == 3)
-        waitFor(waitTime, lambda: self.nodes[1].gettxpoolinfo()['size'] == 1)
-
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['fulldag'] == 4)
+        waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['fulldag'] == 4)
+        # Each node already had k-1 subblocks when the last peer subblock arrived, so that one was placed
+        # last without a resort and each node still selects its own pair first. Force the full resort
+        # so both nodes order the dag the same way.
+        self.nodes[0].reconsiderdag()
+        self.nodes[1].reconsiderdag()
+        # Based on the subblock ordering, once interconnected the nodes will settle on one of the two subblocks as the dag tip
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == node0_ds_hash or self.nodes[0].gettailstorminfo()['dagtip'] == node1_ds_hash)
+        waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['dagtip'] == self.nodes[1].gettailstorminfo()['dagtip'])
+        whichOne = self.nodes[0].gettailstorminfo()['dagtip']
 
         # Mine the summary block on node 0: both peers should end up on the same node0 chaintip.
         # NOTE: This test also tests that as the previous subblocks were received on node 1
@@ -1293,7 +1299,7 @@ class TailstormActivationTest(BitcoinTestFramework):
         #       view (or directly from the txpool). If they hadn't been then the summary block
         #       which got mined on node 0 could never have been validated because the conflicting
         #       txns would have been added to the summary block.
-        summary_hash = self.nodes[0].generate(1);
+        summary_hash = self.nodes[0].generate(1)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['chaintip'] == summary_hash[0])
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo()['chaintip'] == summary_hash[0])
         self.sync_all()
@@ -1304,14 +1310,25 @@ class TailstormActivationTest(BitcoinTestFramework):
 
         # Check that the right double spend transaction was chosen for the summary block
         summary_block = self.nodes[0].getblock(summary_hash[0])
-        assert(doublespend1_txidem in summary_block['txidem'])
+        extraTxes = None
+        includedTxes = None
+        if whichOne == subblock_hash_node0[0]:
+            assert(doublespend0_txidem in summary_block['txidem'])
+            assert(doublespend1_txidem not in summary_block['txidem'])
+            extraTxes = txidem_array_node1
+            includedTxes = txidem_array_node0
+        else:
+            assert(doublespend0_txidem not in summary_block['txidem'])
+            assert(doublespend1_txidem in summary_block['txidem'])
+            extraTxes = txidem_array_node0
+            includedTxes = txidem_array_node1
 
         # check ds on node0 and any associated chained txns are not "IN" the summary block
-        for idem in txidem_array_node0:
+        for idem in extraTxes:
+            assert(idem not in summary_block['txidem'])
+        # check the chosen tx of the DS on node0 and any associated chained txns are "IN" the summary block
+        for idem in includedTxes:
             assert(idem in summary_block['txidem'])
-
-        assert(doublespend2_txidem not in summary_block['txidem'])
-
 
         ##### Check that uncles are properly included.  There should be one uncle pulled in
         #     on each node AFTER the first subblock is mined.
