@@ -1369,8 +1369,8 @@ void basicFunctionsTest(uint32_t scriptFlags)
 
         // Check overflow into negative number (2 inputs would sum to a negative)
         COutPoint gutxo3 = AddUtxo(gp2pkh(grp1, u1, std::numeric_limits<CAmount>::max() - 50), 1, coins);
-        CAmount amt = std::numeric_limits<CAmount>::max();
-        amt += 50;
+        // max + 50, wrapped
+        CAmount amt = std::numeric_limits<CAmount>::min() + 49;
         t = tx2x1(gutxo3, gutxo, breakable_p2pkt(grp1, u1, amt), 1);
         ok = CheckGroupTokens(t, state, coins);
         BOOST_CHECK(!ok);

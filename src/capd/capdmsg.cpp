@@ -95,7 +95,7 @@ uint256 CapdMsg::CalcHash() const
     uint256 hash;
     CHash256 sha2;
     sha2.Write(stage1, sizeof(stage1));
-    sha2.Write(&nonce[0], nonce.size());
+    sha2.Write(nonce.data(), nonce.size());
     sha2.Finalize(hash.begin());
     cachedHash = hash;
     return hash;
@@ -117,7 +117,7 @@ bool CapdMsg::checkNonce(unsigned char *stage1, const arith_uint256 &hashTarget)
     uint256 hash;
     CHash256 sha2;
     sha2.Write(stage1, CSHA256::OUTPUT_SIZE);
-    sha2.Write(&nonce[0], nonce.size());
+    sha2.Write(nonce.data(), nonce.size());
     sha2.Finalize(hash.begin());
 
     if (hashTarget > UintToArith256(hash))

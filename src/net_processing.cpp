@@ -55,7 +55,7 @@ extern CTweak<uint64_t> mempoolSyncMinVersionSupported;
 extern CTweak<uint64_t> mempoolSyncMaxVersionSupported;
 extern CTweak<uint64_t> syncMempoolWithPeers;
 extern CTweak<uint32_t> randomlyDontInv;
-extern CTweak<uint32_t> doubleSpendProofs;
+extern CTweak<bool> doubleSpendProofs;
 extern CTweak<bool> extVersionEnabled;
 extern CTweak<bool> allowp2pTxVal;
 extern bool nDropMessages;

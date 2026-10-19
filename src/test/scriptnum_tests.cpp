@@ -1107,12 +1107,12 @@ BOOST_AUTO_TEST_CASE(abs_test)
         // number to finish in a reasonable amount of time
         long long rand_num = rand();
         rand_num = rand_num * 4237;
-        long long next_num = a + rand_num;
         // check for overflow
-        if (next_num < a)
+        if (a > std::numeric_limits<long long>::max() - rand_num)
         {
             break;
         }
+        long long next_num = a + rand_num;
         int64_t now = GetTimeMillis();
         // on a modern cpu, iterating through the int64_t space incrementing by
         // rand() * 566 finishes in a reasonable amount of time (minute or two)

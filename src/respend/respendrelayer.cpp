@@ -12,7 +12,7 @@
 #include "util.h"
 #include <mutex>
 
-extern CTweak<uint32_t> doubleSpendProofs;
+extern CTweak<bool> doubleSpendProofs;
 
 namespace respend
 {

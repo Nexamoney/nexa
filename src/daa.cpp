@@ -507,10 +507,10 @@ arith_uint256 GetNextNonTailstormBlockTarget(const CBlockIndex *pindexPrev,
 bool MineBlock(CBlockHeader &blockHeader, unsigned long int tries, const Consensus::Params &cparams)
 {
     assert(blockHeader.size != 0); // Size must be properly calculated before we can figure out the hash
-    unsigned long int count = 0;
+    uint64_t count = 0;
     for (unsigned int x = 0; x < 8; x++)
         if (x < blockHeader.nonce.size())
-            count = count | (blockHeader.nonce[x] << (x * 8));
+            count = count | ((uint64_t)blockHeader.nonce[x] << (x * 8));
 
     uint256 headerCommitment = blockHeader.GetMiningHeaderCommitment();
     uint256 prevhash;

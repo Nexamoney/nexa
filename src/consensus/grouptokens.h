@@ -162,7 +162,7 @@ public:
         const std::vector<unsigned char> &v = s.bytes();
         int sz = v.size();
         if (sz >= 4)
-            return (v[0] << 24) | (v[1] << 16) | (v[2] << 8) << v[3];
+            return ((uint32_t)v[0] << 24) | (v[1] << 16) | (v[2] << 8) | v[3];
         else if (sz > 0)
             return v[0]; // It would be better to return all bytes but sizes 1 to 3 currently unused
         else

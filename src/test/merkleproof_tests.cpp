@@ -58,8 +58,8 @@ VchType v(MerkleProofStep mps)
 VchType sha256(VchType a, VchType b)
 {
     CSHA256 sha;
-    sha.Write(&a[0], a.size());
-    sha.Write(&b[0], b.size());
+    sha.Write(a.data(), a.size());
+    sha.Write(b.data(), b.size());
     VchType result(32);
     sha.Finalize((unsigned char *)&result[0]);
     return result;
@@ -68,8 +68,8 @@ VchType sha256(VchType a, VchType b)
 VchType hash256(VchType a, VchType b)
 {
     CHash256 sha;
-    sha.Write(&a[0], a.size());
-    sha.Write(&b[0], b.size());
+    sha.Write(a.data(), a.size());
+    sha.Write(b.data(), b.size());
     VchType result(32);
     sha.Finalize((unsigned char *)&result[0]);
     return result;
@@ -78,8 +78,8 @@ VchType hash256(VchType a, VchType b)
 VchType hash160(VchType a, VchType b)
 {
     CHash160 sha;
-    sha.Write(&a[0], a.size());
-    sha.Write(&b[0], b.size());
+    sha.Write(a.data(), a.size());
+    sha.Write(b.data(), b.size());
     VchType result(20);
     sha.Finalize((unsigned char *)&result[0]);
     return result;
@@ -87,8 +87,11 @@ VchType hash160(VchType a, VchType b)
 VchType ripemd160(VchType a, VchType b)
 {
     CRIPEMD160 sha;
-    sha.Write(&a[0], a.size());
-    sha.Write(&b[0], b.size());
+    // CRIPEMD160::Write does pointer arithmetic even when the length is zero.
+    if (!a.empty())
+        sha.Write(a.data(), a.size());
+    if (!b.empty())
+        sha.Write(b.data(), b.size());
     VchType result(20);
     sha.Finalize((unsigned char *)&result[0]);
     return result;
