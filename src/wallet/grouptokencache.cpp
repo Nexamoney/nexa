@@ -7,24 +7,13 @@
 #include "consensus/grouptokens.h"
 #include "main.h"
 
-// Several txs in one block can mint or melt more than a CAmount holds, so saturate
-static void AddMintage(CAmount &total, CAmount amt)
-{
-    if (amt > 0 && total > std::numeric_limits<CAmount>::max() - amt)
-        total = std::numeric_limits<CAmount>::max();
-    else if (amt < 0 && total < -std::numeric_limits<CAmount>::max() - amt)
-        total = -std::numeric_limits<CAmount>::max();
-    else
-        total += amt;
-}
-
 bool AccumulateTokenData(CTransactionRef ptx, CCoinsViewCache &view, CTokenIndexUpdates &updates)
 {
     if (ptx->IsCoinBase())
         return true;
 
     std::map<CGroupTokenID, CAuth> &accumulatedAuthorities = updates.authorities;
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages = updates.mintages;
+    std::map<CGroupTokenID, CTokenMintage> &accumulatedMintages = updates.mintages;
 
     struct Amounts
     {
@@ -152,14 +141,7 @@ bool AccumulateTokenData(CTransactionRef ptx, CCoinsViewCache &view, CTokenIndex
         // Check for Mint
         if (nTokenInputs == 0 && nTokenOutputs > 0)
         {
-            if (!accumulatedMintages.count(grpID))
-            {
-                accumulatedMintages[grpID] = nTokenOutputs;
-            }
-            else
-            {
-                AddMintage(accumulatedMintages[grpID], nTokenOutputs);
-            }
+            accumulatedMintages[grpID] += nTokenOutputs;
 
             // Update the genesis address if this is a mint, and MUST be a subgroup.
             // NOTE: only the very first mintage of a subgroup will actually get updated to the database, thus
@@ -175,10 +157,7 @@ bool AccumulateTokenData(CTransactionRef ptx, CCoinsViewCache &view, CTokenIndex
         if (nTokenInputs > nTokenOutputs)
         {
             CAmount nMeltAmount = nTokenInputs - nTokenOutputs;
-            if (!accumulatedMintages.count(grpID))
-                accumulatedMintages[grpID] = -nMeltAmount;
-            else
-                AddMintage(accumulatedMintages[grpID], -nMeltAmount);
+            accumulatedMintages[grpID] -= nMeltAmount;
         }
     }
 
@@ -435,18 +414,6 @@ void CTokenMintCache::AddToCache(const CGroupTokenID &_grpID, const mint_entry &
     cache[_grpID] = entry;
 }
 
-void CTokenMintCache::AddTokenMint(const CGroupTokenID &_grpID, const CAmount _mint)
-{
-    LOCK(cs_tokenmint);
-    mint_entry entry = GetTokenMint(_grpID);
-    entry.first += _mint;
-
-    if (entry.first > 0)
-    {
-        AddToCache(_grpID, entry);
-        ptokenMint->WriteMint(_grpID, entry);
-    }
-}
 void CTokenMintCache::AddTokenGenesis(const CGroupTokenID &_grpID, const mint_entry &entry)
 {
     LOCK(cs_tokenmint);
@@ -464,22 +431,66 @@ void CTokenMintCache::AddTokenGenesis(const CGroupTokenID &_grpID, const mint_en
     ptokenMint->WriteMint(_grpID, entry);
 }
 
-void CTokenMintCache::RemoveTokenMint(const CGroupTokenID &_grpID, const CAmount _melt)
+namespace
+{
+CTokenMintage MintIndexBase()
+{
+    static const CTokenMintage base = CTokenMintage(1) << 64;
+    return base;
+}
+
+CTokenMintage LoadMintRemainder(const CGroupTokenID &grpID)
+{
+    CTokenMintRemainder stored;
+    if (!ptokenMint->ReadMintRemainder(grpID, stored))
+        return 0;
+    const CTokenMintage value = (CTokenMintage(stored.hi) << 64) + stored.lo;
+    return stored.negative ? -value : value;
+}
+
+CTokenMintRemainder DiskRemainder(const CTokenMintage &value)
+{
+    CTokenMintRemainder stored;
+    stored.negative = value < 0 ? 1 : 0;
+    const CTokenMintage mag = stored.negative ? -value : value;
+    stored.lo = (mag % MintIndexBase()).convert_to<uint64_t>();
+    stored.hi = (mag / MintIndexBase()).convert_to<uint64_t>();
+    return stored;
+}
+} // namespace
+
+void CTokenMintCache::UpdateTokenMint(const CGroupTokenID &_grpID, const CTokenMintage &delta)
 {
     LOCK(cs_tokenmint);
     mint_entry entry = GetTokenMint(_grpID);
-    if (entry.first >= (uint64_t)_melt)
+    // The stored total is uint64. Keep the rest so a later melt or disconnect uses the same total.
+    const CTokenMintage previous = LoadMintRemainder(_grpID);
+    const CTokenMintage amount = CTokenMintage(entry.first) + previous + delta;
+    const CTokenMintage maxRepresentable(std::numeric_limits<uint64_t>::max());
+
+    CTokenMintage represented = amount;
+    CTokenMintage remainder = 0;
+    if (amount < 0)
     {
-        entry.first -= _melt;
+        represented = 0;
+        remainder = amount;
     }
-    else
+    else if (amount > maxRepresentable)
     {
-        DbgAssert(entry.first >= (uint64_t)_melt, );
-        return;
+        represented = maxRepresentable;
+        remainder = amount - maxRepresentable;
     }
 
+    const uint64_t stored = represented.convert_to<uint64_t>();
+    if (stored == entry.first && remainder == previous)
+        return;
+
+    if (remainder != 0 && previous == 0)
+        LOG(TOKEN, "Token mintage for group %s does not fit in the index\n", EncodeGroupToken(_grpID));
+
+    entry.first = stored;
     AddToCache(_grpID, entry);
-    ptokenMint->WriteMint(_grpID, entry);
+    ptokenMint->UpdateMint(_grpID, entry, remainder != 0, DiskRemainder(remainder));
 }
 
 mint_entry CTokenMintCache::GetTokenMint(const CGroupTokenID &_grpID)
@@ -519,26 +530,16 @@ std::string CTokenMintCache::GetTokenGenesis(const CGroupTokenID &_grpID)
     }
 }
 
-void CTokenMintCache::ApplyTokenMintages(std::map<CGroupTokenID, CAmount> &accumulatedMintages)
+void CTokenMintCache::ApplyTokenMintages(const std::map<CGroupTokenID, CTokenMintage> &accumulatedMintages)
 {
-    for (auto &it : accumulatedMintages)
-    {
-        if (it.second > 0)
-            AddTokenMint(it.first, it.second);
-        else
-            RemoveTokenMint(it.first, abs(it.second));
-    }
+    for (const auto &it : accumulatedMintages)
+        UpdateTokenMint(it.first, it.second);
 }
 
-void CTokenMintCache::RemoveTokenMintages(std::map<CGroupTokenID, CAmount> &accumulatedMintages)
+void CTokenMintCache::RemoveTokenMintages(const std::map<CGroupTokenID, CTokenMintage> &accumulatedMintages)
 {
-    for (auto &it : accumulatedMintages)
-    {
-        if (it.second > 0)
-            RemoveTokenMint(it.first, it.second);
-        else
-            AddTokenMint(it.first, abs(it.second));
-    }
+    for (const auto &it : accumulatedMintages)
+        UpdateTokenMint(it.first, -it.second);
 }
 
 void CTokenMintCache::SetSyncFlag(const bool fSet)
