@@ -9,6 +9,7 @@
 #include <primitives/transaction.h>
 #include <utiltime.h>
 
+#include <algorithm>
 #include <limits>
 
 static constexpr int64_t SECONDS_TO_KEEP_ORPHANS = 90;
@@ -59,6 +60,9 @@ std::pair<bool, int32_t> DoubleSpendProofStorage::add(const DoubleSpendProof &pr
 void DoubleSpendProofStorage::addOrphan(const DoubleSpendProof &proof, NodeId peerId)
 {
     LOCK(dsproofStorageLock);
+    // A repeated orphan must not go through add(), which would claim it and stop it from expiring
+    if (m_dspIdLookupTable.count(proof.GetHash()))
+        return;
     const auto res = add(proof);
     if (!res.first) // it was already in the storage
         return;
@@ -99,6 +103,14 @@ std::list<std::pair<int, int> > DoubleSpendProofStorage::findOrphans(const COutP
 }
 
 int DoubleSpendProofStorage::orphanCount(int proofId) { return m_orphans.count(proofId); }
+size_t DoubleSpendProofStorage::orphanLookupCount() const
+{
+    LOCK(dsproofStorageLock);
+    size_t count = 0;
+    for (const auto &entry : m_prevTxIdLookupTable)
+        count += entry.second.size();
+    return count;
+}
 void DoubleSpendProofStorage::claimOrphan(int proofId)
 {
     LOCK(dsproofStorageLock);
@@ -139,23 +151,9 @@ void DoubleSpendProofStorage::remove(int proof)
         if (orphanLookup != m_prevTxIdLookupTable.end())
         {
             std::deque<int> &queue = orphanLookup->second;
-            if (queue.size() == 1)
-            {
-                DbgAssert(queue.front() == proof, );
-                if (queue.front() != proof)
-                    LOG(DSPROOF, "ERROR: queue front did not equal dsproof\n");
+            queue.erase(std::remove(queue.begin(), queue.end(), proof), queue.end());
+            if (queue.empty())
                 m_prevTxIdLookupTable.erase(orphanLookup);
-            }
-            else
-            {
-                for (auto i = queue.begin(); i != queue.end(); ++i)
-                {
-                    if (*i == proof)
-                    {
-                        i = queue.erase(i);
-                    }
-                }
-            }
         }
     }
     auto hash = iter->second.GetHash();
@@ -194,7 +192,8 @@ void DoubleSpendProofStorage::periodicCleanup(const boost::system::error_code &e
         {
             const int peerId = iter->second.first;
             const int proofId = iter->first;
-            iter = m_orphans.erase(iter);
+            // remove() erases the orphan itself and needs it to clean the outpoint lookup table
+            ++iter;
             remove(proofId);
 
             dosMan.Misbehaving(peerId, 1, BanReasonDSProofOrphanExpiry);
