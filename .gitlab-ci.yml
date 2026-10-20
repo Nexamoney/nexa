@@ -915,6 +915,9 @@ build-test-win-64-native:
           when: never
         - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
     allow_failure: true
+    # From-scratch MSYS2 build with no ccache; do not cancel on the next push to
+    # the default branch (inherits interruptible: true from `default:` otherwise).
+    interruptible: false
     timeout: 3h
     variables:
         MSYSTEM: MINGW64
