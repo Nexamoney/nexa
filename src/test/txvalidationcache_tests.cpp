@@ -4,7 +4,9 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "blockstorage/blockstorage.h"
+#include "consensus/merkle.h"
 #include "consensus/validation.h"
+#include "daa.h"
 #include "key.h"
 #include "keystore.h"
 #include "main.h"
@@ -13,6 +15,7 @@
 #include "random.h"
 #include "script/sighashtype.h"
 #include "script/standard.h"
+#include "streams.h"
 #include "test/test_nexa.h"
 #include "txadmission.h"
 #include "txmempool.h"
@@ -20,6 +23,7 @@
 #include "utiltime.h"
 #include "validation/forks.h"
 #include "validation/parallel.h"
+#include "validation/validation.h"
 
 #include <boost/test/unit_test.hpp>
 
@@ -529,6 +533,128 @@ BOOST_FIXTURE_TEST_CASE(limitfreerelay, TestChain100Setup)
     bool fFreeTxnsAllowed = true;
     ret = AcceptToMemoryPool(mempool, state, MakeTransactionRef(spends[2]), fFreeTxnsAllowed, &fMissingInputs, false);
     BOOST_CHECK(ret == true);
+}
+
+// The tx id hashes the satisfier scripts joined by 0xFF without length prefixes, so the bytes after a 0xFF in one
+// scriptSig can be moved to the start of the next one without changing the id. A block body altered this way has
+// the same merkle root and header as the honest one but fails its script checks.
+struct RecutBlockSetup : public TestChain100Setup
+{
+    CBlockRef honest;
+    CBlockRef altered;
+
+    // With fBadScripts the honest body fails its script checks too
+    void MakeBlocks(bool fBadScripts = false)
+    {
+        const CChainParams &chainparams = Params();
+        const uint8_t SEPARATOR = 0xff;
+        // One more block so the second coinbase is mature too
+        CreateAndProcessBlock({}, coinbaseLockingScript);
+
+        CMutableTransaction tx;
+        tx.vin.resize(2);
+        tx.vin[0] = coinbaseTxns[0].SpendOutput(0);
+        tx.vin[1] = coinbaseTxns[1].SpendOutput(0);
+        tx.vout.resize(1);
+        tx.vout[0].scriptPubKey = coinbaseLockingScript;
+        // Vary the output until the first satisfier contains the separator byte
+        size_t cut = 0;
+        for (CAmount extra = 0; cut == 0; extra++)
+        {
+            tx.vout[0].nValue = 11 * CENT + extra;
+            tx.vin[0].scriptSig = SignCoinbaseSpend(tx, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
+            tx.vin[1].scriptSig = SignCoinbaseSpend(tx, 1, defaultSigHashType, coinbaseTxns[1].vout[0].nValue);
+            const CScript &sig0 = tx.vin[0].scriptSig;
+            for (size_t i = 1; i + 1 < sig0.size() && cut == 0; i++)
+                if (sig0[i] == SEPARATOR)
+                    cut = i;
+        }
+        if (fBadScripts)
+            tx.vout[0].nValue += 1; // invalidates both signatures
+
+        // Move the bytes after the separator from vin[0] to the start of vin[1]
+        CMutableTransaction recut(tx);
+        const CScript sig0 = tx.vin[0].scriptSig;
+        recut.vin[0].scriptSig = CScript(sig0.begin(), sig0.begin() + cut);
+        recut.vin[1].scriptSig = CScript(sig0.begin() + cut + 1, sig0.end());
+        recut.vin[1].scriptSig.push_back(SEPARATOR);
+        recut.vin[1].scriptSig.insert(
+            recut.vin[1].scriptSig.end(), tx.vin[1].scriptSig.begin(), tx.vin[1].scriptSig.end());
+        const CTransaction honestTx(tx);
+        const CTransaction recutTx(recut);
+        BOOST_REQUIRE(honestTx.vin[0].scriptSig != recutTx.vin[0].scriptSig);
+        BOOST_REQUIRE(honestTx.GetId() == recutTx.GetId());
+        BOOST_REQUIRE(honestTx.GetIdem() == recutTx.GetIdem());
+
+        std::unique_ptr<CBlockTemplate> pblocktemplate =
+            BlockAssembler(chainparams).CreateNewBlock(coinbaseLockingScript);
+        honest = pblocktemplate->block;
+        honest->vtx.resize(1);
+        honest->vtx.push_back(MakeTransactionRef(honestTx));
+        honest->UpdateHeader();
+        honest->nonce.resize(3);
+        BOOST_REQUIRE(MineBlock(*honest, 1 << 23, chainparams.GetConsensus()));
+        altered = MakeBlockRef(*honest);
+        altered->vtx[1] = MakeTransactionRef(recutTx);
+        BOOST_REQUIRE(altered->GetHash() == honest->GetHash());
+        BOOST_REQUIRE(BlockMerkleRoot(*altered) == honest->hashMerkleRoot);
+        BOOST_REQUIRE_EQUAL(::GetSerializeSize(*altered, SER_NETWORK, PROTOCOL_VERSION),
+            ::GetSerializeSize(*honest, SER_NETWORK, PROTOCOL_VERSION));
+
+        // The altered body goes through the wire format unchanged
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << *altered;
+        CBlockRef decoded = std::make_shared<CBlock>();
+        ss >> *decoded;
+        BOOST_REQUIRE(decoded->GetHash() == honest->GetHash());
+        BOOST_REQUIRE(decoded->vtx[1]->vin[0].scriptSig == recutTx.vin[0].scriptSig);
+        BOOST_REQUIRE(decoded->vtx[1]->GetId() == honestTx.GetId());
+        altered = decoded;
+    }
+
+    bool BlockFailed(const uint256 &hash)
+    {
+        CBlockIndex *pindex = LookupBlockIndex(hash);
+        return pindex == nullptr || (pindex->nStatus & BLOCK_FAILED_MASK);
+    }
+};
+
+BOOST_FIXTURE_TEST_CASE(block_body_with_recut_satisfiers, RecutBlockSetup)
+{
+    // Receiving the altered body first must not stop the honest body from being accepted
+    MakeBlocks();
+    const uint256 hash = honest->GetHash();
+    CValidationState state;
+    ProcessSummaryBlock(state, Params(), nullptr, altered, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() != hash);
+    BOOST_CHECK_MESSAGE(!BlockFailed(hash), "altered body marked the honest block invalid");
+    BOOST_CHECK(IsSuspectBlockBody(hash));
+
+    CValidationState state2;
+    ProcessSummaryBlock(state2, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK_MESSAGE(chainActive.Tip()->GetBlockHash() == hash, "honest body was not accepted");
+    BOOST_CHECK(!IsSuspectBlockBody(hash));
+}
+
+BOOST_FIXTURE_TEST_CASE(block_body_with_bad_scripts_is_not_connected, RecutBlockSetup)
+{
+    // A block whose honest body also fails its scripts is downloaded again a bounded number of times, then
+    // treated as invalid
+    MakeBlocks(true);
+    const uint256 hash = honest->GetHash();
+    for (int i = 0; i < 8; i++)
+    {
+        CValidationState state;
+        ProcessSummaryBlock(state, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
+        BOOST_CHECK(chainActive.Tip()->GetBlockHash() != hash);
+        BOOST_CHECK(IsSuspectBlockBody(hash));
+        BOOST_CHECK(!BlockFailed(hash));
+    }
+    CValidationState state;
+    ProcessSummaryBlock(state, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() != hash);
+    BOOST_CHECK(!IsSuspectBlockBody(hash));
+    BOOST_CHECK(BlockFailed(hash));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

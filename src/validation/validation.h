@@ -147,6 +147,9 @@ bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork);
 
 CBlockIndex *FindMostWorkChain();
 
+/** True if the stored body of this block failed satisfier dependent checks and is waiting to be fetched again */
+bool IsSuspectBlockBody(const uint256 &hash);
+
 /** Mark a block as invalid. */
 bool InvalidateBlock(CValidationState &state, const Consensus::Params &consensusParams, CBlockIndex *pindex);
 

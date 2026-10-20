@@ -1679,9 +1679,11 @@ bool CheckInputs(const CTransactionRef &tx,
                                     }
                                     else
                                     {
-                                        return state.Invalid(false, REJECT_NONSTANDARD,
+                                        // Satisfier failures may come from a body altered in transit
+                                        return state.DoS(0, false, REJECT_NONSTANDARD,
                                             strprintf("non-mandatory-script-verify-flag (%s)",
-                                                ScriptErrorString(scriptError)));
+                                                ScriptErrorString(scriptError)),
+                                            true);
                                     }
                                 }
                                 // update the error message to reflect the mandatory violation.
@@ -1707,9 +1709,10 @@ bool CheckInputs(const CTransactionRef &tx,
                                 }
                                 else
                                 {
-                                    return state.Invalid(false, REJECT_INVALID,
+                                    return state.DoS(0, false, REJECT_INVALID,
                                         strprintf("upgrade-conditional-script-failure (%s)",
-                                            ScriptErrorString(check.GetScriptError())));
+                                            ScriptErrorString(check.GetScriptError())),
+                                        true);
                                 }
                             }
 
@@ -1731,7 +1734,8 @@ bool CheckInputs(const CTransactionRef &tx,
                             {
                                 return state.DoS(100, false, REJECT_INVALID,
                                     strprintf(
-                                        "mandatory-script-verify-flag-failed (%s)", ScriptErrorString(scriptError)));
+                                        "mandatory-script-verify-flag-failed (%s)", ScriptErrorString(scriptError)),
+                                    true);
                             }
                         }
                     }
@@ -1981,6 +1985,55 @@ bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork)
     return false;
 }
 
+// Blocks whose stored body failed only satisfier dependent checks. The merkle root does not commit to the exact
+// satisfier bytes, so such a body may have been altered in transit: it is fetched again instead of the block being
+// marked invalid.
+// After this many bad bodies the block is treated as invalid, so a block with really invalid scripts is not
+// downloaded forever.
+static const uint32_t MAX_SUSPECT_BLOCK_BODIES = 8;
+struct SuspectBody
+{
+    bool fSuspect = false;
+    uint32_t nBadBodies = 0;
+};
+static CCriticalSection cs_suspectBlockBodies;
+static std::map<uint256, SuspectBody> mapSuspectBlockBodies GUARDED_BY(cs_suspectBlockBodies);
+
+bool IsSuspectBlockBody(const uint256 &hash)
+{
+    LOCK(cs_suspectBlockBodies);
+    auto it = mapSuspectBlockBodies.find(hash);
+    return it != mapSuspectBlockBodies.end() && it->second.fSuspect;
+}
+
+// Returns false once the block has had too many bad bodies
+static bool MarkSuspectBlockBody(const uint256 &hash)
+{
+    LOCK(cs_suspectBlockBodies);
+    SuspectBody &body = mapSuspectBlockBodies[hash];
+    if (++body.nBadBodies > MAX_SUSPECT_BLOCK_BODIES)
+    {
+        mapSuspectBlockBodies.erase(hash);
+        return false;
+    }
+    body.fSuspect = true;
+    return true;
+}
+
+// A new body was stored; keep the count until the block connects
+static void ClearSuspectBlockBody(const uint256 &hash, bool fConnected)
+{
+    LOCK(cs_suspectBlockBodies);
+    if (fConnected)
+        mapSuspectBlockBodies.erase(hash);
+    else
+    {
+        auto it = mapSuspectBlockBodies.find(hash);
+        if (it != mapSuspectBlockBodies.end())
+            it->second.fSuspect = false;
+    }
+}
+
 /**
  * Return the tip of the chain with the most work in it, that isn't
  * known to be invalid (it's however far from certain to be valid).
@@ -2009,6 +2062,7 @@ CBlockIndex *FindMostWorkChain()
         uint64_t depth = 0;
         bool fFailedChain = false;
         bool fMissingData = false;
+        bool fSuspectBody = false;
         bool fReorgInRange = true;
 
         // follow the chain all the way back to where it joins the current active chain.
@@ -2027,7 +2081,8 @@ CBlockIndex *FindMostWorkChain()
             // to a chain unless we have all the non-active-chain parent blocks.
             fFailedChain = pindexTest->nStatus & BLOCK_FAILED_MASK;
             fMissingData = !(pindexTest->nStatus & BLOCK_HAVE_DATA);
-            if (fFailedChain | fMissingData)
+            fSuspectBody = IsSuspectBlockBody(pindexTest->GetBlockHash());
+            if (fFailedChain | fMissingData | fSuspectBody)
                 break;
             pindexTest = pindexTest->pprev;
             depth++;
@@ -2036,8 +2091,9 @@ CBlockIndex *FindMostWorkChain()
         // We don't want to mark a chain that exceeds the reorg limit as bad. Just skip it.
         fReorgInRange = IsReorgInRange(chainActive.Tip(), pindexTest);
 
-        // Conditions where we want to reject the chain
-        if (fFailedChain || fMissingData || !fReorgInRange)
+        // Conditions where we want to reject the chain. A suspect body only drops the candidates until it is
+        // replaced, so its status is left alone.
+        if (fFailedChain || fMissingData || fSuspectBody || !fReorgInRange)
         {
             // Candidate chain is not usable (either invalid or missing data)
             CBlockIndex *pBestInvalid = pindexBestInvalid.load();
@@ -2499,16 +2555,19 @@ static bool AcceptBlock(ConstCBlockRef pblock,
         // not process unrequested blocks.
         bool fTooFarAhead = (pindex->height() > int(chainActive.Height() + MIN_BLOCKS_TO_KEEP));
 
+        // A suspect body is replaced by the next one received
+        const bool fSuspectBody = IsSuspectBlockBody(pindex->GetBlockHash());
+
         // TODO: deal better with return value and error conditions for duplicate
         // and unrequested blocks.
-        if (fAlreadyHave)
+        if (fAlreadyHave && !fSuspectBody)
         {
             return true;
         }
         // If we didn't ask for it:
         if (!fRequested)
         {
-            if (pindex->processed())
+            if (pindex->processed() && !fSuspectBody)
                 return true; // This is a previously-processed block that was pruned
             if (!fHasEnoughWork)
                 return true; // Don't process chains with a lot less work
@@ -2582,6 +2641,21 @@ static bool AcceptBlock(ConstCBlockRef pblock,
             if (!ReceivedBlockTransactions(pblock, state, pindex, blockPos))
             {
                 return error("AcceptBlock(): ReceivedBlockTransactions failed");
+            }
+            if (IsSuspectBlockBody(pindex->GetBlockHash()))
+            {
+                ClearSuspectBlockBody(pindex->GetBlockHash(), false);
+                // Stored descendants were dropped as candidates while this body was distrusted
+                WRITELOCK(cs_mapBlockIndex);
+                for (const auto &item : mapBlockIndex)
+                {
+                    CBlockIndex *p = item.second;
+                    if (p != pindex && p->height() > pindex->height() && (p->nStatus & BLOCK_HAVE_DATA) &&
+                        p->IsValid(BLOCK_VALID_TRANSACTIONS) && p->IsLinked() && !(p->nStatus & BLOCK_FAILED_MASK) &&
+                        p->GetAncestor(pindex->height()) == pindex &&
+                        !setBlockIndexCandidates.value_comp()(p, chainActive.Tip()))
+                        setBlockIndexCandidates.insert(p);
+                }
             }
         }
         catch (const std::runtime_error &e)
@@ -3434,7 +3508,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
         if (!control.Wait())
         {
             // if we end up here then the signature verification failed and we must re-lock cs_main before returning.
-            return state.DoS(100, false, REJECT_INVALID, "bad-blk-signatures", false, "parallel script check failed");
+            // The merkle root does not commit to the exact satisfier bytes, so the body may have been altered
+            return state.DoS(100, false, REJECT_INVALID, "bad-blk-signatures", true, "parallel script check failed");
         }
 
         // Validate we are within sigcheck limits.
@@ -3449,7 +3524,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                 // LOG(BENCH, "Tx SigChecks performed: %d\n", txSigChecks);
                 if (txSigChecks > MAX_TX_SIGCHECK_COUNT)
                 {
-                    return state.DoS(100, false, REJECT_INVALID, "bad-tx-sigchecks", false,
+                    return state.DoS(100, false, REJECT_INVALID, "bad-tx-sigchecks", true,
                         "per transaction sigcheck limit exceeded");
                 }
             }
@@ -3461,7 +3536,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
             if (blockSigChecks > maxSigChecksAllowed)
             {
                 return state.DoS(
-                    100, false, REJECT_INVALID, "bad-blk-sigchecks", false, "block sigcheck limit exceeded");
+                    100, false, REJECT_INVALID, "bad-blk-sigchecks", true, "block sigcheck limit exceeded");
             }
         }
 
@@ -3679,7 +3754,18 @@ void InvalidBlockFound(CBlockIndex *pindex, const CValidationState &state)
             }
         }
     }
-    if (!state.CorruptionPossible())
+    if (state.CorruptionPossible() && MarkSuspectBlockBody(pindex->GetBlockHash()))
+    {
+        // The body may have been altered in transit: drop it so the block is downloaded again
+        const uint256 hash = pindex->GetBlockHash();
+        {
+            WRITELOCK(cs_mapBlockIndex);
+            setBlockIndexCandidates.erase(pindex);
+        }
+        mapBlockSource.erase(hash);
+        blockcache.EraseBlock(hash);
+    }
+    else
     {
         {
             WRITELOCK(cs_mapBlockIndex);
@@ -4223,6 +4309,7 @@ bool ConnectTip(CValidationState &state,
 
     // Block has been received and processed so no need to keep this entry.
     mapBlockSource.erase(pindexNew->GetBlockHash());
+    ClearSuspectBlockBody(pindexNew->GetBlockHash(), true);
 
     // When we're in IBD or reindexing then once the block is connected we don't need it in the cache anymore.
     if (IsInitialBlockDownload())

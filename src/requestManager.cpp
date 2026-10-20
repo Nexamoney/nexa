@@ -1551,7 +1551,8 @@ void CRequestManager::FindNextBlocksToDownload(CNode *node, size_t count, std::v
                 // We consider the chain that this peer is on invalid.
                 return;
             }
-            if (pindex->nStatus & BLOCK_HAVE_DATA || chainActive.Contains(pindex))
+            // A suspect body is downloaded again
+            if ((pindex->nStatus & BLOCK_HAVE_DATA && !IsSuspectBlockBody(blockHash)) || chainActive.Contains(pindex))
             {
                 if (pindex->IsLinked())
                     state->pindexLastCommonBlock = pindex;

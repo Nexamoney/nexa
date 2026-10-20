@@ -673,6 +673,9 @@ bool AlreadyHaveBlock(const CInv &inv)
         return false;
     if (!(mi->second->nStatus & BLOCK_HAVE_DATA))
         return false;
+    // A suspect body must be fetched again
+    if (IsSuspectBlockBody(inv.hash))
+        return false;
     return true;
 }
 bool AlreadyHaveBlock(const CInv2 &inv)
@@ -685,6 +688,9 @@ bool AlreadyHaveBlock(const CInv2 &inv)
     if (mi == mapBlockIndex.end())
         return false;
     if (!(mi->second->nStatus & BLOCK_HAVE_DATA))
+        return false;
+    // A suspect body must be fetched again
+    if (IsSuspectBlockBody(inv.hash))
         return false;
     return true;
 }
