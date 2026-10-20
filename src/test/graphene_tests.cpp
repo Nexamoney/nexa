@@ -188,6 +188,40 @@ BOOST_AUTO_TEST_CASE(graphene_set_finds_brute_force_opt_for_small_blocks)
     BOOST_CHECK_EQUAL(grapheneSet.OptimalSymDiff(version, n, m, m - mu, 1), best_a);
 }
 
+BOOST_AUTO_TEST_CASE(graphene_set_finds_brute_force_opt_for_large_mempools)
+{
+    // The brute force search stops early; it must still find the optimum of the full search
+    const uint64_t nBlockTxs = 100;
+    const uint8_t nChecksumBits = MAX_CHECKSUM_BITS;
+    for (uint64_t nReceiverPoolTx : {1000, 50000, 1000000})
+    {
+        const uint64_t nReceiverExcessTxs = nReceiverPoolTx - nBlockTxs;
+        auto T = [&](uint64_t a)
+        {
+            float fpr = std::min(a / float(nReceiverExcessTxs), FILTER_FPR_MAX);
+            double F = floor(FILTER_CELL_SIZE * (-1 / LN2SQUARED * nBlockTxs * log(fpr) / 8));
+            uint8_t n_iblt_hash = CIblt::OptimalNHash(a);
+            uint64_t padded_cells = (int)(CIblt::OptimalOverhead(a) * a);
+            uint64_t cells = n_iblt_hash * int(ceil(padded_cells / float(n_iblt_hash)));
+            return F + (nChecksumBits / 8 + IBLT_FIXED_CELL_SIZE) * cells;
+        };
+
+        uint64_t best_a = 1;
+        double best_T = std::numeric_limits<double>::max();
+        for (uint64_t a = 1; a < nReceiverPoolTx; a++)
+        {
+            if (T(a) < best_T)
+            {
+                best_T = T(a);
+                best_a = a;
+            }
+        }
+
+        BOOST_CHECK_EQUAL(
+            CGrapheneSet::BruteForceSymDiff(nBlockTxs, nReceiverPoolTx, nReceiverExcessTxs, 1, nChecksumBits), best_a);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(graphene_set_finds_approx_opt_for_large_blocks)
 {
     uint64_t version = MAX_GRAPHENE_SET_VERSION;

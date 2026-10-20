@@ -224,8 +224,14 @@ double CGrapheneSet::BruteForceSymDiff(uint64_t nBlockTxs,
 
     uint64_t optSymDiff = 1;
     double optT = std::numeric_limits<double>::max();
+    // F(a) >= 0 and L(a) needs at least one cell per item, so once that bound reaches optT no larger a
+    // can do better. This keeps a large peer supplied mempool count from costing millions of iterations.
+    const uint64_t nCellBytes = nChecksumBits / 8 + IBLT_FIXED_CELL_SIZE;
     for (uint64_t a = 1; a < nReceiverPoolTx; a++)
     {
+        if (nCellBytes * a >= optT)
+            break;
+
         double T = F(a) + L(a);
 
         if (T < optT)
