@@ -2694,7 +2694,8 @@ bool ProcessAcceptBlock(CNode *pfrom,
     bool ret = AcceptBlock(pblock, state, chainparams, ppindex, fRequested, dbp);
     if (pindex && pfrom)
     {
-        mapBlockSource[pindex->GetBlockHash()] = pfrom->GetId();
+        // Blame the peer whose body is validated: the first one stored, or the one replacing a suspect body
+        mapBlockSource.emplace(pindex->GetBlockHash(), pfrom->GetId());
     }
     const auto &cparams = chainparams.GetConsensus();
     CheckBlockIndex(cparams);

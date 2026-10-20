@@ -7,10 +7,12 @@
 #include "consensus/merkle.h"
 #include "consensus/validation.h"
 #include "daa.h"
+#include "dosman.h"
 #include "key.h"
 #include "keystore.h"
 #include "main.h"
 #include "miner.h"
+#include "net.h"
 #include "pubkey.h"
 #include "random.h"
 #include "script/sighashtype.h"
@@ -634,6 +636,44 @@ BOOST_FIXTURE_TEST_CASE(block_body_with_recut_satisfiers, RecutBlockSetup)
     ProcessSummaryBlock(state2, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
     BOOST_CHECK_MESSAGE(chainActive.Tip()->GetBlockHash() == hash, "honest body was not accepted");
     BOOST_CHECK(!IsSuspectBlockBody(hash));
+}
+
+BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
+{
+    // The peer that sent the altered body is penalized, not the one that then sends the honest body
+    MakeBlocks();
+    CNode nodeA(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode nodeB(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10000)), "", true);
+    {
+        LOCK(cs_vNodes);
+        vNodes.push_back(&nodeA);
+        vNodes.push_back(&nodeB);
+    }
+    // B's honest body arrives after A's altered body is stored but before it is validated
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = nullptr;
+        CValidationState stateA;
+        ProcessAcceptBlock(&nodeA, altered, stateA, Params(), &pindex, nullptr);
+        CValidationState stateB;
+        ProcessAcceptBlock(&nodeB, honest, stateB, Params(), &pindex, nullptr);
+    }
+    CValidationState state;
+    ActivateBestChain(state, Params());
+    BOOST_CHECK(nodeA.nMisbehavior.load() > 0);
+    BOOST_CHECK_EQUAL(nodeB.nMisbehavior.load(), 0);
+
+    // B's body is then fetched again and connects
+    CValidationState state2;
+    ProcessSummaryBlock(state2, Params(), &nodeB, honest, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() == honest->GetHash());
+    BOOST_CHECK_EQUAL(nodeB.nMisbehavior.load(), 0);
+    {
+        LOCK(cs_vNodes);
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &nodeA), vNodes.end());
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &nodeB), vNodes.end());
+    }
+    dosMan.ClearBanned();
 }
 
 BOOST_FIXTURE_TEST_CASE(block_body_with_bad_scripts_is_not_connected, RecutBlockSetup)
