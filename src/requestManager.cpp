@@ -1551,10 +1551,10 @@ void CRequestManager::FindNextBlocksToDownload(CNode *node, size_t count, std::v
                 // We consider the chain that this peer is on invalid.
                 return;
             }
-            // A suspect body is downloaded again
+            // Linked descendants must not move the cursor past a suspect ancestor.
             if ((pindex->nStatus & BLOCK_HAVE_DATA && !IsSuspectBlockBody(blockHash)) || chainActive.Contains(pindex))
             {
-                if (pindex->IsLinked())
+                if (pindex->IsLinked() && pindex->pprev == state->pindexLastCommonBlock)
                     state->pindexLastCommonBlock = pindex;
             }
             else

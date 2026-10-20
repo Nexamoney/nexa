@@ -13,8 +13,10 @@
 #include "main.h"
 #include "miner.h"
 #include "net.h"
+#include "nodestate.h"
 #include "pubkey.h"
 #include "random.h"
+#include "requestManager.h"
 #include "script/sighashtype.h"
 #include "script/standard.h"
 #include "streams.h"
@@ -707,6 +709,68 @@ BOOST_FIXTURE_TEST_CASE(block_body_with_repeated_recut_satisfiers, RecutBlockSet
     ProcessSummaryBlock(state, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
     BOOST_CHECK(chainActive.Tip()->GetBlockHash() == hash);
     BOOST_CHECK(!IsSuspectBlockBody(hash));
+}
+
+BOOST_FIXTURE_TEST_CASE(block_body_recut_rewinds_download_cursors, RecutBlockSetup)
+{
+    MakeBlocks();
+    const uint256 hash = honest->GetHash();
+    CBlockRef descendant = MakeBlockRef(*honest);
+    descendant->hashPrevBlock = hash;
+    descendant->height++;
+    descendant->hashAncestor = chainActive[GetConsensusAncestorHeight(descendant->height)]->GetBlockHash();
+    descendant->SetChainWork(honest->aChainWork() + GetWorkForDifficultyBits(descendant->nBits));
+    descendant->nTime++;
+    descendant->vtx.resize(1);
+    CMutableTransaction coinbase(*descendant->vtx[0]);
+    coinbase.vout.back().scriptPubKey = CScript()
+                                        << OP_RETURN << descendant->height << std::vector<uint8_t>(MIN_TX_SIZE, 0);
+    descendant->vtx[0] = MakeTransactionRef(coinbase);
+    descendant->fChecked = false;
+    descendant->UpdateHeader();
+    BOOST_REQUIRE(MineBlock(*descendant, 1 << 23, Params().GetConsensus()));
+    CNode peerA(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c010, 10000)), "", true);
+    CNode peerB(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c011, 10000)), "", true);
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = nullptr;
+        CValidationState state;
+        BOOST_REQUIRE(ProcessAcceptBlock(nullptr, altered, state, Params(), &pindex, nullptr));
+        CBlockIndex *pindexDescendant = nullptr;
+        CValidationState descendantState;
+        const bool accepted =
+            ProcessAcceptBlock(nullptr, descendant, descendantState, Params(), &pindexDescendant, nullptr);
+        BOOST_REQUIRE_MESSAGE(accepted, descendantState.GetLogString());
+        for (CNode *peer : {&peerA, &peerB})
+        {
+            const uint256 peerTip = peer == &peerA ? descendant->GetHash() : hash;
+            requester.UpdateBlockAvailability(peer->GetId(), peerTip);
+            std::vector<CBlockIndex *> next;
+            requester.FindNextBlocksToDownload(peer, 128, next);
+            BOOST_CHECK(next.empty());
+            CNodeStateAccessor nodeState(nodestate, peer->GetId());
+            BOOST_CHECK(nodeState->pindexLastCommonBlock->GetBlockHash() == peerTip);
+        }
+    }
+    CValidationState state;
+    ActivateBestChain(state, Params());
+    BOOST_REQUIRE(IsSuspectBlockBody(hash));
+    BOOST_CHECK(!AlreadyHaveBlock(CInv(MSG_BLOCK, hash)));
+    {
+        LOCK(cs_main);
+        for (CNode *peer : {&peerA, &peerB})
+        {
+            std::vector<CBlockIndex *> next;
+            requester.FindNextBlocksToDownload(peer, 128, next);
+            BOOST_REQUIRE_EQUAL(next.size(), 1U);
+            BOOST_CHECK(next[0]->GetBlockHash() == hash);
+            CNodeStateAccessor nodeState(nodestate, peer->GetId());
+            BOOST_CHECK(nodeState->pindexLastCommonBlock == chainActive.Tip());
+        }
+    }
+    CValidationState honestState;
+    ProcessSummaryBlock(honestState, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK(chainActive.Contains(LookupBlockIndex(hash)));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

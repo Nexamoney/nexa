@@ -95,6 +95,17 @@ void CState::Clear()
     mapNodeState.clear();
 }
 
+void CState::RewindBlockDownloadState(const CBlockIndex *pindex)
+{
+    LOCK(cs_cstate);
+    for (auto &item : mapNodeState)
+    {
+        CBlockIndex *&common = item.second.pindexLastCommonBlock;
+        if (common && common->height() >= pindex->height() && common->GetAncestor(pindex->height()) == pindex)
+            common = pindex->pprev;
+    }
+}
+
 bool GetNodeStateStats(NodeId nodeid, CNodeStateStats &stats, bool fAllStats)
 {
     CNodeRef node(connmgr->FindNodeFromId(nodeid));

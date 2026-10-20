@@ -3733,6 +3733,7 @@ void InvalidBlockFound(CBlockIndex *pindex, const CValidationState &state)
         // The body may have been altered in transit: drop it so the block is downloaded again
         const uint256 hash = pindex->GetBlockHash();
         MarkSuspectBlockBody(hash);
+        nodestate.RewindBlockDownloadState(pindex);
         {
             WRITELOCK(cs_mapBlockIndex);
             setBlockIndexCandidates.erase(pindex);
