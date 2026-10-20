@@ -1383,6 +1383,8 @@ bool HandleGrapheneBlockRequest(CDataStream &vRecv, CNode *pfrom, uint32_t msgCo
     }
 
     graphenedata.UpdateInBoundMemPoolInfo(::GetSerializeSize(mempoolinfo, SER_NETWORK, PROTOCOL_VERSION));
+    // The receiver rejects a set built for more items than this, so a larger count is never useful
+    mempoolinfo.nTx = std::min<uint64_t>(mempoolinfo.nTx, LARGE_MEM_POOL_SIZE);
 
     // Message consistency checking
     if (hash.IsNull())
@@ -1423,6 +1425,8 @@ bool HandleGrapheneBlockRecoveryRequest(CDataStream &vRecv,
 {
     CRequestGrapheneReceiverRecover recoveryRequest;
     vRecv >> recoveryRequest;
+    recoveryRequest.nSenderFilterPositives =
+        std::min<uint64_t>(recoveryRequest.nSenderFilterPositives, LARGE_MEM_POOL_SIZE);
 
     std::shared_ptr<CGrapheneBlock> grapheneBlock = thinrelay.GetSentGrapheneBlocks(pfrom->GetId());
     if (!grapheneBlock)
