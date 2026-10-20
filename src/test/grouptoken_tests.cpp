@@ -1708,6 +1708,34 @@ BOOST_AUTO_TEST_CASE(grouptoken_descriptions)
 }
 #endif
 
+static CGroupTokenID FindTestGroupId(const COutPoint &input,
+    CScript opRetTokDesc,
+    GroupTokenIdFlags flags,
+    GroupAuthorityFlags authorityFlags,
+    uint64_t &nonce)
+{
+    CGroupTokenID ret;
+    uint32_t foundGrpFlags = 0;
+    do
+    {
+        nonce += 1;
+        CHashWriter hasher(SER_GETHASH, PROTOCOL_VERSION);
+        // mask off any nonce leak into flags and then or in the flags
+        nonce = (nonce & ~((uint64_t)GroupAuthorityFlags::ALL_FLAG_BITS)) | ((uint64_t)authorityFlags); // REQ3.2.1.5
+        hasher << input;
+
+        if (!opRetTokDesc.empty())
+        {
+            std::vector<unsigned char> data(opRetTokDesc.begin(), opRetTokDesc.end());
+            hasher << data;
+        }
+        hasher << nonce;
+        ret = hasher.GetHash();
+        foundGrpFlags = (ret.bytes()[30] << 8) | ret.bytes()[31];
+    } while (foundGrpFlags != (uint16_t)flags);
+    return ret;
+}
+
 BOOST_AUTO_TEST_CASE(grouptoken_descriptions_malformed)
 {
     uint32_t OpRetGroupId = DEFAULT_OP_RETURN_GROUP_ID;
@@ -1753,7 +1781,7 @@ BOOST_AUTO_TEST_CASE(grouptoken_index_mintage_saturates)
     QuickAddress a1;
     uint64_t nonce = 0;
     CGroupTokenID gid =
-        findGroupId(COutPoint(), CScript(), GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+        FindTestGroupId(COutPoint(), CScript(), GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
     const CAmount maxAmt = std::numeric_limits<CAmount>::max();
 
     // Two mints of the maximum amount in one block
@@ -1792,7 +1820,7 @@ BOOST_FIXTURE_TEST_CASE(grouptoken_descriptions_malformed_block, TestChain100Set
     COutPoint outpt(coinbaseTxns[0].GetIdem(), 0);
     uint64_t nonce = 0;
     CGroupTokenID gid =
-        findGroupId(outpt, opret, GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+        FindTestGroupId(outpt, opret, GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
     std::vector<CMutableTransaction> txns;
     txns.push_back(
         tx1x2(coinbaseTxns[0], 0, gp2pkh(gid, grpAuth, nonce), coinbaseTxns[0].vout[0].nValue, opret, 0, coinbaseKey));
@@ -1830,7 +1858,7 @@ BOOST_FIXTURE_TEST_CASE(grouptoken_descriptions_invalid_block, TestChain100Setup
     COutPoint outpt(coinbaseTxns[0].GetIdem(), 0);
     uint64_t nonce = 0;
     CGroupTokenID gid =
-        findGroupId(outpt, opret, GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+        FindTestGroupId(outpt, opret, GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
     std::vector<CMutableTransaction> txns;
     // Signed with the wrong key, so the block fails script checks
     txns.push_back(tx1x2(
