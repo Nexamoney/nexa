@@ -190,8 +190,11 @@ double CGrapheneSet::BruteForceSymDiff(uint64_t nBlockTxs,
      * The total size in bytes of a graphene block is given by T(a) = F(a) + L(a) as defined
      * in the code below. (Note that meta parameters for the Bloom Filter and IBLT are ignored).
      */
-    assert(nReceiverExcessTxs <= nReceiverPoolTx); // Excess contained in mempool
-    assert(nReceiverMissingTxs <= nBlockTxs); // Can't be missing more txs than are in block
+    // Callers catch these, so a bad peer supplied count cannot abort the node
+    if (nReceiverExcessTxs > nReceiverPoolTx) // Excess contained in mempool
+        throw std::runtime_error("Receiver excess txs exceed receiver mempool size");
+    if (nReceiverMissingTxs > nBlockTxs) // Can't be missing more txs than are in block
+        throw std::runtime_error("Receiver missing txs exceed block size");
 
     if (nReceiverPoolTx > LARGE_MEM_POOL_SIZE)
         throw std::runtime_error("Receiver mempool is too large for optimization");
@@ -575,13 +578,15 @@ GrapheneSetOptimizationParams CGrapheneSet::DetermineGrapheneSetOptimizationPara
     uint64_t nItems,
     uint64_t version)
 {
-    // Infer various receiver quantities
-    uint64_t nReceiverExcessItems =
-        std::max((int)(nReceiverUniverseItems - nItems), (int)(nSenderUniverseItems - nItems));
-    nReceiverExcessItems = std::max(0, (int)nReceiverExcessItems); // must be non-negative
-    nReceiverExcessItems =
-        std::min((int)nReceiverUniverseItems, (int)nReceiverExcessItems); // must not exceed total mempool size
-    uint64_t nReceiverMissingItems = std::max(1, (int)(nItems - (nReceiverUniverseItems - nReceiverExcessItems)));
+    // Infer various receiver quantities. The receiver count comes from the peer, so stay unsigned
+    // rather than truncating to int.
+    uint64_t nReceiverExcessItems = std::max(nReceiverUniverseItems > nItems ? nReceiverUniverseItems - nItems : 0,
+        nSenderUniverseItems > nItems ? nSenderUniverseItems - nItems : 0);
+    // must not exceed total mempool size
+    nReceiverExcessItems = std::min(nReceiverUniverseItems, nReceiverExcessItems);
+    uint64_t nReceiverHaveItems = nReceiverUniverseItems - nReceiverExcessItems;
+    uint64_t nReceiverMissingItems =
+        std::max<uint64_t>(1, nItems > nReceiverHaveItems ? nItems - nReceiverHaveItems : 0);
 
     LOG(GRAPHENE, "receiver expected to have at most %d excess txs in mempool\n", nReceiverExcessItems);
     LOG(GRAPHENE, "receiver expected to be missing at most %d txs from block\n", nReceiverMissingItems);

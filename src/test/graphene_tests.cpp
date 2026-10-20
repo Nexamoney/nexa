@@ -227,6 +227,49 @@ BOOST_AUTO_TEST_CASE(graphene_set_approx_opt_close_to_optimal)
     }
 }
 
+BOOST_AUTO_TEST_CASE(graphene_set_optimization_params_any_receiver_count)
+{
+    // The receiver count comes from the peer and used to be truncated to int
+    const uint64_t counts[] = {0, 1, 1ULL << 16, (1ULL << 31) - 1, 1ULL << 31, 1ULL << 32, (1ULL << 32) + 5, 1ULL << 63,
+        std::numeric_limits<uint64_t>::max()};
+    const uint64_t nItemsList[] = {5, 4 * (uint64_t)APPROX_ITEMS_THRESH};
+    for (uint64_t nReceiverUniverseItems : counts)
+    {
+        for (uint64_t nItems : nItemsList)
+        {
+            for (uint64_t version = 0; version <= MAX_GRAPHENE_SET_VERSION; version++)
+            {
+                GrapheneSetOptimizationParams params =
+                    CGrapheneSet::DetermineGrapheneSetOptimizationParams(nReceiverUniverseItems, 100, nItems, version);
+                BOOST_CHECK(params.nReceiverExcessItems <= nReceiverUniverseItems);
+                BOOST_CHECK(params.nReceiverMissingItems >= 1 && params.nReceiverMissingItems <= nItems);
+            }
+        }
+    }
+
+    // In range values give the same result as before
+    GrapheneSetOptimizationParams params =
+        CGrapheneSet::DetermineGrapheneSetOptimizationParams(1000, 100, 5, MAX_GRAPHENE_SET_VERSION);
+    BOOST_CHECK_EQUAL(params.nReceiverExcessItems, 995);
+    BOOST_CHECK_EQUAL(params.nReceiverMissingItems, 1);
+    params = CGrapheneSet::DetermineGrapheneSetOptimizationParams(10, 100, 50, MAX_GRAPHENE_SET_VERSION);
+    BOOST_CHECK_EQUAL(params.nReceiverExcessItems, 10);
+    BOOST_CHECK_EQUAL(params.nReceiverMissingItems, 50);
+
+    // Building a set and a recovery IBLT for such counts must not abort
+    std::vector<uint256> items;
+    std::set<uint64_t> cheapHashes;
+    for (unsigned int i = 1; i <= 5; i++)
+    {
+        items.push_back(GetHash(i));
+        cheapHashes.insert(GetHash(i).GetCheapHash());
+    }
+    CGrapheneSet grapheneSet(1ULL << 31, 100, items, 0, 0, MAX_GRAPHENE_SET_VERSION, 0, false, true, true);
+    CIblt iblt = grapheneSet.FailureRecoveryIblt(cheapHashes, items.size(), 1ULL << 31, 1000,
+        FAILURE_RECOVERY_SUCCESS_RATE, 0.001, CGrapheneBlock::GetGrapheneSetVersion(GRAPHENE_MAX_VERSION_SUPPORTED), 3);
+    BOOST_CHECK(iblt.size() > 0);
+}
+
 BOOST_AUTO_TEST_CASE(graphene_set_decodes_empty_intersection)
 {
     uint64_t version = MAX_GRAPHENE_SET_VERSION;
