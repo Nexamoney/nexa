@@ -352,6 +352,7 @@ public:
     std::atomic<bool> extversionEnabled{false};
     /** set to true if the next expected message is extversion */
     std::atomic<bool> extversionExpected{false};
+    std::atomic<bool> fExtversionReceived{false};
     /** set to true if this node is ok with no message checksum */
     std::atomic<bool> skipChecksum{false};
     /** Graphene min supported version */
