@@ -1757,12 +1757,12 @@ BOOST_AUTO_TEST_CASE(grouptoken_index_mintage_saturates)
     const CAmount maxAmt = std::numeric_limits<CAmount>::max();
 
     // Two mints of the maximum amount in one block
-    std::map<CGroupTokenID, CAuth> authorities;
-    std::map<CGroupTokenID, CAmount> mintages;
+    CTokenIndexUpdates updates;
+    std::map<CGroupTokenID, CAmount> &mintages = updates.mintages;
     for (int i = 0; i < 2; i++)
     {
         CTransaction tx = tx1x1(AddUtxo(p2pkt(a1), 1000, coins), gp2pkh(gid, a1, maxAmt), 1000);
-        BOOST_CHECK(AccumulateTokenData(MakeTransactionRef(tx), coins, authorities, mintages));
+        BOOST_CHECK(AccumulateTokenData(MakeTransactionRef(tx), coins, updates));
     }
     BOOST_CHECK_EQUAL(mintages[gid], maxAmt);
 
@@ -1771,7 +1771,7 @@ BOOST_AUTO_TEST_CASE(grouptoken_index_mintage_saturates)
     for (int i = 0; i < 2; i++)
     {
         CTransaction tx = tx1x1(AddUtxo(gp2pkh(gid, a1, maxAmt), 1000, coins), p2pkt(a1), 1000);
-        BOOST_CHECK(AccumulateTokenData(MakeTransactionRef(tx), coins, authorities, mintages));
+        BOOST_CHECK(AccumulateTokenData(MakeTransactionRef(tx), coins, updates));
     }
     BOOST_CHECK_EQUAL(mintages[gid], -maxAmt);
 }
@@ -1813,6 +1813,33 @@ BOOST_FIXTURE_TEST_CASE(grouptoken_descriptions_malformed_block, TestChain100Set
         BOOST_CHECK(InvalidateBlock(state, Params().GetConsensus(), pindex));
         BOOST_CHECK(chainActive.Tip() == pindex->pprev);
     }
+}
+
+BOOST_FIXTURE_TEST_CASE(grouptoken_descriptions_invalid_block, TestChain100Setup)
+{
+    QuickAddress grpAuth(5);
+    QuickAddress a1(2);
+    QuickAddress wrongKey(3);
+    CValidationState state;
+    CBlockRef blk;
+
+    uint32_t OpRetGroupId = DEFAULT_OP_RETURN_GROUP_ID;
+    CScript opret;
+    opret << OP_RETURN << OpRetGroupId << std::vector<unsigned char>{'B', 'A', 'D'};
+
+    COutPoint outpt(coinbaseTxns[0].GetIdem(), 0);
+    uint64_t nonce = 0;
+    CGroupTokenID gid =
+        findGroupId(outpt, opret, GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+    std::vector<CMutableTransaction> txns;
+    // Signed with the wrong key, so the block fails script checks
+    txns.push_back(tx1x2(
+        coinbaseTxns[0], 0, gp2pkh(gid, grpAuth, nonce), coinbaseTxns[0].vout[0].nValue, opret, 0, wrongKey.secret));
+
+    BOOST_CHECK(!tryBlock(txns, p2pkt(a1), blk, state));
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() != blk->GetHash());
+    BOOST_CHECK(tokencache.GetTokenDesc(gid).empty());
+    BOOST_CHECK(tokenmint.GetTokenGenesis(gid).empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

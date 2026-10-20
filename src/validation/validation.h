@@ -183,8 +183,7 @@ bool ConnectBlock(ConstCBlockRef pblock,
     CCoinsViewCache &view,
     const CCoinsViewCache &beginningTipView,
     const CChainParams &chainparams,
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages,
-    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
+    CTokenIndexUpdates &tokenUpdates,
     bool fJustCheck = false,
     bool fParallel = false);
 
@@ -202,8 +201,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     CAmount &nFees,
     CBlockUndo &blockundo,
     std::vector<std::pair<uint256, CDiskTxPos> > &vPos,
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages,
-    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
+    CTokenIndexUpdates &tokenUpdates,
     const std::map<uint256, CTransactionRef> *mapDagTxns = nullptr,
     const std::set<uint256> *setTxnExclusions = nullptr);
 

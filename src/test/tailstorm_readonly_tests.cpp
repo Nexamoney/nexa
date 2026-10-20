@@ -61,12 +61,10 @@ bool ConnectForTest(const ConstCBlockRef &pblock,
     CAmount nFees = 0;
     CBlockUndo blockundo;
     std::vector<std::pair<uint256, CDiskTxPos> > vPos;
-    std::map<CGroupTokenID, CAmount> accumulatedMintages;
-    std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
+    CTokenIndexUpdates tokenUpdates;
 
     return ConnectBlockCanonicalOrdering(pblock, state, pindex, view, *pcoinsTip, Params(), false /* fJustCheck */,
-        SINGLE_THREADED, true /* fScriptChecks */, nFees, blockundo, vPos, accumulatedMintages,
-        accumulatedAuthorities, mapDagTxns, nullptr);
+        SINGLE_THREADED, true /* fScriptChecks */, nFees, blockundo, vPos, tokenUpdates, mapDagTxns, nullptr);
 }
 
 /* Assemble a block on top of pindexPrev holding the passed transactions in canonical (LTOR)

@@ -15,14 +15,24 @@
 static const unsigned int DESC_ENTRY_SIZE = 10;
 static const std::vector<std::string> vDefaultDesc{"", "", "", "", "0", "0", "0", "0", "0", "0"};
 
+// Token index changes collected from a block. They are written to the index only once the
+// block is connected, so a block that fails validation leaves the index untouched.
+struct CTokenIndexUpdates
+{
+    std::map<CGroupTokenID, CAmount> mintages;
+    std::map<CGroupTokenID, CAuth> authorities;
+    std::map<CGroupTokenID, std::vector<std::string> > descriptions;
+    std::map<CGroupTokenID, std::string> genesis;
+};
+
 // Accumulate token authorities and mintages which can then be apply to their respective caches
 // Returns false if the view did not contain the correct coins or the token amounts overflow.
 // False should never be returned if the transaction is valid -- it implies that the tx is a
 // doublespend, spends nonexistent inputs or is not a valid token transaction.
-bool AccumulateTokenData(CTransactionRef ptx,
-    CCoinsViewCache &view,
-    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages);
+bool AccumulateTokenData(CTransactionRef ptx, CCoinsViewCache &view, CTokenIndexUpdates &updates);
+
+// Write the updates collected from a connected block to the token caches and databases
+void ApplyTokenIndexUpdates(CTokenIndexUpdates &updates);
 
 // A cache class for storing token descriptions with a finite sized cached.
 class CTokenDescCache
@@ -56,10 +66,10 @@ public:
     /** Get the sync flag. */
     bool GetSyncFlag();
 
-    /** Find token descriptions from new transactions, that have arrived either
-     *  through txadmission or from new blocks, and store them to cache
+    /** Find the token description in a group creation transaction. Returns the created group, or
+     *  NoGroup if there is no description, and the description with null authorities in vDesc.
      */
-    CGroupTokenInfo ProcessTokenDescriptions(CTransactionRef ptx);
+    CGroupTokenInfo ProcessTokenDescriptions(CTransactionRef ptx, std::vector<std::string> &vDesc);
 
     /** Apply the accumulated token authories and add them to the cache and database */
     void ApplyTokenAuthorities(std::map<CGroupTokenID, CAuth> &accumulatedAuthoriies);
