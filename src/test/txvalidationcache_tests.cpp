@@ -683,6 +683,15 @@ BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
         BOOST_CHECK_EQUAL(pending.count(inv.hash), 1U);
     }
 
+    // A body pushed again by A is ignored, so the stored body stays suspect
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = nullptr;
+        CValidationState stateA;
+        BOOST_CHECK(ProcessAcceptBlock(&nodeA, altered, stateA, Params(), &pindex, nullptr));
+        BOOST_CHECK(IsSuspectBlockBody(honest->GetHash()));
+    }
+
     // B's body is then fetched again and connects
     CValidationState state2;
     ProcessSummaryBlock(state2, Params(), &nodeB, honest, true, nullptr, SINGLE_THREADED);
