@@ -7,6 +7,17 @@
 #include "consensus/grouptokens.h"
 #include "main.h"
 
+// Several txs in one block can mint or melt more than a CAmount holds, so saturate
+static void AddMintage(CAmount &total, CAmount amt)
+{
+    if (amt > 0 && total > std::numeric_limits<CAmount>::max() - amt)
+        total = std::numeric_limits<CAmount>::max();
+    else if (amt < 0 && total < -std::numeric_limits<CAmount>::max() - amt)
+        total = -std::numeric_limits<CAmount>::max();
+    else
+        total += amt;
+}
+
 bool AccumulateTokenData(CTransactionRef ptx,
     CCoinsViewCache &view,
     std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
@@ -147,7 +158,7 @@ bool AccumulateTokenData(CTransactionRef ptx,
             }
             else
             {
-                accumulatedMintages[grpID] += nTokenOutputs;
+                AddMintage(accumulatedMintages[grpID], nTokenOutputs);
             }
 
             // Update the genesis address if this is a mint, and MUST be a subgroup.
@@ -170,7 +181,7 @@ bool AccumulateTokenData(CTransactionRef ptx,
             if (!accumulatedMintages.count(grpID))
                 accumulatedMintages[grpID] = -nMeltAmount;
             else
-                accumulatedMintages[grpID] -= nMeltAmount;
+                AddMintage(accumulatedMintages[grpID], -nMeltAmount);
         }
     }
 

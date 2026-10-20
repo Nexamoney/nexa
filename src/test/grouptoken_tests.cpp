@@ -1746,6 +1746,36 @@ BOOST_AUTO_TEST_CASE(grouptoken_descriptions_malformed)
     BOOST_CHECK_EQUAL(vLabels[3], "");
 }
 
+BOOST_AUTO_TEST_CASE(grouptoken_index_mintage_saturates)
+{
+    CCoinsView coinsDummy;
+    CCoinsViewCache coins(&coinsDummy);
+    QuickAddress a1;
+    uint64_t nonce = 0;
+    CGroupTokenID gid =
+        findGroupId(COutPoint(), CScript(), GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+    const CAmount maxAmt = std::numeric_limits<CAmount>::max();
+
+    // Two mints of the maximum amount in one block
+    std::map<CGroupTokenID, CAuth> authorities;
+    std::map<CGroupTokenID, CAmount> mintages;
+    for (int i = 0; i < 2; i++)
+    {
+        CTransaction tx = tx1x1(AddUtxo(p2pkt(a1), 1000, coins), gp2pkh(gid, a1, maxAmt), 1000);
+        BOOST_CHECK(AccumulateTokenData(MakeTransactionRef(tx), coins, authorities, mintages));
+    }
+    BOOST_CHECK_EQUAL(mintages[gid], maxAmt);
+
+    // Two melts of the maximum amount in one block
+    mintages.clear();
+    for (int i = 0; i < 2; i++)
+    {
+        CTransaction tx = tx1x1(AddUtxo(gp2pkh(gid, a1, maxAmt), 1000, coins), p2pkt(a1), 1000);
+        BOOST_CHECK(AccumulateTokenData(MakeTransactionRef(tx), coins, authorities, mintages));
+    }
+    BOOST_CHECK_EQUAL(mintages[gid], -maxAmt);
+}
+
 BOOST_FIXTURE_TEST_CASE(grouptoken_descriptions_malformed_block, TestChain100Setup)
 {
     QuickAddress grpAuth(5);
