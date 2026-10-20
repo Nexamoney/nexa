@@ -1580,8 +1580,7 @@ static CBlockRef MakeRequestTestSummary(const CBlockIndex *parent,
     const uint256 prevHash = parent->GetBlockHash();
     const uint256 uncleParent = numUncles ? parent->pprev->GetBlockHash() : uint256();
     const uint32_t nBitsUncle = numUncles ? parent->pprev->tgtBits() : 0;
-    const uint8_t nSubblocks =
-        nDeclaredSubblocks < 0 ? uint8_t(numProofs - numUncles) : uint8_t(nDeclaredSubblocks);
+    const uint8_t nSubblocks = nDeclaredSubblocks < 0 ? uint8_t(numProofs - numUncles) : uint8_t(nDeclaredSubblocks);
     CBlockRef block = MakeBlockRef();
     block->hashPrevBlock = prevHash;
     block->height = parent->height() + 1;
@@ -1605,8 +1604,8 @@ static CBlockRef MakeRequestTestSummary(const CBlockIndex *parent,
         proofs.emplace_back(mhc, nonce);
     }
     CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
-    ds << uint8_t(DEFAULT_MINER_DATA_SUMMARYBLOCK_VERSION) << uncleParent << numUncles << nBitsUncle
-       << nSubblocks << nBits << proofs;
+    ds << uint8_t(DEFAULT_MINER_DATA_SUMMARYBLOCK_VERSION) << uncleParent << numUncles << nBitsUncle << nSubblocks
+       << nBits << proofs;
 
     block->minerData.assign(ds.begin(), ds.end());
     block->nonce.resize(4, 0);
