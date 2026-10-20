@@ -741,7 +741,9 @@ void ThreadTxAdmission()
                         }
                         else
                         {
-                            recentRejects.insert(tx->GetId());
+                            // A satisfier failure may come from an altered copy sharing the honest tx id
+                            if (!state.CorruptionPossible())
+                                recentRejects.insert(tx->GetId());
 
                             if (txd.whitelisted && fWhiteListForceRelay)
                             {
