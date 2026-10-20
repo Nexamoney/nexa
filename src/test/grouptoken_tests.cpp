@@ -1708,4 +1708,81 @@ BOOST_AUTO_TEST_CASE(grouptoken_descriptions)
 }
 #endif
 
+BOOST_AUTO_TEST_CASE(grouptoken_descriptions_malformed)
+{
+    uint32_t OpRetGroupId = DEFAULT_OP_RETURN_GROUP_ID;
+    std::vector<unsigned char> label{'A'};
+    std::vector<std::string> vLabels;
+
+    // A decimals push too long for a script number is read as 0
+    CScript ret1;
+    ret1 << OP_RETURN << OpRetGroupId << label << label << label << std::vector<unsigned char>(32, 0xab)
+         << std::vector<unsigned char>(9, 0x01);
+    BOOST_CHECK(GetTokenDescription(ret1, vLabels));
+    BOOST_CHECK_EQUAL(vLabels.size(), 5);
+    BOOST_CHECK_EQUAL(vLabels[0], "A");
+    BOOST_CHECK_EQUAL(vLabels[3], uint256(std::vector<unsigned char>(32, 0xab)).ToString());
+    BOOST_CHECK_EQUAL(vLabels[4], "0");
+
+    // An 8 byte decimals push is still a number
+    std::vector<unsigned char> decimals8(8, 0x00);
+    decimals8[0] = 5;
+    CScript ret2;
+    ret2 << OP_RETURN << OpRetGroupId << label << label << label << OP_0 << decimals8;
+    BOOST_CHECK(GetTokenDescription(ret2, vLabels));
+    BOOST_CHECK_EQUAL(vLabels[4], "5");
+
+    // A hash field that is not exactly 32 bytes is dropped
+    for (size_t len : {1, 31, 33, 100})
+    {
+        CScript ret3;
+        ret3 << OP_RETURN << OpRetGroupId << label << label << label << std::vector<unsigned char>(len, 0xab);
+        BOOST_CHECK(GetTokenDescription(ret3, vLabels));
+        BOOST_CHECK_EQUAL(vLabels[3], "");
+    }
+    CScript ret4;
+    ret4 << OP_RETURN << OpRetGroupId << label << label << label << OP_1;
+    BOOST_CHECK(GetTokenDescription(ret4, vLabels));
+    BOOST_CHECK_EQUAL(vLabels[3], "");
+}
+
+BOOST_FIXTURE_TEST_CASE(grouptoken_descriptions_malformed_block, TestChain100Setup)
+{
+    QuickAddress grpAuth(5);
+    QuickAddress a1(2);
+    CValidationState state;
+    CBlockRef blk;
+
+    // Group creation tx whose description has a bad decimals field and a short hash
+    uint32_t OpRetGroupId = DEFAULT_OP_RETURN_GROUP_ID;
+    CScript opret;
+    opret << OP_RETURN << OpRetGroupId << std::vector<unsigned char>{'T'} << std::vector<unsigned char>{'N'}
+          << std::vector<unsigned char>{'U'} << std::vector<unsigned char>{0x42} << std::vector<unsigned char>(9, 0x01);
+
+    COutPoint outpt(coinbaseTxns[0].GetIdem(), 0);
+    uint64_t nonce = 0;
+    CGroupTokenID gid =
+        findGroupId(outpt, opret, GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+    std::vector<CMutableTransaction> txns;
+    txns.push_back(
+        tx1x2(coinbaseTxns[0], 0, gp2pkh(gid, grpAuth, nonce), coinbaseTxns[0].vout[0].nValue, opret, 0, coinbaseKey));
+
+    BOOST_CHECK(tryBlock(txns, p2pkt(a1), blk, state));
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() == blk->GetHash());
+
+    std::vector<std::string> vDesc = tokencache.GetTokenDesc(gid);
+    BOOST_REQUIRE_EQUAL(vDesc.size(), DESC_ENTRY_SIZE);
+    BOOST_CHECK_EQUAL(vDesc[0], "T");
+    BOOST_CHECK_EQUAL(vDesc[3], "");
+    BOOST_CHECK_EQUAL(vDesc[4], "0");
+
+    // Disconnecting the block runs the same parser
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = chainActive.Tip();
+        BOOST_CHECK(InvalidateBlock(state, Params().GetConsensus(), pindex));
+        BOOST_CHECK(chainActive.Tip() == pindex->pprev);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -38,8 +38,10 @@ bool GetTokenDescription(const CScript &script, std::vector<std::string> &_vDesc
                 if (count == 3)
                 {
                     // Convert hash stored as a vector of unsigned chars to a string.
-                    uint256 hash(&vchRet.data()[0]);
-                    _vDesc.push_back(hash.ToString());
+                    if (vchRet.size() == 32)
+                        _vDesc.push_back(uint256(vchRet).ToString());
+                    else
+                        _vDesc.push_back(std::string(""));
                 }
                 else
                 {
@@ -52,7 +54,11 @@ bool GetTokenDescription(const CScript &script, std::vector<std::string> &_vDesc
                 uint8_t amt;
                 if (0 <= op && op <= OP_PUSHDATA4)
                 {
-                    amt = CScriptNum(vchRet, false, CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT).getint64();
+                    // Longer pushes would make CScriptNum throw
+                    if (vchRet.size() <= CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT)
+                        amt = CScriptNum(vchRet, false, CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT).getint64();
+                    else
+                        amt = 0;
                 }
                 else if (op == 0)
                     amt = 0;
