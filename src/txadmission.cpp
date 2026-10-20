@@ -970,7 +970,9 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
         else
         {
             state.SetDebugMessage("IsStandardTx failed");
-            return state.DoS(0, false, REJECT_NONSTANDARD, reason);
+            // Input boundaries and serialized size can differ for the same id.
+            return state.DoS(
+                0, false, REJECT_NONSTANDARD, reason, reason == "scriptsig-not-pushonly" || reason == "tx-size");
         }
     }
 
@@ -1010,7 +1012,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
             }
             else
             {
-                return state.DoS(0, false, REJECT_INVALID, "txn-undersize");
+                return state.DoS(0, false, REJECT_INVALID, "txn-undersize", true);
             }
         }
     }
@@ -1258,7 +1260,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                 }
                 else
                 {
-                    return state.Invalid(false, REJECT_NONSTANDARD, "bad-txns-nonstandard-inputs");
+                    return state.DoS(0, false, REJECT_NONSTANDARD, "bad-txns-nonstandard-inputs", true);
                 }
             }
 
@@ -1305,7 +1307,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                 else
                 {
                     return state.DoS(
-                        0, false, REJECT_INVALID, "bad-txns-too-many-sigchecks", false, strprintf("%d", nSigOps));
+                        0, false, REJECT_INVALID, "bad-txns-too-many-sigchecks", true, strprintf("%d", nSigOps));
                 }
             }
             // Place sigchecks into the mempool sigops field, since these are not cotemporaneous

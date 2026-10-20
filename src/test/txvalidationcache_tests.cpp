@@ -21,6 +21,7 @@
 #include "script/standard.h"
 #include "streams.h"
 #include "test/test_nexa.h"
+#include "threadgroup.h"
 #include "txadmission.h"
 #include "txmempool.h"
 #include "txorphanpool.h"
@@ -29,10 +30,12 @@
 #include "validation/parallel.h"
 #include "validation/validation.h"
 
+#include <boost/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 
 extern CTweak<uint32_t> minRelayFee;
 extern void LimitMempoolSize(CTxMemPool &pool, size_t limit, unsigned long age);
+extern CRollingFastFilter<32 * 1024 * 1024> filterTransactionKnown;
 
 BOOST_AUTO_TEST_SUITE(txvalidationcache_tests) // BU harmonize suite name with filename
 
@@ -565,7 +568,7 @@ struct RecutBlockSetup : public TestChain100Setup
         size_t cut = 0;
         for (CAmount extra = 0; cut == 0; extra++)
         {
-            tx.vout[0].nValue = 11 * CENT + extra;
+            tx.vout[0].nValue = 1000 * COIN + extra;
             tx.vin[0].scriptSig = SignCoinbaseSpend(tx, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
             tx.vin[1].scriptSig = SignCoinbaseSpend(tx, 1, defaultSigHashType, coinbaseTxns[1].vout[0].nValue);
             const CScript &sig0 = tx.vin[0].scriptSig;
@@ -771,6 +774,66 @@ BOOST_FIXTURE_TEST_CASE(block_body_recut_rewinds_download_cursors, RecutBlockSet
     CValidationState honestState;
     ProcessSummaryBlock(honestState, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
     BOOST_CHECK(chainActive.Contains(LookupBlockIndex(hash)));
+}
+
+BOOST_FIXTURE_TEST_CASE(recut_satisfiers_do_not_poison_reject_cache, RecutBlockSetup)
+{
+    MakeBlocks();
+    const uint256 id = honest->vtx[1]->GetId();
+    CValidationState alteredState;
+    bool missing = false;
+    BOOST_CHECK(!AcceptToMemoryPool(
+        mempool, alteredState, altered->vtx[1], false, &missing, false, TransactionClass::STANDARD));
+    BOOST_CHECK(!missing);
+    BOOST_CHECK_EQUAL(alteredState.GetRejectReason(), "scriptsig-not-pushonly");
+    BOOST_CHECK(alteredState.CorruptionPossible());
+
+    CMutableTransaction dust(*honest->vtx[1]);
+    dust.vout[0].nValue = 1;
+    CValidationState dustState;
+    BOOST_CHECK(!AcceptToMemoryPool(
+        mempool, dustState, MakeTransactionRef(dust), false, &missing, false, TransactionClass::STANDARD));
+    BOOST_CHECK_EQUAL(dustState.GetRejectReason(), "dust");
+    BOOST_CHECK(!dustState.CorruptionPossible());
+
+    const CChainParams savedParams = Params();
+    const auto admissionThreads = numTxAdmissionThreads.Value();
+    const bool previousShutdown = shutdown_threads.load();
+    boost::thread worker;
+    BOOST_SCOPE_EXIT(&worker, &savedParams, admissionThreads, previousShutdown)
+    {
+        shutdown_threads.store(true);
+        StopTxAdmission();
+        if (worker.joinable())
+            worker.join();
+        shutdown_threads.store(previousShutdown);
+        numTxAdmissionThreads.Set(admissionThreads);
+        ModifiableParams() = savedParams;
+    }
+    BOOST_SCOPE_EXIT_END
+
+    BOOST_REQUIRE(ModifiableParams().SetRequireStandard(false));
+    BOOST_REQUIRE(Params().RequireStandard());
+    numTxAdmissionThreads.Set(1);
+    shutdown_threads.store(false);
+    BOOST_REQUIRE_EQUAL(TxAlreadyHave(MSG_TX, id), 0U);
+    CTxInputData incoming;
+    incoming.tx = altered->vtx[1];
+    incoming.msgCookie = 0;
+    EnqueueTxForAdmission(incoming);
+    worker = boost::thread(&ThreadTxAdmission);
+    for (int i = 0; i < 500 && !filterTransactionKnown.contains(id); i++)
+        MilliSleep(10);
+
+    BOOST_REQUIRE(filterTransactionKnown.contains(id));
+    BOOST_CHECK(!recentRejects.contains(id));
+    BOOST_CHECK_EQUAL(TxMayAlreadyHave(MSG_TX, id), 0U);
+    CValidationState honestState;
+    const bool accepted =
+        AcceptToMemoryPool(mempool, honestState, honest->vtx[1], false, &missing, false, TransactionClass::STANDARD);
+    BOOST_CHECK_MESSAGE(accepted, honestState.GetLogString());
+    BOOST_CHECK(mempool.exists(id));
+    mempool.clear();
 }
 
 BOOST_AUTO_TEST_SUITE_END()
