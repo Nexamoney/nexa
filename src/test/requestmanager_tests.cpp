@@ -7,9 +7,11 @@
 #include "blockrelay/thinblock.h"
 #include "bloom.h"
 #include "chainparams.h"
+#include "daa.h"
 #include "dosman.h"
 #include "main.h"
 #include "net.h"
+#include "pow.h"
 #include "primitives/block.h"
 #include "protocol.h"
 #include "random.h"
@@ -21,6 +23,7 @@
 #include "unlimited.h"
 #include "util.h"
 #include "utilstrencodings.h"
+#include "validation/tailstorm.h"
 #include "validation/validation.h"
 #include "version.h"
 
@@ -49,6 +52,12 @@ public:
     std::set<uint256> GetSetDeleter() { return _rman->setDeleter; }
     std::set<uint256> GetSetBlockDeleter() { return _rman->setBlockDeleter; }
     std::map<NodeId, CRequestManagerNodeState> GetNodeState() { return _rman->mapRequestManagerNodeState; }
+
+    void ClearMapBlkToAdd()
+    {
+        LOCK(_rman->cs_addBlock);
+        _rman->mapBlkToAdd.clear();
+    }
 
     void ClearNodeState(int id) { _rman->mapRequestManagerNodeState[id].vBlocksInFlight.clear(); }
     void SendTxnReRequests()
@@ -1556,6 +1565,203 @@ BOOST_AUTO_TEST_CASE(block_failing_checkblock_is_requested_again)
     // Release the request-manager CNodeRef before this stack node is destroyed.
     requester.RunBlockDeleter(mapTmp);
     thinrelay.ClearAllBlocksInFlight(node.GetId());
+}
+
+// A summary listing numProofs sub-block proofs. With fValidPow the proofs and the summary carry the
+// work they claim, otherwise the proofs are ground to fail it. nDeclaredSubblocks overrides the count
+// written in the miner data; chain work follows that declared count.
+static CBlockRef MakeRequestTestSummary(const CBlockIndex *parent,
+    size_t numProofs,
+    bool fValidPow,
+    uint8_t numUncles = 0,
+    int nDeclaredSubblocks = -1)
+{
+    const Consensus::Params &params = Params().GetConsensus();
+    const uint256 prevHash = parent->GetBlockHash();
+    const uint256 uncleParent = numUncles ? parent->pprev->GetBlockHash() : uint256();
+    const uint32_t nBitsUncle = numUncles ? parent->pprev->tgtBits() : 0;
+    const uint8_t nSubblocks =
+        nDeclaredSubblocks < 0 ? uint8_t(numProofs - numUncles) : uint8_t(nDeclaredSubblocks);
+    CBlockRef block = MakeBlockRef();
+    block->hashPrevBlock = prevHash;
+    block->height = parent->height() + 1;
+    block->hashAncestor = parent->GetChildsConsensusAncestor()->GetBlockHash();
+    block->nTime = GetTime();
+    const uint32_t nBits = GetNextWorkRequired(parent, block.get(), params);
+    block->nBits = nBits;
+    block->chainWork = ArithToUint256(parent->chainWork() + GetWorkForDifficultyBits(nBits) +
+                                      arith_uint256(numUncles) * GetWorkForDifficultyBits(nBitsUncle) +
+                                      arith_uint256(nSubblocks) * GetWorkForDifficultyBits(nBits));
+    std::vector<std::pair<uint256, std::vector<uint8_t> > > proofs;
+    for (size_t i = 0; i < numProofs; i++)
+    {
+        uint256 mhc = GetRandHash();
+        std::vector<uint8_t> nonce(4, 0);
+        const uint256 &proofParent = i < numUncles ? uncleParent : prevHash;
+        const uint32_t proofBits = i < numUncles ? nBitsUncle : nBits;
+        for (uint32_t n = 0; CheckProofOfWork(GetMiningHash(mhc, nonce), proofParent, proofBits, params) != fValidPow;
+             n++)
+            memcpy(nonce.data(), &n, sizeof(n));
+        proofs.emplace_back(mhc, nonce);
+    }
+    CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+    ds << uint8_t(DEFAULT_MINER_DATA_SUMMARYBLOCK_VERSION) << uncleParent << numUncles << nBitsUncle
+       << nSubblocks << nBits << proofs;
+
+    block->minerData.assign(ds.begin(), ds.end());
+    block->nonce.resize(4, 0);
+    block->UpdateHeader();
+    for (uint32_t n = 0; fValidPow && !CheckProofOfWork(block->GetMiningHash(), prevHash, nBits, params); n++)
+        memcpy(block->nonce.data(), &n, sizeof(n));
+    return block;
+}
+
+// How many of the summary's listed sub-blocks are queued for request
+static size_t RequestedSubblocks(CRequestManagerTest &rman, const CBlockRef &summary)
+{
+    std::map<uint256, CUnknownObj> mapBlkToAdd = rman.GetMapBlkToAdd();
+    size_t count = 0;
+    for (const auto &proof : ParseSummaryBlockMinerData(summary->minerData).vSubblockProofs)
+        count += mapBlkToAdd.count(proof.first);
+    return count;
+}
+
+// Regtest, so the test can grind proofs of work
+struct RegtestRequestSetup : public TestingSetup
+{
+    CNode node;
+    const uint64_t forkTime;
+    const bool nearlySynced;
+
+    RegtestRequestSetup()
+        : TestingSetup(CBaseChainParams::REGTEST),
+          node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true), forkTime(nMiningForkTime),
+          nearlySynced(IsChainNearlySyncd())
+    {
+        SetConnected(node);
+        IsChainNearlySyncdSet(true);
+    }
+
+    ~RegtestRequestSetup()
+    {
+        CRequestManagerTest(&requester).ClearMapBlkToAdd();
+        BOOST_CHECK_EQUAL(node.GetRefCount(), 0);
+        nMiningForkTime = forkTime;
+        IsChainNearlySyncdSet(nearlySynced);
+    }
+};
+
+BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_valid_header, RegtestRequestSetup)
+{
+    CRequestManagerTest rman(&requester);
+    const size_t nProofs = Params().GetConsensus().tailstorm_k - 1;
+    const CBlockIndex *parent = chainActive.Tip();
+    CBlockRef good = MakeRequestTestSummary(parent, nProofs, true);
+
+    // Before the fork no sub-blocks exist, so nothing is requested
+    nMiningForkTime = chainActive.Tip()->GetMedianTimePast() + 1;
+    BOOST_REQUIRE(!IsUpgrade2Pending(chainActive.Tip()) && !IsUpgrade2Activated(chainActive.Tip()));
+    BlockReceivedPostProcessing(&node, good);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, good), 0);
+
+    // Once the fork is pending, a summary with too many proofs or proofs without work is ignored
+    nMiningForkTime = chainActive.Tip()->GetMedianTimePast();
+    BOOST_REQUIRE(IsUpgrade2Pending(chainActive.Tip()));
+    CBlockRef tooMany = MakeRequestTestSummary(parent, 1000, false);
+    BlockReceivedPostProcessing(&node, tooMany);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, tooMany), 0);
+    CBlockRef noWork = MakeRequestTestSummary(parent, nProofs, false);
+    BlockReceivedPostProcessing(&node, noWork);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, noWork), 0);
+
+    // 255 proofs whose declared count matches, and K-1 proofs declared as 0, both pass the header
+    // checks. Neither is an honest summary, so neither is fetched.
+    {
+        LOCK(cs_main);
+        CBlockRef oversized = MakeRequestTestSummary(parent, 255, true);
+        CValidationState state;
+        BOOST_REQUIRE(CheckBlockHeader(Params().GetConsensus(), *oversized, state, true));
+        BOOST_REQUIRE(ContextualCheckBlockHeader(Params(), *oversized, state, chainActive.Tip()));
+        BlockReceivedPostProcessing(&node, oversized);
+        BOOST_CHECK_EQUAL(RequestedSubblocks(rman, oversized), 0);
+
+        CBlockRef undeclared = MakeRequestTestSummary(parent, nProofs, true, 0, 0);
+        state = CValidationState();
+        BOOST_REQUIRE(CheckBlockHeader(Params().GetConsensus(), *undeclared, state, true));
+        BOOST_REQUIRE(ContextualCheckBlockHeader(Params(), *undeclared, state, chainActive.Tip()));
+        BlockReceivedPostProcessing(&node, undeclared);
+        BOOST_CHECK_EQUAL(RequestedSubblocks(rman, undeclared), 0);
+    }
+
+    // and a summary whose header checks out gets its sub-blocks requested
+    BlockReceivedPostProcessing(&node, good);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, good), nProofs);
+}
+
+BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_parent_context, RegtestRequestSetup)
+{
+    LOCK(cs_main);
+    CRequestManagerTest rman(&requester);
+    CBlockIndex *genesis = chainActive.Tip();
+    nMiningForkTime = genesis->GetMedianTimePast();
+
+    CBlockHeader parentHeader = genesis->GetBlockHeader();
+    parentHeader.hashPrevBlock = genesis->GetBlockHash();
+    parentHeader.height = genesis->height() + 1;
+    parentHeader.hashAncestor = genesis->GetChildsConsensusAncestor()->GetBlockHash();
+    parentHeader.nTime = genesis->GetBlockTime() + 1;
+    parentHeader.chainWork = ArithToUint256(genesis->chainWork() + GetWorkForDifficultyBits(parentHeader.nBits));
+    parentHeader.nonce.resize(4);
+    for (uint32_t n = 0;
+         !CheckProofOfWork(parentHeader.GetMiningHash(), uint256(), parentHeader.nBits, Params().GetConsensus()); n++)
+        memcpy(parentHeader.nonce.data(), &n, sizeof(n));
+    CValidationState parentState;
+    BOOST_REQUIRE(CheckBlockHeader(Params().GetConsensus(), parentHeader, parentState, true));
+    BOOST_REQUIRE(ContextualCheckBlockHeader(Params(), parentHeader, parentState, genesis));
+
+    const uint256 parentHash = parentHeader.GetHash();
+    CBlockIndex unknownParent(parentHeader);
+    unknownParent.phashBlock = &parentHash;
+    unknownParent.pprev = genesis;
+    BOOST_REQUIRE(LookupBlockIndex(parentHash) == nullptr);
+    for (size_t count : {size_t(3), size_t(510)})
+    {
+        // 255 uncles and 255 sub-blocks pass the non-contextual proof-count check.
+        CBlockRef unknown = MakeRequestTestSummary(&unknownParent, count, true, count == 510 ? 255 : 0);
+        CValidationState state;
+        BOOST_REQUIRE(CheckBlockHeader(Params().GetConsensus(), *unknown, state, true));
+        BlockReceivedPostProcessing(&node, unknown);
+        BOOST_CHECK_EQUAL(RequestedSubblocks(rman, unknown), 0);
+    }
+
+    CBlockIndex *parent = AddToBlockIndex(Params(), parentHeader);
+    BOOST_REQUIRE(parent != nullptr);
+    nMiningForkTime = parent->GetMedianTimePast();
+    BOOST_REQUIRE(!IsUpgrade2Pending(genesis) && !IsUpgrade2Activated(genesis));
+    BOOST_REQUIRE(IsUpgrade2Pending(parent));
+    BOOST_REQUIRE(chainActive.Tip() == genesis);
+    const size_t nProofs = Params().GetConsensus().tailstorm_k - 1;
+    CBlockRef good = MakeRequestTestSummary(parent, nProofs, true);
+    CValidationState state;
+    BOOST_REQUIRE(ContextualCheckBlockHeader(Params(), *good, state, parent));
+
+    // A valid competing parent supplies fork context while the active tip is still pre-fork.
+    BlockReceivedPostProcessing(&node, good);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, good), nProofs);
+    rman.ClearMapBlkToAdd();
+
+    // Regtest inherits the parent target; require more work than this summary declares.
+    nMiningForkTime = genesis->GetMedianTimePast();
+    const uint32_t parentBits = parent->tgtBits();
+    arith_uint256 harderTarget = UintToArith256(Params().GetConsensus().powLimit);
+    harderTarget >>= 4;
+    parent->SetBlockHeaderBits(harderTarget.GetCompact());
+    state = CValidationState();
+    BOOST_CHECK(!ContextualCheckBlockHeader(Params(), *good, state, parent));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-diffbits");
+    BlockReceivedPostProcessing(&node, good);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, good), 0);
+    parent->SetBlockHeaderBits(parentBits);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
