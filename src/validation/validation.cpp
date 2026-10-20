@@ -1985,53 +1985,26 @@ bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork)
     return false;
 }
 
-// Blocks whose stored body failed only satisfier dependent checks. The merkle root does not commit to the exact
-// satisfier bytes, so such a body may have been altered in transit: it is fetched again instead of the block being
-// marked invalid.
-// After this many bad bodies the block is treated as invalid, so a block with really invalid scripts is not
-// downloaded forever.
-static const uint32_t MAX_SUSPECT_BLOCK_BODIES = 8;
-struct SuspectBody
-{
-    bool fSuspect = false;
-    uint32_t nBadBodies = 0;
-};
+// The merkle root does not commit to exact satisfier bytes. Repeated body failures cannot establish header invalidity.
 static CCriticalSection cs_suspectBlockBodies;
-static std::map<uint256, SuspectBody> mapSuspectBlockBodies GUARDED_BY(cs_suspectBlockBodies);
+static std::set<uint256> setSuspectBlockBodies GUARDED_BY(cs_suspectBlockBodies);
 
 bool IsSuspectBlockBody(const uint256 &hash)
 {
     LOCK(cs_suspectBlockBodies);
-    auto it = mapSuspectBlockBodies.find(hash);
-    return it != mapSuspectBlockBodies.end() && it->second.fSuspect;
+    return setSuspectBlockBodies.count(hash) != 0;
 }
 
-// Returns false once the block has had too many bad bodies
-static bool MarkSuspectBlockBody(const uint256 &hash)
+static void MarkSuspectBlockBody(const uint256 &hash)
 {
     LOCK(cs_suspectBlockBodies);
-    SuspectBody &body = mapSuspectBlockBodies[hash];
-    if (++body.nBadBodies > MAX_SUSPECT_BLOCK_BODIES)
-    {
-        mapSuspectBlockBodies.erase(hash);
-        return false;
-    }
-    body.fSuspect = true;
-    return true;
+    setSuspectBlockBodies.insert(hash);
 }
 
-// A new body was stored; keep the count until the block connects
-static void ClearSuspectBlockBody(const uint256 &hash, bool fConnected)
+static void ClearSuspectBlockBody(const uint256 &hash)
 {
     LOCK(cs_suspectBlockBodies);
-    if (fConnected)
-        mapSuspectBlockBodies.erase(hash);
-    else
-    {
-        auto it = mapSuspectBlockBodies.find(hash);
-        if (it != mapSuspectBlockBodies.end())
-            it->second.fSuspect = false;
-    }
+    setSuspectBlockBodies.erase(hash);
 }
 
 /**
@@ -2644,7 +2617,7 @@ static bool AcceptBlock(ConstCBlockRef pblock,
             }
             if (IsSuspectBlockBody(pindex->GetBlockHash()))
             {
-                ClearSuspectBlockBody(pindex->GetBlockHash(), false);
+                ClearSuspectBlockBody(pindex->GetBlockHash());
                 // Stored descendants were dropped as candidates while this body was distrusted
                 WRITELOCK(cs_mapBlockIndex);
                 for (const auto &item : mapBlockIndex)
@@ -3755,10 +3728,11 @@ void InvalidBlockFound(CBlockIndex *pindex, const CValidationState &state)
             }
         }
     }
-    if (state.CorruptionPossible() && MarkSuspectBlockBody(pindex->GetBlockHash()))
+    if (state.CorruptionPossible())
     {
         // The body may have been altered in transit: drop it so the block is downloaded again
         const uint256 hash = pindex->GetBlockHash();
+        MarkSuspectBlockBody(hash);
         {
             WRITELOCK(cs_mapBlockIndex);
             setBlockIndexCandidates.erase(pindex);
@@ -4310,7 +4284,7 @@ bool ConnectTip(CValidationState &state,
 
     // Block has been received and processed so no need to keep this entry.
     mapBlockSource.erase(pindexNew->GetBlockHash());
-    ClearSuspectBlockBody(pindexNew->GetBlockHash(), true);
+    ClearSuspectBlockBody(pindexNew->GetBlockHash());
 
     // When we're in IBD or reindexing then once the block is connected we don't need it in the cache anymore.
     if (IsInitialBlockDownload())

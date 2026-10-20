@@ -678,11 +678,10 @@ BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
 
 BOOST_FIXTURE_TEST_CASE(block_body_with_bad_scripts_is_not_connected, RecutBlockSetup)
 {
-    // A block whose honest body also fails its scripts is downloaded again a bounded number of times, then
-    // treated as invalid
+    // Invalid scripts must never connect, even though the body does not prove header invalidity.
     MakeBlocks(true);
     const uint256 hash = honest->GetHash();
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < 12; i++)
     {
         CValidationState state;
         ProcessSummaryBlock(state, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
@@ -690,11 +689,24 @@ BOOST_FIXTURE_TEST_CASE(block_body_with_bad_scripts_is_not_connected, RecutBlock
         BOOST_CHECK(IsSuspectBlockBody(hash));
         BOOST_CHECK(!BlockFailed(hash));
     }
+}
+
+BOOST_FIXTURE_TEST_CASE(block_body_with_repeated_recut_satisfiers, RecutBlockSetup)
+{
+    MakeBlocks();
+    const uint256 hash = honest->GetHash();
+    for (int i = 0; i < 12; i++)
+    {
+        CValidationState state;
+        ProcessSummaryBlock(state, Params(), nullptr, altered, true, nullptr, SINGLE_THREADED);
+        BOOST_CHECK(chainActive.Tip()->GetBlockHash() != hash);
+        BOOST_CHECK(!BlockFailed(hash));
+        BOOST_CHECK(IsSuspectBlockBody(hash));
+    }
     CValidationState state;
     ProcessSummaryBlock(state, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
-    BOOST_CHECK(chainActive.Tip()->GetBlockHash() != hash);
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() == hash);
     BOOST_CHECK(!IsSuspectBlockBody(hash));
-    BOOST_CHECK(BlockFailed(hash));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
