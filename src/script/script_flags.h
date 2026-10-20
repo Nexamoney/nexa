@@ -98,6 +98,9 @@ enum
     SCRIPT_FORK1_OPCODES = (1U << 28),
     // Flag controlling 2026 hard fork upgrade features
     SCRIPT_UPGRADE2_OPCODES = (1U << 29),
+    // A group creation must spend its first input: the group id commits to that outpoint, and a read-only input
+    // is not spent, so the same genesis could be claimed again. Policy before Upgrade2, consensus after.
+    SCRIPT_GROUP_GENESIS_SPENDS_INPUT = (1U << 30),
 };
 
 #endif // NEXA_SCRIPT_SCRIPTFLAGS_H

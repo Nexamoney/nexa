@@ -338,10 +338,12 @@ public:
 };
 
 // Verify that the token groups in this transaction properly balance
+// With fGenesisSpendsInput a group creation must spend its first input (SCRIPT_GROUP_GENESIS_SPENDS_INPUT)
 bool CheckGroupTokens(const CTransaction &tx,
     CValidationState &state,
     const CCoinsViewCache &view,
-    const CCoinsViewCache &readonlyCoins);
+    const CCoinsViewCache &readonlyCoins,
+    bool fGenesisSpendsInput = false);
 
 // Return true if any output in this transaction is part of a group
 bool IsAnyTxOutputGrouped(const CTransaction &tx);

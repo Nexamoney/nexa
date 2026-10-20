@@ -1519,7 +1519,7 @@ bool CheckInputs(const CTransactionRef &tx,
         }
         // Its ok to only check Group semantics if this is not a coinbase transaction because coinbase transactions
         // MUST NOT have any grouped outputs (see CheckTransaction(...)).
-        if (!CheckGroupTokens(*tx, state, inputs, readonlyinputs))
+        if (!CheckGroupTokens(*tx, state, inputs, readonlyinputs, flags & SCRIPT_GROUP_GENESIS_SPENDS_INPUT))
         {
             if (debugger)
             {
