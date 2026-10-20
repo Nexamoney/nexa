@@ -397,6 +397,12 @@ void CRequestManager::Rejected(const CInv &obj, CNode *from, unsigned char reaso
             LOG(REQ, "ReqMgr: Item already removed. Unknown txn rejected %s\n", obj.ToString());
             return;
         }
+        // Only the peer we asked can reject the request
+        if (item->second.prevRequestNode.get() != from)
+        {
+            LOG(REQ, "ReqMgr: Ignoring reject for %s from a peer we did not ask\n", obj.ToString());
+            return;
+        }
         if (item->second.outstandingReqs)
             item->second.outstandingReqs--;
 
@@ -1205,6 +1211,10 @@ void CRequestManager::SendTxnRequests(OdMap &mapTxns)
         // if never requested then lastRequestTime==0 so this will always be true
         if (now - item.lastRequestTime > _txReqRetryInterval)
         {
+            // A rate limited item backs off longer, then is retried from its next source like any other
+            if (item.rateLimited && now - item.lastRequestTime > RATE_LIMITED_TX_BACKOFF * _txReqRetryInterval)
+                item.rateLimited = false;
+
             if (!item.rateLimited)
             {
                 // If item.lastRequestTime is true then we've requested at least once, so this is a rerequest -> a txn

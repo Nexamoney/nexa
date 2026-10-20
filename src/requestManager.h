@@ -53,6 +53,8 @@ static const uint32_t MAX_SOURCES_TO_ADD = 3;
 
 // When should I request a tx from someone else (in microseconds).
 static const unsigned int DEFAULT_MIN_TX_REQUEST_RETRY_INTERVAL = 5 * 1000 * 1000;
+// A tx rejected for insufficient fee is retried after this many retry intervals
+static const int64_t RATE_LIMITED_TX_BACKOFF = 8;
 
 // When should I request a block from someone else (in microseconds).
 static const unsigned int DEFAULT_MIN_BLK_REQUEST_RETRY_INTERVAL = 5 * 1000 * 1000;
