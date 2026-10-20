@@ -185,6 +185,13 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
     }
     else if (IsBlockType(obj) && (objType == objType::BLOCK || objType == objType::SUBBLOCK))
     {
+        // A peer that sent a bad body would most likely send the same one again
+        if (from && IsBadBlockBodySource(obj.hash, from->GetId()))
+        {
+            LOG(REQ, "Not asking peer=%d again for suspect block %s\n", from->GetId(), obj.hash.ToString());
+            return;
+        }
+
         // Don't allow the in flight requests to grow unbounded.
         if (mapBlkInfo.size() > DEFAULT_BLOCK_DOWNLOAD_WINDOW * 2)
         {

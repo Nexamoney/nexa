@@ -2007,6 +2007,28 @@ static void ClearSuspectBlockBody(const uint256 &hash)
     setSuspectBlockBodies.erase(hash);
 }
 
+// Peers that sent a body failing these checks are not asked for the block again until it connects
+static std::map<uint256, std::set<NodeId> > mapBadBlockBodySources GUARDED_BY(cs_suspectBlockBodies);
+
+bool IsBadBlockBodySource(const uint256 &hash, NodeId nodeid)
+{
+    LOCK(cs_suspectBlockBodies);
+    auto it = mapBadBlockBodySources.find(hash);
+    return it != mapBadBlockBodySources.end() && it->second.count(nodeid) != 0;
+}
+
+static void AddBadBlockBodySource(const uint256 &hash, NodeId nodeid)
+{
+    LOCK(cs_suspectBlockBodies);
+    mapBadBlockBodySources[hash].insert(nodeid);
+}
+
+static void ClearBadBlockBodySources(const uint256 &hash)
+{
+    LOCK(cs_suspectBlockBodies);
+    mapBadBlockBodySources.erase(hash);
+}
+
 /**
  * Return the tip of the chain with the most work in it, that isn't
  * known to be invalid (it's however far from certain to be valid).
@@ -3733,6 +3755,9 @@ void InvalidBlockFound(CBlockIndex *pindex, const CValidationState &state)
         // The body may have been altered in transit: drop it so the block is downloaded again
         const uint256 hash = pindex->GetBlockHash();
         MarkSuspectBlockBody(hash);
+        auto it = mapBlockSource.find(hash);
+        if (it != mapBlockSource.end())
+            AddBadBlockBodySource(hash, it->second);
         nodestate.RewindBlockDownloadState(pindex);
         {
             WRITELOCK(cs_mapBlockIndex);
@@ -4286,6 +4311,7 @@ bool ConnectTip(CValidationState &state,
     // Block has been received and processed so no need to keep this entry.
     mapBlockSource.erase(pindexNew->GetBlockHash());
     ClearSuspectBlockBody(pindexNew->GetBlockHash());
+    ClearBadBlockBodySources(pindexNew->GetBlockHash());
 
     // When we're in IBD or reindexing then once the block is connected we don't need it in the cache anymore.
     if (IsInitialBlockDownload())

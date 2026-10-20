@@ -668,6 +668,21 @@ BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
     BOOST_CHECK(nodeA.nMisbehavior.load() > 0);
     BOOST_CHECK_EQUAL(nodeB.nMisbehavior.load(), 0);
 
+    // The body is requested again from B, not from A
+    {
+        const CInv inv(MSG_BLOCK, honest->GetHash());
+        std::map<uint256, CUnknownObj> pending;
+        requester.GetBlockRequests(pending);
+        pending.clear();
+        requester.AskFor(inv, &nodeA, objType::BLOCK);
+        requester.GetBlockRequests(pending);
+        BOOST_CHECK_EQUAL(pending.count(inv.hash), 0U);
+        pending.clear();
+        requester.AskFor(inv, &nodeB, objType::BLOCK);
+        requester.GetBlockRequests(pending);
+        BOOST_CHECK_EQUAL(pending.count(inv.hash), 1U);
+    }
+
     // B's body is then fetched again and connects
     CValidationState state2;
     ProcessSummaryBlock(state2, Params(), &nodeB, honest, true, nullptr, SINGLE_THREADED);

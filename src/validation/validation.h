@@ -150,6 +150,9 @@ CBlockIndex *FindMostWorkChain();
 /** True if the stored body of this block failed satisfier dependent checks and is waiting to be fetched again */
 bool IsSuspectBlockBody(const uint256 &hash);
 
+/** True if this peer sent a body of this block that failed satisfier dependent checks */
+bool IsBadBlockBodySource(const uint256 &hash, NodeId nodeid);
+
 /** Mark a block as invalid. */
 bool InvalidateBlock(CValidationState &state, const Consensus::Params &consensusParams, CBlockIndex *pindex);
 
