@@ -16,9 +16,9 @@ static const unsigned int DESC_ENTRY_SIZE = 10;
 static const std::vector<std::string> vDefaultDesc{"", "", "", "", "0", "0", "0", "0", "0", "0"};
 
 // Accumulate token authorities and mintages which can then be apply to their respective caches
-// Returns false if the view did not contain the correct coins.  False should never be returned
-// if the transaction is valid -- it implies that the tx is a doublespend or spends nonexistent
-// inputs.
+// Returns false if the view did not contain the correct coins or the token amounts overflow.
+// False should never be returned if the transaction is valid -- it implies that the tx is a
+// doublespend, spends nonexistent inputs or is not a valid token transaction.
 bool AccumulateTokenData(CTransactionRef ptx,
     CCoinsViewCache &view,
     std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,

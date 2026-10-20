@@ -38,7 +38,11 @@ bool AccumulateTokenData(CTransactionRef ptx,
             // Get the mintages in the inputs (no amounts count if read only)
             if ((!txin.IsReadOnly()) && (tg.associatedGroup != NoGroup) && (!tg.isAuthority()))
             {
-                mintages[tg.associatedGroup].nTokenInputs += tg.quantity;
+                // Runs before consensus checks, so the sums are not bounded yet
+                CAmount &nTokenInputs = mintages[tg.associatedGroup].nTokenInputs;
+                if (tg.quantity > 0 && std::numeric_limits<CAmount>::max() - nTokenInputs < tg.quantity)
+                    return false;
+                nTokenInputs += tg.quantity;
             }
 
             // Get the authorities in the inputs
@@ -79,7 +83,10 @@ bool AccumulateTokenData(CTransactionRef ptx,
         // Get mintages from the outputs
         if ((tg.associatedGroup != NoGroup) && !tg.isAuthority())
         {
-            mintages[tg.associatedGroup].nTokenOutputs += tg.quantity;
+            CAmount &nTokenOutputs = mintages[tg.associatedGroup].nTokenOutputs;
+            if (tg.quantity > 0 && std::numeric_limits<CAmount>::max() - nTokenOutputs < tg.quantity)
+                return false;
+            nTokenOutputs += tg.quantity;
 
             // Save the first output address for any subgroup mintage which we'll need later when apply
             // the genesis address to the database.
@@ -93,7 +100,7 @@ bool AccumulateTokenData(CTransactionRef ptx,
         }
 
         // Get authorities from the outputs
-        if (out.scriptPubKey[0] == OP_RETURN)
+        if (!out.scriptPubKey.empty() && out.scriptPubKey[0] == OP_RETURN)
         {
             fHaveOpReturn = true;
             continue;
@@ -265,11 +272,20 @@ CGroupTokenInfo CTokenDescCache::ProcessTokenDescriptions(CTransactionRef ptx)
 
                 // find op_return associated with the tx if there is one
                 const CTxOut &out2 = ptx->vout[j];
-                if (out2.scriptPubKey[0] == OP_RETURN)
+                if (!out2.scriptPubKey.empty() && out2.scriptPubKey[0] == OP_RETURN)
                 {
+                    // Token indexing is not consensus, so a parse error must not abort block connection
                     std::vector<std::string> vDesc;
-                    if (!GetTokenDescription(out2.scriptPubKey, vDesc))
+                    try
                     {
+                        if (!GetTokenDescription(out2.scriptPubKey, vDesc))
+                        {
+                            return CGroupTokenInfo{};
+                        }
+                    }
+                    catch (const std::exception &e)
+                    {
+                        LOG(TOKEN, "Ignoring token description in tx %s: %s\n", ptx->GetId().ToString(), e.what());
                         return CGroupTokenInfo{};
                     }
 
