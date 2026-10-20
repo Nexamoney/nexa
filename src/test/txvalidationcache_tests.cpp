@@ -1002,4 +1002,88 @@ BOOST_FIXTURE_TEST_CASE(other_rejects_are_cached, RecutBlockSetup)
     BOOST_CHECK(recentRejects.contains(tx->GetId()));
 }
 
+BOOST_FIXTURE_TEST_CASE(tx_admission_round_state_per_tx, TestChain100Setup)
+{
+    // Mature the second coinbase used by the valid transaction.
+    CreateAndProcessBlock({}, coinbaseLockingScript);
+
+    // An invalid tx from one peer must not get a valid tx from another peer, processed later in the
+    // same admission round, rejected or its sender penalized.
+    CAddress addrA(ipaddress(0xa0b0c001, 10000));
+    CAddress addrB(ipaddress(0xa0b0c002, 10000));
+    CNode nodeA(INVALID_SOCKET, addrA, "", true);
+    CNode nodeB(INVALID_SOCKET, addrB, "", true);
+    SetConnected(nodeA);
+    SetConnected(nodeB);
+    {
+        LOCK(cs_vNodes);
+        vNodes.push_back(&nodeA);
+        vNodes.push_back(&nodeB);
+    }
+
+    CMutableTransaction bad;
+    bad.vin.resize(1);
+    bad.vin[0] = coinbaseTxns[0].SpendOutput(0);
+    bad.vout.resize(1);
+    bad.vout[0].nValue = 11 * CENT;
+    bad.vout[0].scriptPubKey = coinbaseLockingScript;
+    bad.vin[0].scriptSig = SignCoinbaseSpend(bad, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
+    bad.vout[0].nValue = 12 * CENT; // invalidates the signature
+
+    CMutableTransaction good;
+    good.vin.resize(1);
+    good.vin[0] = coinbaseTxns[1].SpendOutput(0);
+    good.vout.resize(1);
+    good.vout[0].nValue = 11 * CENT;
+    good.vout[0].scriptPubKey = coinbaseLockingScript;
+    good.vin[0].scriptSig = SignCoinbaseSpend(good, 0, defaultSigHashType, coinbaseTxns[1].vout[0].nValue);
+    CTransactionRef goodRef = MakeTransactionRef(good);
+
+    // Queue both before the admission thread runs so it handles them in one round, bad first
+    {
+        LOCK(csTxInQ);
+        CTxInputData txdA;
+        txdA.tx = MakeTransactionRef(bad);
+        txdA.nodeId = nodeA.GetId();
+        txInQ.push(txdA);
+        CTxInputData txdB;
+        txdB.tx = goodRef;
+        txdB.nodeId = nodeB.GetId();
+        txInQ.push(txdB);
+    }
+    // Normally set at startup; the round size is divided by it
+    unsigned int nPrevThreads = numTxAdmissionThreads.Value();
+    numTxAdmissionThreads.Set(1);
+    std::thread admission(ThreadTxAdmission);
+    for (int i = 0; i < 1000 && !filterTransactionKnown.contains(goodRef->GetId()); i++)
+        MilliSleep(10);
+    shutdown_threads.store(true);
+    cvTxInQ.notify_all();
+    admission.join();
+    shutdown_threads.store(false);
+    numTxAdmissionThreads.Set(nPrevThreads);
+
+    BOOST_CHECK(filterTransactionKnown.contains(goodRef->GetId()));
+    BOOST_CHECK(nodeA.nMisbehavior.load() > 0);
+    BOOST_CHECK_EQUAL(nodeB.nMisbehavior.load(), 0);
+    {
+        LOCK(cs_commitQ);
+        BOOST_CHECK(txCommitQ->find(goodRef->GetId()) != txCommitQ->end());
+        txCommitQ->clear();
+    }
+
+    {
+        LOCK(cs_vNodes);
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &nodeA), vNodes.end());
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &nodeB), vNodes.end());
+    }
+    {
+        LOCK(csTxInQ);
+        while (!txOrphanQ.empty())
+            txOrphanQ.pop();
+    }
+    dosMan.ClearBanned();
+    mempool.clear();
+}
+
 BOOST_AUTO_TEST_SUITE_END()

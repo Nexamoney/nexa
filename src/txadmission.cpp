@@ -646,8 +646,6 @@ void ThreadTxAdmission()
             return;
         }
 
-        bool fMissingInputs = false;
-        CValidationState state;
         CTxInputData txd;
 
         {
@@ -705,6 +703,9 @@ void ThreadTxAdmission()
 
                 CTransactionRef tx = txd.tx;
                 CInv inv(MSG_TX, tx->GetId());
+                // Per tx, so one rejected tx does not get later senders in the round rejected and penalized
+                bool fMissingInputs = false;
+                CValidationState state;
 
                 if (fIsOrphan || !TxMayAlreadyHave(MSG_TX, tx->GetId()))
                 {
