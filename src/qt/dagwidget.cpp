@@ -658,6 +658,10 @@ void DagWidget::AddItem(uint256 hash,
             mapOrphanInfo.emplace(hash, info);
             mapDag[nDagViewerHeight].push_back(info);
         }
+        else
+        {
+            return;
+        }
     }
 
     // Add block to the graphics view
@@ -875,7 +879,7 @@ void DagWidget::AddItem(uint256 hash,
                 mapOrphanInfo[hash]->item = item;
             }
         }
-        if (blockType == STORM_BLOCK)
+        else if (blockType == STORM_BLOCK)
         {
             // Add the connecting lines
             for (Link link : info->vBlockPointsTo)
