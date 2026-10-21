@@ -83,33 +83,32 @@ BOOST_AUTO_TEST_CASE(thinblock_test)
     BOOST_CHECK(xthinblock3.collision);
 
 
-    //  Add tests using a non-deterministic bloom filter which may
-    //  or may not yeild a false positive.
+    // Repeat against a fresh block. The filter seed is fixed, as above.
     CBloomFilter filter1;
-    BuildSeededBloomFilter(filter1, vOrphanHashes, block.GetHash(), &dummyNode1, false);
+    BuildSeededBloomFilter(filter1, vOrphanHashes, block.GetHash(), &dummyNode1, true);
 
     /* empty filter */
     CBlock block1 = TestBlock1();
     CThinBlock thinblock4(block1, filter1);
     CXThinBlock xthinblock4(block1, &filter1);
-    BOOST_CHECK(thinblock4.vMissingTx.size() >= 288 && thinblock4.vMissingTx.size() <= 290);
-    BOOST_CHECK(xthinblock4.vMissingTx.size() >= 288 && xthinblock4.vMissingTx.size() <= 290);
+    BOOST_CHECK_EQUAL(290UL, thinblock4.vMissingTx.size());
+    BOOST_CHECK_EQUAL(290UL, xthinblock4.vMissingTx.size());
 
     /* insert txid not in block */
     const uint256 random_hash1 = uint256S("3fba505b48865fccda4e248cecc39d5dfbc6b8ef7b4adc9cd27242c1193c7132");
     filter1.insert(random_hash1);
     CThinBlock thinblock5(block1, filter1);
     CXThinBlock xthinblock5(block1, &filter1);
-    BOOST_CHECK(thinblock5.vMissingTx.size() >= 288 && thinblock5.vMissingTx.size() <= 290);
-    BOOST_CHECK(xthinblock5.vMissingTx.size() >= 288 && xthinblock5.vMissingTx.size() <= 290);
+    BOOST_CHECK_EQUAL(290UL, thinblock5.vMissingTx.size());
+    BOOST_CHECK_EQUAL(290UL, xthinblock5.vMissingTx.size());
 
     /* insert txid in block */
-    const uint256 hash_in_block1 = block.vtx[1]->GetId();
+    const uint256 hash_in_block1 = block1.vtx[1]->GetId();
     filter1.insert(hash_in_block1);
     CThinBlock thinblock6(block1, filter1);
     CXThinBlock xthinblock6(block1, &filter1);
-    BOOST_CHECK(thinblock6.vMissingTx.size() >= 287 && thinblock6.vMissingTx.size() <= 289);
-    BOOST_CHECK(xthinblock6.vMissingTx.size() >= 287 && xthinblock6.vMissingTx.size() <= 289);
+    BOOST_CHECK_EQUAL(289UL, thinblock6.vMissingTx.size());
+    BOOST_CHECK_EQUAL(289UL, xthinblock6.vMissingTx.size());
 
     /*collision test*/
     BOOST_CHECK(!xthinblock6.collision);
