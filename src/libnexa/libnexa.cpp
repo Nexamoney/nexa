@@ -1049,7 +1049,15 @@ SLAPI int verifyMessage(const unsigned char *message,
         ScriptTemplateDestination st;
         std::vector<unsigned char> vec(addr, addr + addrLen);
         CDataStream ssData(vec, SER_NETWORK, PROTOCOL_VERSION);
-        ssData >> st;
+        try
+        {
+            ssData >> st;
+        }
+        catch (const std::exception &)
+        {
+            set_error(LIBNEXA_ERROR::DECODE_FAILURE, "cannot deserialize script template address\n");
+            return 0;
+        }
         destination = st;
     }
     // If the data size is 20 its a raw pubkeyhash
@@ -1278,7 +1286,15 @@ SLAPI int encodeCashAddr(int chainSelector, int typ, const unsigned char *data, 
         ScriptTemplateDestination st;
         std::vector<unsigned char> vec(data, data + len);
         CDataStream ssData(vec, SER_NETWORK, PROTOCOL_VERSION);
-        ssData >> st;
+        try
+        {
+            ssData >> st;
+        }
+        catch (const std::exception &)
+        {
+            set_error(LIBNEXA_ERROR::INVALID_ARG, "cannot deserialize script template address\n");
+            return 0;
+        }
         dst = st;
     }
     else
@@ -1319,7 +1335,16 @@ SLAPI int decodeCashAddr(int chainSelector, const char *addrstr, unsigned char *
         set_error(LIBNEXA_ERROR::INVALID_ARG, "invalid chain selector\n");
         return 0;
     }
-    CTxDestination dst = DecodeCashAddr(addrstr, *cp);
+    CTxDestination dst;
+    try
+    {
+        dst = DecodeCashAddr(addrstr, *cp);
+    }
+    catch (const std::exception &)
+    {
+        set_error(LIBNEXA_ERROR::DECODE_FAILURE, "cannot decode cashaddr address\n");
+        return 0;
+    }
     std::vector<unsigned char> resultv;
     std::visit(PubkeyExtractor(resultv, *cp), dst);
     const int sz = resultv.size();
