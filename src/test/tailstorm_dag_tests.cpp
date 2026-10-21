@@ -50,6 +50,13 @@ public:
         return forest.mapSummaryBlocksUnlinked.size();
     }
 
+    static CTreeNodeRef Node(CTailstormForest &forest, const uint256 &hash)
+    {
+        LOCK(forest.cs_forest);
+        auto iter = forest.mapAllNodes.find(hash);
+        return iter == forest.mapAllNodes.end() ? CTreeNodeRef{} : iter->second;
+    }
+
     static void RemoveGroveLookup(CTailstormForest &forest, const uint256 &hash)
     {
         LOCK(forest.cs_forest);
@@ -3769,6 +3776,95 @@ BOOST_AUTO_TEST_CASE(summary_orphan_late_uncle)
         READLOCK(cs_mapBlockIndex);
         BOOST_CHECK(summaryIndex->IsValid(BLOCK_VALID_SCRIPTS));
     }
+}
+
+BOOST_AUTO_TEST_CASE(clear_by_height_frees_pruned_subblocks)
+{
+    const bool originalNearlySynced = IsChainNearlySyncd();
+    BOOST_SCOPE_EXIT(originalNearlySynced) { IsChainNearlySyncdSet(originalNearlySynced); }
+    BOOST_SCOPE_EXIT_END
+
+    // The synthetic summaries exist only in the cache, so disable height-based trimming.
+    IsChainNearlySyncdSet(false);
+
+    // Linked subblocks hold shared_ptrs to each other through setAncestors and setDescendants.
+    // Pruning them by height must break those links, or the nodes are never freed.
+    PreviousEpochTestChain chain(&coinsCache, 140, 141);
+    ScopedChainTip scopedChainTip(&chain.previousSummary);
+    BOOST_REQUIRE(blockcache.GetBlock(chain.previousHash));
+
+    ConstCBlockRef first = MakeTestSubblock(chain.previousSummary, {}, 150);
+    BOOST_REQUIRE(tailstormForest.Insert(first));
+    ConstCBlockRef second = MakeTestSubblock(chain.previousSummary, {MakeTreeNodeRef(first)}, 151);
+    BOOST_REQUIRE(tailstormForest.Insert(second));
+    ConstCBlockRef third = MakeTestSubblock(chain.previousSummary, {MakeTreeNodeRef(second)}, 152);
+    BOOST_REQUIRE(tailstormForest.Insert(third));
+
+    std::vector<std::weak_ptr<CTreeNode> > vPrunedNodes;
+    {
+        std::vector<CTreeNodeRef> dag;
+        BOOST_REQUIRE(tailstormForest.GetFullDagFor(chain.previousHash, dag));
+        BOOST_REQUIRE_EQUAL(dag.size(), 3);
+        CTreeNodeRef middle = FindTestNode(dag, second->GetHash());
+        BOOST_REQUIRE(middle);
+        BOOST_CHECK_EQUAL(middle->setAncestors.size(), 1);
+        BOOST_CHECK_EQUAL(middle->setDescendants.size(), 1);
+        for (const CTreeNodeRef &node : dag)
+            vPrunedNodes.push_back(node);
+    }
+
+    // dagActiveTip pins one node until the next subblock insert replaces it, so drop it here.
+    tailstormForest.SetDagActiveTip(nullptr);
+    {
+        LOCK(tailstormForest.cs_forest);
+        tailstormForest.ClearByHeight(third->height);
+    }
+    BOOST_CHECK_EQUAL(tailstormForest.Size(), 0);
+    for (const std::weak_ptr<CTreeNode> &node : vPrunedNodes)
+        BOOST_CHECK(node.expired());
+
+    // Partial prune: drop this epoch and keep a subblock of the next one.
+    BOOST_REQUIRE(tailstormForest.Insert(first));
+    BOOST_REQUIRE(tailstormForest.Insert(second));
+    BOOST_REQUIRE(tailstormForest.Insert(third));
+    const uint32_t tailstormK = Params().GetConsensus().tailstorm_k;
+    std::vector<CTreeNodeRef> epoch;
+    BOOST_REQUIRE(tailstormForest.GetFullDagFor(chain.previousHash, epoch));
+    BOOST_REQUIRE_EQUAL(epoch.size(), tailstormK - 1);
+    CBlockHeader currentHeader = MakeTestSummaryHeader(chain.previousHash, 2, chain.previousSummary.chainWork(), 153,
+        GenerateMinerData(tailstormK, epoch, chain.olderHash));
+    std::vector<std::weak_ptr<CTreeNode> > vPartiallyPrunedNodes(epoch.begin(), epoch.end());
+    epoch.clear();
+    CBlockIndex currentSummary(currentHeader);
+    currentSummary.pprev = &chain.previousSummary;
+    currentSummary.nStatus |= BLOCK_PROCESSED | BLOCK_HAVE_DATA | BLOCK_LINKED;
+    {
+        WRITELOCK(cs_mapBlockIndex);
+        BOOST_REQUIRE(currentSummary.RaiseValidity(BLOCK_VALID_TRANSACTIONS));
+    }
+    currentSummary.nNextMaxBlockSize = Params().GetConsensus().nNextMaxBlockSize;
+    const uint256 currentHash = currentHeader.GetHash();
+    ScopedBlockIndexEntry currentEntry(currentHash, &currentSummary);
+    ConstCBlockRef currentBlock = std::make_shared<const CBlock>(currentHeader);
+    ScopedBlockCacheEntry currentCacheEntry(currentBlock, currentSummary.height());
+    BOOST_REQUIRE(blockcache.GetBlock(currentHash));
+    ConstCBlockRef next = MakeTestSubblock(currentSummary, {}, 154);
+    BOOST_REQUIRE(tailstormForest.Insert(next));
+    CTreeNodeRef kept = CTailstormForestTest::Node(tailstormForest, next->GetHash());
+    BOOST_REQUIRE(kept);
+
+    tailstormForest.SetDagActiveTip(nullptr);
+    CTailstormForestTest::RemoveGroveLookup(tailstormForest, chain.olderHash);
+    tailstormForest.setSanityCheck(1.0);
+    {
+        LOCK(tailstormForest.cs_forest);
+        tailstormForest.ClearByHeight(third->height);
+    }
+    tailstormForest.setSanityCheck(0.0);
+    BOOST_CHECK_EQUAL(tailstormForest.Size(), 1);
+    BOOST_CHECK(CTailstormForestTest::Node(tailstormForest, next->GetHash()) == kept);
+    for (const std::weak_ptr<CTreeNode> &node : vPartiallyPrunedNodes)
+        BOOST_CHECK(node.expired());
 }
 
 BOOST_AUTO_TEST_CASE(unprocessed_ancestor_parks_child_during_reorg_gap)
