@@ -49,6 +49,7 @@ stages:
     - build_tests
     - qa_tests
     - benchmark_tests
+    - windows_native
 
 #####################
 # building RPCs doc #
@@ -901,6 +902,41 @@ build-win-64-libnexa-jvm:
             - libnexa.dll.sha256
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
+
+# Native MSYS2 build + unit tests; dev only, never MRs.
+build-test-win-64-native:
+    stage: windows_native
+    needs: []
+    tags:
+        - windows
+    rules:
+        - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+          when: never
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+    allow_failure: true
+    # From-scratch MSYS2 build with no ccache; do not cancel on the next push to
+    # the default branch (inherits interruptible: true from `default:` otherwise).
+    interruptible: false
+    timeout: 3h
+    variables:
+        MSYSTEM: MINGW64
+        CHERE_INVOKING: "1"
+        MSYS2_PATH_TYPE: inherit
+    before_script:
+        - if (-not $env:MSYS2_ROOT) { $env:MSYS2_ROOT = "C:\msys64" }
+        - $env:MSYS_BASH = Join-Path $env:MSYS2_ROOT "usr\bin\bash.exe"
+        - if (-not (Test-Path $env:MSYS_BASH)) { Write-Error "MSYS2 bash not found at $env:MSYS_BASH"; exit 1 }
+        - "& $env:MSYS_BASH -lc 'gcc --version; nproc'"
+    script:
+        - "& $env:MSYS_BASH -lc 'set -ex; ./autogen.sh'"
+        - "& $env:MSYS_BASH -lc 'set -ex; mkdir -p build; cd build; ../configure --with-gui=no --disable-bench --disable-gui-tests --without-miniupnpc --with-incompatible-bdb CPPFLAGS=-DDEBUG_LOCKORDER'"
+        - "& $env:MSYS_BASH -lc 'set -ex; cd build; make -j$(nproc)'"
+        - "& $env:MSYS_BASH -lc 'set -ex; cd build; ./src/test/test_nexa.exe --log_level=test_suite --report_level=short'"
+    artifacts:
+        when: on_failure
+        expire_in: 2 weeks
+        paths:
+            - build/config.log
 
 ######################################################
 ######## macOS Intel X86_64
