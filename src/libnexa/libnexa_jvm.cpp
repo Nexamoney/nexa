@@ -685,7 +685,14 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_verif
         ScriptTemplateDestination st;
         std::vector<unsigned char> vec(addr.data, addr.data + addr.size);
         CDataStream ssData(vec, SER_NETWORK, PROTOCOL_VERSION);
-        ssData >> st;
+        try
+        {
+            ssData >> st;
+        }
+        catch (const std::exception &)
+        {
+            return jbyteArray();
+        }
         destination = st;
     }
     // If the data size is 20 its a raw pubkeyhash
@@ -857,7 +864,16 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_nexa_libnexakotlin_Native_encodeCa
         ScriptTemplateDestination st;
         std::vector<unsigned char> vec(data, data + len);
         CDataStream ssData(vec, SER_NETWORK, PROTOCOL_VERSION);
-        ssData >> st;
+        try
+        {
+            ssData >> st;
+        }
+        catch (const std::exception &)
+        {
+            env->ReleaseByteArrayElements(arg, data, 0);
+            triggerLibNexaException(env, "cannot deserialize script template address");
+            return nullptr;
+        }
         dst = st;
     }
     else
@@ -890,7 +906,16 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_decod
         return nullptr;
     }
 
-    CTxDestination dst = DecodeCashAddr(toString(env, addrstr), *cp);
+    CTxDestination dst;
+    try
+    {
+        dst = DecodeCashAddr(toString(env, addrstr), *cp);
+    }
+    catch (const std::exception &)
+    {
+        triggerLibNexaException(env, "cannot decode cashaddr address");
+        return nullptr;
+    }
     std::vector<unsigned char> result;
     std::visit(PubkeyExtractor(result, *cp), dst);
     jbyteArray bArray = env->NewByteArray(result.size());
