@@ -19,7 +19,7 @@ from .scriptop import *
 from .script import CScript, anyoneCanSpend, spendAnyoneCanSpend
 from .util import *
 
-MY_VERSION = 80003 # past bip-152 for compactblocks
+MY_VERSION = 80006 # past bip-152 for compactblocks
 
 # Serialization Types
 SER_DEFAULT = 0
