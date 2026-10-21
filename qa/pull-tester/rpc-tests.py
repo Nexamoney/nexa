@@ -218,6 +218,7 @@ testScripts = [ RpcTest(t) for t in [
     'headerPath',
     'rejectReply',
     'msgCookie',
+    'tailstorm_uncle_sync',
     'capd',
     'testpynode',
     'grouptokens',
