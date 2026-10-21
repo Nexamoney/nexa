@@ -27,7 +27,7 @@ class TailstormActivationTest(BitcoinTestFramework):
 
     def setup_chain(self):
         print("Initializing test directory "+self.options.tmpdir)
-        initialize_chain_clean(self.options.tmpdir, 2, self.confDict)
+        initialize_chain_clean(self.options.tmpdir, 3, self.confDict)
 
     def setup_network(self):
         self.nodes = []
@@ -753,6 +753,12 @@ class TailstormActivationTest(BitcoinTestFramework):
 
         # reconnect peers and both nodes will share subblocks with each other
         # but each peer should stay on it's own previous chain tip.
+        #
+        # startup a new node which when connected will sync all blocks, subblocks and uncles correctly
+        self.nodes.append(start_node(2, self.options.tmpdir, ["-debug=req", "-debug=net", "-debug=dag", "-debug=graphene", "-relay.dataCarrierSize=30000"]))
+        self.nodes[2].set("consensus.fork2Time=" + str(activationtime))
+        self.nodes[2].setmocktime(mocktime)
+
         interconnect_nodes(self.nodes)
         waitFor(waitTime, lambda: len(self.nodes[0].getpeerinfo()) != 0)
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo()['bestdag'] == 2)
@@ -783,6 +789,18 @@ class TailstormActivationTest(BitcoinTestFramework):
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(node0_chaintip)['chaintipheight'] == self.nodes[0].getblockcount())
         waitFor(waitTime, lambda: self.nodes[0].gettailstorminfo(node1_chaintip)['dagtip'] == node1_chaintip)
         waitFor(waitTime, lambda: self.nodes[1].gettailstorminfo(node0_chaintip)['dagtip'] == node0_chaintip)
+
+        # check that the newly connected and synced "node2" got all blocks, subblocks and uncles
+        self.sync_all()
+        waitFor(waitTime, lambda: self.nodes[2].gettailstorminfo(node1_chaintip)['chaintipheight'] == self.nodes[1].getblockcount())
+        waitFor(waitTime, lambda: self.nodes[2].gettailstorminfo()['fulldag'] == 2)
+        waitFor(waitTime, lambda: self.nodes[2].gettailstorminfo()['bestdag'] == 2)
+        waitFor(waitTime, lambda: self.nodes[2].gettailstorminfo()['uncles'] == 1) # one uncles got pushed in
+
+        # done with node2 so shut it down.
+        stop_nodes([self.nodes[2]])
+        wait_bitcoind_exit(2)
+        self.nodes.pop(2)
 
         # now mine 1 additional subblock on one of the nodes and this should
         # cause the other node to re-org as evidenced by both having the same

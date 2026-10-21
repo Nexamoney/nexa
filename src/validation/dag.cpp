@@ -940,7 +940,6 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
                             newNode->hash.ToString());
                         fHavePrevSubblocks = false;
                         break;
-                        ;
                     }
                     LOG(DAG, "%s(): Found prevhash  %s in dag for %s", __func__, prevhash.ToString(),
                         newNode->hash.ToString());
@@ -1035,6 +1034,16 @@ CTreeNodeRef CTailstormGrove::InsertIntoTree(CTreeNodeRef newNode)
             uiInterface.NotifyDagViewerUncle(
                 !IsInitialSyncComplete(), nDagHeight, 0, mi.second->subblock->GetBlockHeader(), mi.second->roothash);
         }
+    }
+
+    // push uncles to the next epoch if it already exists.
+    auto setPushedUncles = tailstormForest.PushUncles(newNode);
+    for (auto &treenode : setPushedUncles)
+    {
+        // Notify the dagviewer of any "pushed" uncles.
+        uint32_t nDagHeight = 1; // uncles should always be viewed at this height.
+        uiInterface.NotifyDagViewerUncle(
+            !IsInitialSyncComplete(), nDagHeight, 0, treenode->subblock->GetBlockHeader(), treenode->roothash);
     }
 
     if (fAddedSubblock)
@@ -1283,6 +1292,7 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
     }
 
     // Insert elements into a new grove or an already existing grove.
+    auto consensusParams = Params().GetConsensus();
     {
         // At this point we need to know if this block connects to a past
         // Summary Block or if it really is an orphan.
@@ -1309,7 +1319,11 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
                 fIsLinked = pindex->IsLinked();
             }
         }
-        if (pindex && (pindex->height() == chainActive.Height()))
+
+        // Create groves at the chain height and at least one epoch back.  This is because
+        // at startup when we sync the chain we need to get the current chaintip's dag and
+        // the prev epochs dag so we can pull in any potential uncles from the previous epoch.
+        if (pindex && (pindex->height() >= chainActive.Height() - consensusParams.tailstormEnforceDepth))
             shouldCreateOrHasPrevGrove = true;
 
         if (pindex && GetGrove(*(pindex->phashBlock), grove))
@@ -1328,7 +1342,7 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
             }
 
             // Check the chainwork when the subblock gets connected to a grove
-            auto expectedNbits = GetNextWorkRequired(pindex, &(*subblock), Params().GetConsensus());
+            auto expectedNbits = GetNextWorkRequired(pindex, &(*subblock), consensusParams);
             auto expectedChainWork = ArithToUint256(pindex->chainWork() + GetWorkForDifficultyBits(expectedNbits));
             if (subblock->chainWork != expectedChainWork)
             {
@@ -1427,7 +1441,7 @@ bool CTailstormForest::_Insert(CTreeNodeRef &newNode)
         {
             SetDagActiveTip(bestnode);
             // We have enough subblocks to make a summary block so signal to check the summary block orphans
-            if (dag.size() >= Params().GetConsensus().tailstorm_k - 1)
+            if (dag.size() >= consensusParams.tailstorm_k - 1)
             {
                 checkSummaryBlockOrphans++;
             }
@@ -1505,36 +1519,38 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
         return {}; // nothing to do
     }
 
+    // By grouping orphans by prevBlockHash we can prevent unnecessary repeated insert calls
+    // failing by checking the prevBlockHash once in advance before processing that group.
+    // This only avoids unneeded work - calling _Insert is still free to fail.
+    auto canInsertForPrev = [this](const uint256 &prevhash, const CChainParams &chainparams) -> bool
+    {
+        auto pindex = LookupBlockIndex(prevhash);
+        if (!pindex)
+            return false;
+        {
+            READLOCK(cs_mapBlockIndex);
+            if (!pindex->IsLinked())
+                return false;
+        }
+        if (pindex->height() >= chainActive.Height() - chainparams.GetConsensus().tailstormEnforceDepth)
+            return true;
+
+        CTailstormGroveRef grove = nullptr;
+        if (GetGrove(*(pindex->phashBlock), grove))
+            return true;
+        if (pindex->pprev && (pindex->height() != 0) && GetGrove(*(pindex->pprev->phashBlock), grove))
+            return true;
+        return false;
+    };
+
     processingOrphans = true;
     std::set<uint256> setAllLinked;
+    const CChainParams &chainparams = Params();
     while (true)
     {
         // Process subblock orphans
         std::set<uint256> setLinked;
 
-        // By grouping orphans by prevBlockHash we can prevent unnecessary repeated insert calls
-        // failing by checking the prevBlockHash once in advance before processing that group.
-        // This only avoids unneeded work - calling _Insert is still free to fail.
-        auto canInsertForPrev = [this](const uint256 &prevhash) -> bool
-        {
-            auto pindex = LookupBlockIndex(prevhash);
-            if (!pindex)
-                return false;
-            {
-                READLOCK(cs_mapBlockIndex);
-                if (!pindex->IsLinked())
-                    return false;
-            }
-            if (pindex->height() == chainActive.Height())
-                return true;
-
-            CTailstormGroveRef grove = nullptr;
-            if (GetGrove(*(pindex->phashBlock), grove))
-                return true;
-            if (pindex->pprev && (pindex->height() != 0) && GetGrove(*(pindex->pprev->phashBlock), grove))
-                return true;
-            return false;
-        };
 
         // Group the orphans by the prev summary block they wait on, so a blocked group costs one
         // lookup instead of a failed insert per member.
@@ -1554,7 +1570,7 @@ std::set<uint256> CTailstormForest::ProcessOrphans()
             const uint256 &prevhash = group.first;
             std::vector<CTreeNodeRef> &pending = group.second;
 
-            if (!canInsertForPrev(prevhash))
+            if (!canInsertForPrev(prevhash, chainparams))
             {
                 for (auto &node : pending)
                     AddSubblockOrphan(node);
@@ -1827,11 +1843,10 @@ bool CTailstormForest::GetDagForReorg(const uint256 &hash, std::vector<CTreeNode
     return false;
 }
 
-
 bool CTailstormForest::GetDagForBlock(ConstCBlockRef &pblock, std::vector<CTreeNodeRef> &dag, CTailstormTreeRef *ptree)
 {
     LOCK(cs_forest);
-    DbgAssert(IsSummaryBlock(*pblock), );
+    DbgAssert(IsSummaryBlock(pblock), );
 
     bool fMatch = false;
     CTailstormGroveRef grove = nullptr;
@@ -2807,6 +2822,8 @@ uint256 CTailstormForest::GetDagActiveTip()
 
 std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTreeNodeRef treenode)
 {
+    AssertLockHeld(cs_forest);
+
     CTailstormGroveRef grove = nullptr;
     if (!GetGrove(treenode->hash, grove))
         return {};
@@ -2815,24 +2832,20 @@ std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTreeNodeRef treenod
 
 std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTailstormGroveRef grove)
 {
+    AssertLockHeld(cs_forest);
+
     std::map<uint256, CTreeNodeRef> mapUncles;
 
     // Find and include subblock uncles
     if (grove)
     {
-        auto pblock = ReadBlockFromDisk(grove->tree->pindexSummaryRoot, Params().GetConsensus());
-        if (!pblock)
-        {
-            LOG(DAG, "%s():  failed to read block from disk to %s", __func__,
-                grove->tree->pindexSummaryRoot->phashBlock->ToString());
-            return {};
-        }
+        auto header = grove->tree->pindexSummaryRoot->GetBlockHeader();
 
         // First we need the "full" set of dag blocks from the prev summary block (A) to compare
         // to our current summary block (B). Then we can determine which subblocks in the previous dag (A)
         // were not found in our block (B) and which are therefore orphans (uncles).
         std::set<uint256> setSummaryBlockMiningHashes;
-        auto ret = ParseSummaryBlockMinerData(pblock->minerData);
+        auto ret = ParseSummaryBlockMinerData(header.minerData);
         for (const auto &pair : ret.vSubblockProofs)
         {
             const auto &miningHeaderCommitment = pair.first;
@@ -2842,7 +2855,7 @@ std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTailstormGroveRef g
         }
 
         std::vector<CTreeNodeRef> prevDag;
-        GetFullDagFor(pblock->hashPrevBlock, prevDag);
+        GetFullDagFor(header.hashPrevBlock, prevDag);
         for (auto prevnode : prevDag)
         {
             // Ignoring any uncles in the previous epoch, check whether the node's mininghash
@@ -2869,6 +2882,78 @@ std::map<uint256, CTreeNodeRef> CTailstormForest::GetUncles(CTailstormGroveRef g
     // Find and include summary block uncles
 
     return mapUncles;
+}
+
+std::set<CTreeNodeRef> CTailstormForest::PushUncles(CTreeNodeRef treenode)
+{
+    AssertLockHeld(cs_forest);
+
+    CTailstormGroveRef mygrove = nullptr;
+    if (!GetGrove(treenode->hash, mygrove))
+    {
+        return {};
+    }
+
+    // Find if there are any groves with a "one" greater block height than our own.
+    // These blocks, if any, will be our potential targets for uncle insertion.
+    std::set<CTailstormGroveRef> potentialGroves;
+    auto targetHeight = treenode->subblock->height + 1;
+    for (auto &mi : mapAllNodes)
+    {
+        if (mi.second->subblock->height == targetHeight)
+        {
+            CTailstormGroveRef grove = nullptr;
+            if (GetGrove(mi.second->hash, grove))
+            {
+                potentialGroves.insert(grove);
+            }
+        }
+    }
+
+    // Find out if any of the potential descendant summary blocks have groves already
+    // and return their groves.
+    std::set<CTailstormGroveRef> targetGroves;
+    for (auto &grove : potentialGroves)
+    {
+        // for each grove get the pindex, then check the pindex->prev matches the potential grove
+        // if not then delete the potential
+        if (grove->tree->pindexSummaryRoot &&
+            (*(grove->tree->pindexSummaryRoot->pprev->phashBlock) == treenode->subblock->hashPrevBlock))
+        {
+            targetGroves.insert(grove);
+        }
+    }
+    if (targetGroves.empty())
+        return {};
+
+    // Find the uncles that would be specific for each target grove (if any) and push them into those groves
+    std::set<CTreeNodeRef> setPushedUncles;
+    for (auto &grove : targetGroves)
+    {
+        std::map<uint256, CTreeNodeRef> mapUncles = GetUncles(grove);
+        for (auto &mi : mapUncles)
+        {
+            auto res = grove->tree->mapUncles.emplace(mi.first, mi.second);
+            if (res.second)
+            {
+                setPushedUncles.insert(mi.second);
+                LOG(DAG, "%s: pushed uncle %s", __func__, mi.first.ToString());
+            }
+        }
+
+        // If the target grove now has more than k-1 subblocks AND it's the chaintip
+        // then regenerate the groves data.
+        if ((grove->tree->mapUncles.size() + grove->tree->dag.size() >= Params().GetConsensus().tailstorm_k) &&
+            grove->tree->pindexSummaryRoot == chainActive.Tip())
+        {
+            // Stop txadmission so the subblocks are layered against the tip's coins view when
+            // we regenerate the dag data.
+            TxAdmissionPause txlock;
+            ReGenerateDagData(grove);
+        }
+    }
+
+    return setPushedUncles;
 }
 
 bool CTailstormForest::Remove(uint256 &hash)
