@@ -4798,6 +4798,8 @@ bool ProcessSummaryBlock(CValidationState &state,
     // Preliminary checks
     if (!CheckBlockHeader(cparams, *pblock, state, true))
     {
+        // Let the request manager ask other peers for this block again.
+        requester.BlockRejected(CInv(MSG_BLOCK, pblock->GetHash()), pfrom);
         LOG(BLK, "Invalid block %s:  from:%s  Bad header:%s\n", hexHash, fromName, state.GetLogString());
         return error("%s: CheckBlockHeader FAILED", __func__);
     }
@@ -4830,6 +4832,8 @@ bool ProcessSummaryBlock(CValidationState &state,
     {
         if (!checked)
         {
+            // A body that doesn't match its header must not stop us from fetching the real one.
+            requester.BlockRejected(CInv(MSG_BLOCK, pblock->GetHash()), pfrom);
             return error("%s: CheckBlock FAILED", __func__);
         }
 

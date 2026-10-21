@@ -56,6 +56,7 @@ public:
         LOCK(_rman->cs_objDownloader);
         _rman->SendTxnRequests(_rman->mapTxnInfo);
     }
+    void Cleanup(const CInv &inv) { _rman->cleanup(inv); }
 };
 
 // Used for accessing private data for a node
@@ -1523,6 +1524,38 @@ BOOST_AUTO_TEST_CASE(reject_does_not_pin_txn_requests)
 
     txRetryInterval.Set(nRetryInterval);
     IsChainNearlySyncdSet(false);
+}
+
+BOOST_AUTO_TEST_CASE(block_failing_checkblock_is_requested_again)
+{
+    CAddress addr(ipaddress(0xa0b0c001, 10000));
+    CNode node(INVALID_SOCKET, addr, "", true);
+    CRequestManagerTest rman_access(&requester);
+
+    // Same header as the genesis block, different body
+    CBlock block(Params().GenesisBlock());
+    CMutableTransaction coinbase(*block.vtx[0]);
+    coinbase.vout[0].nValue += 1;
+    block.vtx[0] = MakeTransactionRef(coinbase);
+    ConstCBlockRef pblock = std::make_shared<const CBlock>(block);
+    CInv inv(MSG_BLOCK, pblock->GetHash());
+
+    requester.AskFor(inv, &node, objType::BLOCK);
+    std::map<uint256, CUnknownObj> mapTmp;
+    requester.GetBlockRequests(mapTmp);
+    requester.AddNewBlockRequests(mapTmp);
+    requester.ProcessingBlock(inv.hash, &node);
+    BOOST_CHECK(rman_access.GetMapBlkInfo()[inv.hash].fProcessing);
+
+    CValidationState state;
+    BOOST_CHECK(!ProcessSummaryBlock(state, Params(), &node, pblock, false, nullptr, SINGLE_THREADED));
+    BOOST_CHECK(!state.IsInvalid());
+    BOOST_CHECK(!rman_access.GetMapBlkInfo()[inv.hash].fProcessing);
+
+    rman_access.Cleanup(inv);
+    // Release the request-manager CNodeRef before this stack node is destroyed.
+    requester.RunBlockDeleter(mapTmp);
+    thinrelay.ClearAllBlocksInFlight(node.GetId());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
