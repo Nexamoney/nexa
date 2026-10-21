@@ -153,6 +153,8 @@ class NodeConnCB(object):
 
     def on_getheaders(self, conn, message): pass
 
+    def on_get_dag(self, conn, message): pass
+
     def on_ping(self, conn, message):
         conn.send_message(msg_pong(message.nonce))
 
@@ -256,6 +258,7 @@ class NodeConn(asyncore.dispatcher):
         b"pong": msg_pong,
         b"headers": msg_headers,
         b"getheaders": msg_getheaders,
+        b"get_dag": msg_get_dag,
         b"reject": msg_reject,
         b"mempool": msg_mempool,
         b"sendheaders": msg_sendheaders,
@@ -519,6 +522,15 @@ class P2PDataStore(SingleNodeConnCB):
         if not self.block_store:
             return
 
+        # An empty locator asks for hashstop only, as nexad does during IBD.
+        # Walking last_block_hash would announce later blocks the caller has not located.
+        if not locator.vHave:
+            if hash_stop in self.block_store:
+                self.send_message(msg_headers([CBlockHeader(self.block_store[hash_stop])]))
+            else:
+                self.send_message(msg_headers([]))
+            return
+
         headers_list = [CBlockHeader(self.block_store[self.last_block_hash])]
         maxheaders = 2000
         while headers_list[-1].gethash() not in locator.vHave:
@@ -543,6 +555,19 @@ class P2PDataStore(SingleNodeConnCB):
 
         if response is not None:
             self.send_message(response)
+
+    def on_get_dag(self, conn, message):
+        """Send stored subblocks the requester does not already have.
+
+        Summary bodies are left for getdata. minerData version 1 is a subblock.
+        """
+        have = set(message.hashes)
+        for block in self.block_store.values():
+            if not block.minerData or block.minerData[0] != 1:
+                continue
+            if block.gethash() in have:
+                continue
+            self.send_message(msg_block(block))
 
     def send_blocks_and_test(self, blocks, node, *, success=True, request_block=True, reject_reason=None, expect_ban=False, expect_disconnect=False, timeout=60):
         """Send blocks to test node and test whether the tip advances.
