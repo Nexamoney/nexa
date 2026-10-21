@@ -18,6 +18,7 @@
 
 #include <boost/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
+#include <univalue.h>
 
 #include <chrono>
 #include <thread>
@@ -25,6 +26,7 @@
 using namespace std;
 
 extern std::atomic<bool> forceTemplateRecalc;
+extern UniValue CallRPC(std::string args);
 
 class CTailstormForestTest
 {
@@ -4108,6 +4110,19 @@ BOOST_AUTO_TEST_CASE(premature_subblock_is_rejected)
     BOOST_CHECK(!ProcessAcceptBlock(nullptr, block, state, Params(), &pindex, nullptr));
     BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-subblock-premature");
     BOOST_CHECK(pindex == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(premature_subblock_is_rejected_by_submitblock)
+{
+    // submitblock must not insert a sub-block that a peer could not get past the header rules
+    CBlockRef block = MakeEmptySubblock(chainActive.Genesis());
+    BOOST_REQUIRE(!IsUpgrade2Pending(chainActive.Genesis()));
+    const size_t forestSize = tailstormForest.Size();
+
+    const UniValue result = CallRPC("submitblock " + block->GetHex());
+    BOOST_CHECK_EQUAL(find_value(result.get_obj(), "result").get_str(), "bad-subblock-premature");
+    BOOST_CHECK(!tailstormForest.Contains(block->GetHash()));
+    BOOST_CHECK_EQUAL(tailstormForest.Size(), forestSize);
 }
 
 BOOST_AUTO_TEST_CASE(subblock_before_pending_parent_header)
