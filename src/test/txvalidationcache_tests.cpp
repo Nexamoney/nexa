@@ -564,8 +564,9 @@ struct RecutBlockSetup : public TestChain100Setup
         tx.vin[1] = coinbaseTxns[1].SpendOutput(0);
         tx.vout.resize(1);
         tx.vout[0].scriptPubKey = coinbaseLockingScript;
-        // Vary the output until the first satisfier contains the separator byte
-        size_t cut = 0;
+        // Vary the output until the first satisfier contains the separator byte.
+        // size_type matches the iterator operator+. Win64 size_t does not.
+        CScript::size_type cut = 0;
         for (CAmount extra = 0; cut == 0; extra++)
         {
             tx.vout[0].nValue = 1000 * COIN + extra;
