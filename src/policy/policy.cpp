@@ -65,8 +65,11 @@ bool IsStandard(const CScript &scriptPubKey, txnouttype &whichType)
     return whichType != TX_NONSTANDARD;
 }
 
-bool IsStandardTx(const CTransactionRef tx, std::string &reason)
+bool IsStandardTx(const CTransactionRef tx, std::string &reason, bool *pfSatisfierDependent)
 {
+    if (pfSatisfierDependent)
+        *pfSatisfierDependent = false;
+
     if (tx->nVersion > CTransaction::CURRENT_VERSION)
     {
         reason = "version";
@@ -80,6 +83,8 @@ bool IsStandardTx(const CTransactionRef tx, std::string &reason)
     if (tx->GetTxSize() > MAX_STANDARD_TX_SIZE)
     {
         reason = "tx-size";
+        if (pfSatisfierDependent)
+            *pfSatisfierDependent = true;
         return false;
     }
 
@@ -88,6 +93,8 @@ bool IsStandardTx(const CTransactionRef tx, std::string &reason)
         if (!txin.scriptSig.IsPushOnly())
         {
             reason = "scriptsig-not-pushonly";
+            if (pfSatisfierDependent)
+                *pfSatisfierDependent = true;
             return false;
         }
     }

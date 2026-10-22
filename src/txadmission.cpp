@@ -957,7 +957,8 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
     {
         fRequireStandard = false;
     }
-    if (fRequireStandard && !IsStandardTx(tx, reason))
+    bool fSatisfierDependent = false;
+    if (fRequireStandard && !IsStandardTx(tx, reason, &fSatisfierDependent))
     {
         if (debugger)
         {
@@ -971,8 +972,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
         {
             state.SetDebugMessage("IsStandardTx failed");
             // Input boundaries and serialized size can differ for the same id.
-            return state.DoS(
-                0, false, REJECT_NONSTANDARD, reason, reason == "scriptsig-not-pushonly" || reason == "tx-size");
+            return state.DoS(0, false, REJECT_NONSTANDARD, reason, fSatisfierDependent);
         }
     }
 
