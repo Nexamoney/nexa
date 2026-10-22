@@ -173,6 +173,9 @@ std::map<uint256, std::pair<CBlockHeader, int64_t> > mapUnConnectedHeaders GUARD
     Retained and re-evaluated when that summary is accepted. **/
 CSubblockHeaderCache subblockHeaders;
 
+/** Blocks whose stored body may have been altered in transit, and the peers that sent such bodies. **/
+CSuspectBlockBodies suspectBlockBodies;
+
 CCriticalSection cs_main;
 /**
  * Every received block is assigned a unique and increasing identifier, so we

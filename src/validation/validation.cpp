@@ -1985,48 +1985,41 @@ bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork)
     return false;
 }
 
-// The merkle root does not commit to exact satisfier bytes. Repeated body failures cannot establish header invalidity.
-static CCriticalSection cs_suspectBlockBodies;
-static std::set<uint256> setSuspectBlockBodies GUARDED_BY(cs_suspectBlockBodies);
-
-bool IsSuspectBlockBody(const uint256 &hash)
+bool CSuspectBlockBodies::IsSuspect(const uint256 &hash) const
 {
-    LOCK(cs_suspectBlockBodies);
-    return setSuspectBlockBodies.count(hash) != 0;
+    LOCK(cs_suspect);
+    return setSuspect.count(hash) != 0;
 }
 
-static void MarkSuspectBlockBody(const uint256 &hash)
+void CSuspectBlockBodies::MarkSuspect(const uint256 &hash)
 {
-    LOCK(cs_suspectBlockBodies);
-    setSuspectBlockBodies.insert(hash);
+    LOCK(cs_suspect);
+    setSuspect.insert(hash);
 }
 
-static void ClearSuspectBlockBody(const uint256 &hash)
+void CSuspectBlockBodies::ClearSuspect(const uint256 &hash)
 {
-    LOCK(cs_suspectBlockBodies);
-    setSuspectBlockBodies.erase(hash);
+    LOCK(cs_suspect);
+    setSuspect.erase(hash);
 }
 
-// Peers that sent a body failing these checks are not asked for the block again until it connects
-static std::map<uint256, std::set<NodeId> > mapBadBlockBodySources GUARDED_BY(cs_suspectBlockBodies);
-
-bool IsBadBlockBodySource(const uint256 &hash, NodeId nodeid)
+bool CSuspectBlockBodies::IsBadSource(const uint256 &hash, NodeId nodeid) const
 {
-    LOCK(cs_suspectBlockBodies);
-    auto it = mapBadBlockBodySources.find(hash);
-    return it != mapBadBlockBodySources.end() && it->second.count(nodeid) != 0;
+    LOCK(cs_suspect);
+    auto it = mapBadSources.find(hash);
+    return it != mapBadSources.end() && it->second.count(nodeid) != 0;
 }
 
-static void AddBadBlockBodySource(const uint256 &hash, NodeId nodeid)
+void CSuspectBlockBodies::AddBadSource(const uint256 &hash, NodeId nodeid)
 {
-    LOCK(cs_suspectBlockBodies);
-    mapBadBlockBodySources[hash].insert(nodeid);
+    LOCK(cs_suspect);
+    mapBadSources[hash].insert(nodeid);
 }
 
-static void ClearBadBlockBodySources(const uint256 &hash)
+void CSuspectBlockBodies::ClearBadSources(const uint256 &hash)
 {
-    LOCK(cs_suspectBlockBodies);
-    mapBadBlockBodySources.erase(hash);
+    LOCK(cs_suspect);
+    mapBadSources.erase(hash);
 }
 
 /**
@@ -2076,7 +2069,7 @@ CBlockIndex *FindMostWorkChain()
             // to a chain unless we have all the non-active-chain parent blocks.
             fFailedChain = pindexTest->nStatus & BLOCK_FAILED_MASK;
             fMissingData = !(pindexTest->nStatus & BLOCK_HAVE_DATA);
-            fSuspectBody = IsSuspectBlockBody(pindexTest->GetBlockHash());
+            fSuspectBody = suspectBlockBodies.IsSuspect(pindexTest->GetBlockHash());
             if (fFailedChain | fMissingData | fSuspectBody)
                 break;
             pindexTest = pindexTest->pprev;
@@ -2551,7 +2544,7 @@ static bool AcceptBlock(ConstCBlockRef pblock,
         bool fTooFarAhead = (pindex->height() > int(chainActive.Height() + MIN_BLOCKS_TO_KEEP));
 
         // A suspect body is replaced by the next one received
-        const bool fSuspectBody = IsSuspectBlockBody(pindex->GetBlockHash());
+        const bool fSuspectBody = suspectBlockBodies.IsSuspect(pindex->GetBlockHash());
 
         // TODO: deal better with return value and error conditions for duplicate
         // and unrequested blocks.
@@ -2637,9 +2630,9 @@ static bool AcceptBlock(ConstCBlockRef pblock,
             {
                 return error("AcceptBlock(): ReceivedBlockTransactions failed");
             }
-            if (IsSuspectBlockBody(pindex->GetBlockHash()))
+            if (suspectBlockBodies.IsSuspect(pindex->GetBlockHash()))
             {
-                ClearSuspectBlockBody(pindex->GetBlockHash());
+                suspectBlockBodies.ClearSuspect(pindex->GetBlockHash());
                 // Stored descendants were dropped as candidates while this body was distrusted
                 WRITELOCK(cs_mapBlockIndex);
                 for (const auto &item : mapBlockIndex)
@@ -2687,7 +2680,7 @@ bool ProcessAcceptBlock(CNode *pfrom,
 
     // A bad source is not asked again, so this body was pushed and would most likely fail the same way.
     // Accepted() is not called so a pending request to another peer is kept.
-    if (pfrom && !fRequested && IsBadBlockBodySource(hash, pfrom->GetId()))
+    if (pfrom && !fRequested && suspectBlockBodies.IsBadSource(hash, pfrom->GetId()))
     {
         LOG(BLK, "Ignoring unrequested body of %s from peer=%d, which sent a bad one\n", hash.ToString(),
             pfrom->GetId());
@@ -3764,10 +3757,10 @@ void InvalidBlockFound(CBlockIndex *pindex, const CValidationState &state)
     {
         // The body may have been altered in transit: drop it so the block is downloaded again
         const uint256 hash = pindex->GetBlockHash();
-        MarkSuspectBlockBody(hash);
+        suspectBlockBodies.MarkSuspect(hash);
         auto it = mapBlockSource.find(hash);
         if (it != mapBlockSource.end())
-            AddBadBlockBodySource(hash, it->second);
+            suspectBlockBodies.AddBadSource(hash, it->second);
         nodestate.RewindBlockDownloadState(pindex);
         {
             WRITELOCK(cs_mapBlockIndex);
@@ -4320,8 +4313,8 @@ bool ConnectTip(CValidationState &state,
 
     // Block has been received and processed so no need to keep this entry.
     mapBlockSource.erase(pindexNew->GetBlockHash());
-    ClearSuspectBlockBody(pindexNew->GetBlockHash());
-    ClearBadBlockBodySources(pindexNew->GetBlockHash());
+    suspectBlockBodies.ClearSuspect(pindexNew->GetBlockHash());
+    suspectBlockBodies.ClearBadSources(pindexNew->GetBlockHash());
 
     // When we're in IBD or reindexing then once the block is connected we don't need it in the cache anymore.
     if (IsInitialBlockDownload())

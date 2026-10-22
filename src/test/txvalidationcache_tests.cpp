@@ -636,12 +636,12 @@ BOOST_FIXTURE_TEST_CASE(block_body_with_recut_satisfiers, RecutBlockSetup)
     ProcessSummaryBlock(state, Params(), nullptr, altered, true, nullptr, SINGLE_THREADED);
     BOOST_CHECK(chainActive.Tip()->GetBlockHash() != hash);
     BOOST_CHECK_MESSAGE(!BlockFailed(hash), "altered body marked the honest block invalid");
-    BOOST_CHECK(IsSuspectBlockBody(hash));
+    BOOST_CHECK(suspectBlockBodies.IsSuspect(hash));
 
     CValidationState state2;
     ProcessSummaryBlock(state2, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
     BOOST_CHECK_MESSAGE(chainActive.Tip()->GetBlockHash() == hash, "honest body was not accepted");
-    BOOST_CHECK(!IsSuspectBlockBody(hash));
+    BOOST_CHECK(!suspectBlockBodies.IsSuspect(hash));
 }
 
 BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
@@ -690,7 +690,7 @@ BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
         CBlockIndex *pindex = nullptr;
         CValidationState stateA;
         BOOST_CHECK(ProcessAcceptBlock(&nodeA, altered, stateA, Params(), &pindex, nullptr));
-        BOOST_CHECK(IsSuspectBlockBody(honest->GetHash()));
+        BOOST_CHECK(suspectBlockBodies.IsSuspect(honest->GetHash()));
     }
 
     // B's body is then fetched again and connects
@@ -716,7 +716,7 @@ BOOST_FIXTURE_TEST_CASE(block_body_with_bad_scripts_is_not_connected, RecutBlock
         CValidationState state;
         ProcessSummaryBlock(state, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
         BOOST_CHECK(chainActive.Tip()->GetBlockHash() != hash);
-        BOOST_CHECK(IsSuspectBlockBody(hash));
+        BOOST_CHECK(suspectBlockBodies.IsSuspect(hash));
         BOOST_CHECK(!BlockFailed(hash));
     }
 }
@@ -731,12 +731,12 @@ BOOST_FIXTURE_TEST_CASE(block_body_with_repeated_recut_satisfiers, RecutBlockSet
         ProcessSummaryBlock(state, Params(), nullptr, altered, true, nullptr, SINGLE_THREADED);
         BOOST_CHECK(chainActive.Tip()->GetBlockHash() != hash);
         BOOST_CHECK(!BlockFailed(hash));
-        BOOST_CHECK(IsSuspectBlockBody(hash));
+        BOOST_CHECK(suspectBlockBodies.IsSuspect(hash));
     }
     CValidationState state;
     ProcessSummaryBlock(state, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
     BOOST_CHECK(chainActive.Tip()->GetBlockHash() == hash);
-    BOOST_CHECK(!IsSuspectBlockBody(hash));
+    BOOST_CHECK(!suspectBlockBodies.IsSuspect(hash));
 }
 
 BOOST_FIXTURE_TEST_CASE(block_body_recut_rewinds_download_cursors, RecutBlockSetup)
@@ -782,7 +782,7 @@ BOOST_FIXTURE_TEST_CASE(block_body_recut_rewinds_download_cursors, RecutBlockSet
     }
     CValidationState state;
     ActivateBestChain(state, Params());
-    BOOST_REQUIRE(IsSuspectBlockBody(hash));
+    BOOST_REQUIRE(suspectBlockBodies.IsSuspect(hash));
     BOOST_CHECK(!AlreadyHaveBlock(CInv(MSG_BLOCK, hash)));
     {
         LOCK(cs_main);

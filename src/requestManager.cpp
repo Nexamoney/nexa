@@ -186,7 +186,7 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
     else if (IsBlockType(obj) && (objType == objType::BLOCK || objType == objType::SUBBLOCK))
     {
         // A peer that sent a bad body would most likely send the same one again
-        if (from && IsBadBlockBodySource(obj.hash, from->GetId()))
+        if (from && suspectBlockBodies.IsBadSource(obj.hash, from->GetId()))
         {
             LOG(REQ, "Not asking peer=%d again for suspect block %s\n", from->GetId(), obj.hash.ToString());
             return;
@@ -1559,7 +1559,8 @@ void CRequestManager::FindNextBlocksToDownload(CNode *node, size_t count, std::v
                 return;
             }
             // Linked descendants must not move the cursor past a suspect ancestor.
-            if ((pindex->nStatus & BLOCK_HAVE_DATA && !IsSuspectBlockBody(blockHash)) || chainActive.Contains(pindex))
+            if ((pindex->nStatus & BLOCK_HAVE_DATA && !suspectBlockBodies.IsSuspect(blockHash)) ||
+                chainActive.Contains(pindex))
             {
                 if (pindex->IsLinked() && pindex->pprev == state->pindexLastCommonBlock)
                     state->pindexLastCommonBlock = pindex;

@@ -674,7 +674,7 @@ bool AlreadyHaveBlock(const CInv &inv)
     if (!(mi->second->nStatus & BLOCK_HAVE_DATA))
         return false;
     // A suspect body must be fetched again
-    if (IsSuspectBlockBody(inv.hash))
+    if (suspectBlockBodies.IsSuspect(inv.hash))
         return false;
     return true;
 }
@@ -690,7 +690,7 @@ bool AlreadyHaveBlock(const CInv2 &inv)
     if (!(mi->second->nStatus & BLOCK_HAVE_DATA))
         return false;
     // A suspect body must be fetched again
-    if (IsSuspectBlockBody(inv.hash))
+    if (suspectBlockBodies.IsSuspect(inv.hash))
         return false;
     return true;
 }

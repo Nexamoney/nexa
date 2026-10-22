@@ -147,11 +147,29 @@ bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork);
 
 CBlockIndex *FindMostWorkChain();
 
-/** True if the stored body of this block failed satisfier dependent checks and is waiting to be fetched again */
-bool IsSuspectBlockBody(const uint256 &hash);
+/** Blocks whose stored body failed satisfier dependent checks, and the peers that sent those bodies.
+ *  The merkle root does not commit to exact satisfier bytes, so repeated body failures cannot establish header
+ *  invalidity. */
+class CSuspectBlockBodies
+{
+private:
+    mutable CCriticalSection cs_suspect;
+    std::set<uint256> setSuspect GUARDED_BY(cs_suspect);
+    // Peers that sent a body failing these checks are not asked for the block again until it connects
+    std::map<uint256, std::set<NodeId> > mapBadSources GUARDED_BY(cs_suspect);
 
-/** True if this peer sent a body of this block that failed satisfier dependent checks */
-bool IsBadBlockBodySource(const uint256 &hash, NodeId nodeid);
+public:
+    /** True if the stored body of this block failed satisfier dependent checks and is waiting to be fetched again */
+    bool IsSuspect(const uint256 &hash) const;
+    void MarkSuspect(const uint256 &hash);
+    void ClearSuspect(const uint256 &hash);
+
+    /** True if this peer sent a body of this block that failed satisfier dependent checks */
+    bool IsBadSource(const uint256 &hash, NodeId nodeid) const;
+    void AddBadSource(const uint256 &hash, NodeId nodeid);
+    void ClearBadSources(const uint256 &hash);
+};
+extern CSuspectBlockBodies suspectBlockBodies;
 
 /** Mark a block as invalid. */
 bool InvalidateBlock(CValidationState &state, const Consensus::Params &consensusParams, CBlockIndex *pindex);
