@@ -55,30 +55,121 @@ static void CheckProofRoundTrip(const CMutableTransaction &tx1, const CMutableTr
     mempool.clear();
 }
 
-BOOST_FIXTURE_TEST_CASE(dsproof_serialization_roundtrip_p2pkh, TestChain100Setup)
+// tx1 spends coinbase 0.  tx2 spends coinbase 0 and coinbase 1, so the two spenders have
+// different hashInAmounts (and hashPrevOutputs).  If they were identical, a serializer that mixed up
+// the spenders' fields would go unnoticed.
+static void MakeP2pkhDoubleSpends(TestChain100Setup &setup, CMutableTransaction &tx1, CMutableTransaction &tx2)
 {
-    // tx1 spends coinbase 0.  tx2 spends coinbase 0 and coinbase 1, so the two spenders have
-    // different hashInAmounts (and hashPrevOutputs).  If they were identical, a serializer that mixed up
-    // the spenders' fields would go unnoticed.
-    CMutableTransaction tx1;
+    const auto &coinbaseTxns = setup.coinbaseTxns;
     tx1.vin.resize(1);
     tx1.vin[0] = coinbaseTxns[0].SpendOutput(0);
     tx1.vout.resize(1);
     tx1.vout[0].nValue = 11 * CENT;
-    tx1.vout[0].scriptPubKey = coinbaseLockingScript;
-    tx1.vin[0].scriptSig = SignCoinbaseSpend(tx1, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
+    tx1.vout[0].scriptPubKey = setup.coinbaseLockingScript;
+    tx1.vin[0].scriptSig = setup.SignCoinbaseSpend(tx1, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
 
-    CMutableTransaction tx2;
     tx2.vin.resize(2);
     tx2.vin[0] = coinbaseTxns[0].SpendOutput(0);
     tx2.vin[1] = coinbaseTxns[1].SpendOutput(0);
     tx2.vout.resize(1);
     tx2.vout[0].nValue = 12 * CENT;
-    tx2.vout[0].scriptPubKey = coinbaseLockingScript;
-    tx2.vin[0].scriptSig = SignCoinbaseSpend(tx2, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
-    tx2.vin[1].scriptSig = SignCoinbaseSpend(tx2, 1, defaultSigHashType, coinbaseTxns[1].vout[0].nValue);
+    tx2.vout[0].scriptPubKey = setup.coinbaseLockingScript;
+    tx2.vin[0].scriptSig = setup.SignCoinbaseSpend(tx2, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
+    tx2.vin[1].scriptSig = setup.SignCoinbaseSpend(tx2, 1, defaultSigHashType, coinbaseTxns[1].vout[0].nValue);
+}
 
+// Builds a proof from arbitrary fields the same way a peer could, by sending it over the network
+static DoubleSpendProof MakeProof(const COutPoint &outpoint,
+    const DoubleSpendProof::Spender &s1,
+    const DoubleSpendProof::Spender &s2)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << outpoint;
+    for (const auto *s : {&s1, &s2})
+    {
+        ss << s->txVersion << s->outSequence << s->lockTime << s->hashPrevOutputs << s->hashSequence
+           << s->hashInAmounts << s->hashOutputs << s->pushData;
+    }
+    DoubleSpendProof dsp;
+    ss >> dsp;
+    return dsp;
+}
+
+BOOST_FIXTURE_TEST_CASE(dsproof_serialization_roundtrip_p2pkh, TestChain100Setup)
+{
+    CMutableTransaction tx1, tx2;
+    MakeP2pkhDoubleSpends(*this, tx1, tx2);
     CheckProofRoundTrip(tx1, tx2);
+}
+
+// outSequence is not covered by the signature.  A proof whose spenders differ only there could be made by
+// anyone from a single transaction, so it must not validate.
+BOOST_FIXTURE_TEST_CASE(dsproof_rejects_unsigned_difference, TestChain100Setup)
+{
+    CMutableTransaction tx1, tx2;
+    MakeP2pkhDoubleSpends(*this, tx1, tx2);
+
+    CValidationState state;
+    bool fMissingInputs = false;
+    bool accepted = AcceptToMemoryPool(mempool, state, MakeTransactionRef(tx1), false, &fMissingInputs, false);
+    BOOST_REQUIRE_MESSAGE(accepted, "tx1 rejected: " << state.GetRejectReason());
+
+    {
+        WRITELOCK(mempool.cs_txmempool);
+        DoubleSpendProof dsp = DoubleSpendProof::create(CTransaction(tx1), CTransaction(tx2), mempool);
+
+        // A proof rebuilt from the real spenders is valid, so MakeProof() is faithful
+        BOOST_CHECK_EQUAL(MakeProof(dsp.Outpoint(), dsp.spender1(), dsp.spender2()).validate(mempool),
+            DoubleSpendProof::Valid);
+
+        // Forge a proof from a single spend by changing only outSequence
+        for (const auto &spender : {dsp.spender1(), dsp.spender2()})
+        {
+            DoubleSpendProof::Spender forged = spender;
+            forged.outSequence ^= 1;
+            BOOST_CHECK(forged != spender);
+            BOOST_CHECK_EQUAL(MakeProof(dsp.Outpoint(), spender, forged).validate(mempool), DoubleSpendProof::Invalid);
+        }
+    }
+    mempool.clear();
+}
+
+// A proof received from a peer can name any outpoint.  An output that isn't P2PKH or P2PKT must be rejected even
+// if the proof's data satisfies its script.
+BOOST_FIXTURE_TEST_CASE(dsproof_rejects_unsupported_script_type, TestChain100Setup)
+{
+    CTxMemPool pool;
+    TestMemPoolEntryHelper entry;
+
+    // An output anyone can spend: it ignores the two items the scriptSig pushes
+    CMutableTransaction fund;
+    fund.vin.resize(1);
+    fund.vin[0] = coinbaseTxns[0].SpendOutput(0);
+    fund.vout.resize(1);
+    fund.vout[0].nValue = coinbaseTxns[0].vout[0].nValue / 2;
+    fund.vout[0].SetScript(CScript() << OP_2DROP << OP_TRUE);
+    CTransaction fundTx(fund);
+    pool.addUnchecked(entry.FromTx(fundTx));
+
+    CMutableTransaction spend;
+    spend.vin.resize(1);
+    spend.vin[0] = fundTx.SpendOutput(0);
+    spend.vin[0].scriptSig = CScript() << std::vector<uint8_t>(65, 1) << std::vector<uint8_t>(33, 2);
+    spend.vout.resize(1);
+    spend.vout[0].nValue = fund.vout[0].nValue / 2;
+    spend.vout[0].scriptPubKey = coinbaseLockingScript;
+    pool.addUnchecked(entry.FromTx(spend));
+
+    // Two spenders that sign different data (in ascending hashOutputs order), with junk "signatures" that the
+    // output script accepts
+    DoubleSpendProof::Spender s1, s2;
+    s1.hashOutputs = uint256S("01");
+    s2.hashOutputs = uint256S("02");
+    s1.pushData.push_back(std::vector<uint8_t>(65, 3));
+    s2.pushData.push_back(std::vector<uint8_t>(65, 4));
+
+    READLOCK(pool.cs_txmempool);
+    BOOST_CHECK_EQUAL(MakeProof(spend.vin[0].prevout, s1, s2).validate(pool), DoubleSpendProof::Invalid);
 }
 
 static void SignP2pktInput(const CKeyStore &keystore, CMutableTransaction &tx, unsigned int nIn, const CScript &prevOut)

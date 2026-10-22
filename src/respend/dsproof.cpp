@@ -76,6 +76,23 @@ void getSignature(const CScript &script, bool isTemplate, std::vector<uint8_t> &
     script.GetOp(scriptIter, type, vchRet);
 }
 
+// The sighash type is encoded in the bytes that follow the 64 byte Schnorr signature
+std::vector<uint8_t> sigHashTypeBytes(const std::vector<uint8_t> &sig)
+{
+    if (sig.size() <= 64)
+        return std::vector<uint8_t>();
+    return std::vector<uint8_t>(sig.begin() + 64, sig.end());
+}
+
+// Returns true if both spenders' signatures commit to the same data, meaning they are the same spend.
+// outSequence is not covered by the signature, so spenders that differ only there are not a double spend.
+bool signSameData(const DoubleSpendProof::Spender &a, const DoubleSpendProof::Spender &b)
+{
+    return a.txVersion == b.txVersion && a.lockTime == b.lockTime && a.hashPrevOutputs == b.hashPrevOutputs &&
+           a.hashSequence == b.hashSequence && a.hashInAmounts == b.hashInAmounts && a.hashOutputs == b.hashOutputs &&
+           sigHashTypeBytes(a.pushData.front()) == sigHashTypeBytes(b.pushData.front());
+}
+
 void hashTx(DoubleSpendProof::Spender &spender, const CTransaction &tx, int inputIndex)
 {
     DbgAssert(!spender.pushData.empty(), return);
@@ -221,9 +238,9 @@ DoubleSpendProof::Validity DoubleSpendProof::validate(const CTxMemPool &pool, co
         return Invalid;
     }
 
-    if (m_spender1 == m_spender2)
+    if (signSameData(m_spender1, m_spender2))
     {
-        LOG(DSPROOF, "Warning:  Spenders in a dsproof must not be the same");
+        LOG(DSPROOF, "Warning:  Spenders in a dsproof must not sign the same data\n");
         return Invalid;
     }
 
@@ -260,6 +277,13 @@ DoubleSpendProof::Validity DoubleSpendProof::validate(const CTxMemPool &pool, co
             amount = coin.GetValue();
             prevOutScript = coin.GetConstraintScript();
         }
+    }
+
+    // A proof received from a peer can name any outpoint, so enforce the same script types as create()
+    if (!IsValidType(prevOutScript))
+    {
+        LOG(DSPROOF, "WARNING: dsproof is invalid because the doublespent output is not P2PKH or P2PKT\n");
+        return Invalid;
     }
 
     /*
