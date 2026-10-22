@@ -2161,6 +2161,17 @@ bool ProcessMessage(CNode *pfrom,
                 // cache.
                 if (fNewUnconnectedHeaders)
                 {
+                    // Cached headers get no contextual checks until they connect, so require valid proof of work now
+                    CValidationState state;
+                    if (!CheckBlockHeader(chainparams.GetConsensus(), header, state, true))
+                    {
+                        int nDos = 0;
+                        if (state.IsInvalid(nDos) && nDos > 0)
+                            dosMan.Misbehaving(pfrom, nDos, BanReasonInvalidHeader);
+                        return error("unconnected header %s from peer %s is invalid: %s", hash.ToString(),
+                            pfrom->GetLogName(), state.GetRejectReason());
+                    }
+
                     // LOG(NET, "Header %s from %s is unconnected\n", hash.ToString(), pfrom->GetLogName());
                     if (mapUnConnectedHeaders.size() < MAX_UNCONNECTED_HEADERS)
                         mapUnConnectedHeaders[hash] = std::make_pair(header, GetTime());
@@ -2188,14 +2199,21 @@ bool ProcessMessage(CNode *pfrom,
             {
                 // If possible add any previously unconnected headers to the headers vector and remove any expired
                 // entries.
+                // Hash the message once: the cache can hold MAX_UNCONNECTED_HEADERS entries.
+                std::set<uint256> setHeaderHashes;
+                for (const CBlockHeader &header : headers)
+                    setHeaderHashes.insert(header.GetHash());
+                uint256 hashLast = headers.back().GetHash();
+
                 std::map<uint256, std::pair<CBlockHeader, int64_t> >::iterator mi = mapUnConnectedHeaders.begin();
                 while (mi != mapUnConnectedHeaders.end())
                 {
                     std::map<uint256, std::pair<CBlockHeader, int64_t> >::iterator toErase = mi;
 
                     // Add the header if it connects to the previous header
-                    if (headers.back().GetHash() == (*mi).second.first.hashPrevBlock)
+                    if (hashLast == (*mi).second.first.hashPrevBlock)
                     {
+                        hashLast = (*mi).first;
                         headers.push_back((*mi).second.first);
                         mapUnConnectedHeaders.erase(toErase);
 
@@ -2219,14 +2237,7 @@ bool ProcessMessage(CNode *pfrom,
                     // cache.
                     else
                     {
-                        for (const CBlockHeader &header : headers)
-                        {
-                            if (header.GetHash() == headerHash)
-                            {
-                                fErase = true;
-                                break;
-                            }
-                        }
+                        fErase = setHeaderHashes.count(headerHash) != 0;
                     }
 
                     if (fErase)
