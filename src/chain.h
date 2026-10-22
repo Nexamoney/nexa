@@ -329,11 +329,12 @@ public:
         return ret;
     }
 
-    bool IsHeaderNull() const { return header == nullptr; }
+    bool IsHeaderNull() const { return std::atomic_load(&header) == nullptr; }
     void SetBlockHeader(std::shared_ptr<const CBlockHeader> _header)
     {
         // TODO remove this std::const_pointer_cast
-        header = std::const_pointer_cast<CBlockHeader>(_header);
+        // Readers copy the pointer without cs_mapBlockIndex, so it must be replaced atomically
+        std::atomic_store(&header, std::const_pointer_cast<CBlockHeader>(_header));
         // If we are zeroing the header pointer, its for caching so we want to keep these values
         // But if we are actually setting this Index to a different header (typically during init) then
         // we should update them.
@@ -403,8 +404,8 @@ public:
     CBlockHeader GetBlockHeader() const
     {
         // We take a temporary so we don't have to grab a lock
-        // on mapBlockIndex.
-        std::shared_ptr<CBlockHeader> tmp = header;
+        // on mapBlockIndex. A flush can trim the header meanwhile, so load it atomically.
+        std::shared_ptr<CBlockHeader> tmp = std::atomic_load(&header);
         if (tmp != nullptr && !tmp->IsNull())
         {
             return *tmp;
