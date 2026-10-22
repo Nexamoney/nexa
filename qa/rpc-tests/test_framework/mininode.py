@@ -557,17 +557,20 @@ class P2PDataStore(SingleNodeConnCB):
             self.send_message(response)
 
     def on_get_dag(self, conn, message):
-        """Send stored subblocks the requester does not already have.
+        """Send the stored subblocks of the last two epochs that the requester does not already have.
 
-        Summary bodies are left for getdata. minerData version 1 is a subblock.
+        Like nexad, only the dags built on the two most recent summaries are sent. Summary bodies are left for
+        getdata. minerData version 1 is a subblock.
         """
+        def is_subblock(block):
+            return block.minerData and block.minerData[0] == 1
+
+        summaries = sorted((b for b in self.block_store.values() if not is_subblock(b)), key=lambda b: b.height)
+        bases = {b.gethash() for b in summaries[-2:]}
         have = set(message.hashes)
         for block in self.block_store.values():
-            if not block.minerData or block.minerData[0] != 1:
-                continue
-            if block.gethash() in have:
-                continue
-            self.send_message(msg_block(block))
+            if is_subblock(block) and block.hashPrevBlock in bases and block.gethash() not in have:
+                self.send_message(msg_block(block))
 
     def send_blocks_and_test(self, blocks, node, *, success=True, request_block=True, reject_reason=None, expect_ban=False, expect_disconnect=False, timeout=60):
         """Send blocks to test node and test whether the tip advances.
