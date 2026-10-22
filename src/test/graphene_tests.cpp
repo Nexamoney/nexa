@@ -509,4 +509,43 @@ BOOST_AUTO_TEST_CASE(graphene_set_with_too_many_filter_hashes_is_rejected)
     }
 }
 
+BOOST_FIXTURE_TEST_CASE(graphene_recovery_response_must_be_requested, TestingSetup)
+{
+    CAddress addr(ipaddress(0xa0b0c001, 10000));
+    CNode node(INVALID_SOCKET, addr, "", true);
+    SetConnected(node);
+    node.negotiatedGrapheneVersion = 4;
+
+    const CBlock block = TestBlock1();
+    const uint256 hash = block.GetHash();
+    auto pblock = thinrelay.SetBlockToReconstruct(&node, hash);
+    *((CBlockHeader *)pblock.get()) = block.GetBlockHeader();
+    pblock->grapheneblock = std::make_shared<CGrapheneBlock>(MakeBlockRef(CBlock(block)), 1, 1, 4, false);
+
+    CGrapheneReceiverRecover response;
+    response.blockhash = hash;
+    response.pRevisedIblt = std::make_shared<CIblt>(1, CGrapheneSet::GetCIbltVersion(4));
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << response;
+
+    // Nothing was requested: ignored, and the block is still being reconstructed
+    CDataStream unrequested(ss);
+    BOOST_CHECK(!HandleGrapheneBlockRecoveryResponse(unrequested, &node, Params()));
+    BOOST_CHECK(thinrelay.GetBlockToReconstruct(&node, hash) == pblock);
+
+    // A request allows one response. Reconstructing this synthetic block can throw, as ProcessMessage expects.
+    pblock->grapheneblock->fRecoveryRequested = true;
+    CDataStream requested(ss);
+    try
+    {
+        HandleGrapheneBlockRecoveryResponse(requested, &node, Params());
+    }
+    catch (const std::exception &)
+    {
+    }
+    BOOST_CHECK(!pblock->grapheneblock->fRecoveryRequested);
+
+    thinrelay.ClearAllBlockData(&node, hash);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
