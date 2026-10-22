@@ -20,6 +20,8 @@
 // The group token cache can and should be compiled even when the wallet is disabled.
 #include "wallet/grouptokencache.h"
 
+#include <optional>
+
 /** Default for -blockchain.maxReorgDepth. A value less than zero disables the feature */
 static const int DEFAULT_MAX_REORG_DEPTH = 200;
 
@@ -161,13 +163,16 @@ private:
 public:
     /** True if the stored body of this block failed satisfier dependent checks and is waiting to be fetched again */
     bool IsSuspect(const uint256 &hash) const;
-    void MarkSuspect(const uint256 &hash);
+    /** The stored body failed satisfier dependent checks; source is the peer that sent it, if known */
+    void MarkSuspect(const uint256 &hash, std::optional<NodeId> source);
+    /** A new body was stored */
     void ClearSuspect(const uint256 &hash);
 
     /** True if this peer sent a body of this block that failed satisfier dependent checks */
     bool IsBadSource(const uint256 &hash, NodeId nodeid) const;
-    void AddBadSource(const uint256 &hash, NodeId nodeid);
-    void ClearBadSources(const uint256 &hash);
+
+    /** The block connected */
+    void Forget(const uint256 &hash);
 };
 extern CSuspectBlockBodies suspectBlockBodies;
 

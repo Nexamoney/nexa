@@ -1991,10 +1991,12 @@ bool CSuspectBlockBodies::IsSuspect(const uint256 &hash) const
     return setSuspect.count(hash) != 0;
 }
 
-void CSuspectBlockBodies::MarkSuspect(const uint256 &hash)
+void CSuspectBlockBodies::MarkSuspect(const uint256 &hash, std::optional<NodeId> source)
 {
     LOCK(cs_suspect);
     setSuspect.insert(hash);
+    if (source)
+        mapBadSources[hash].insert(*source);
 }
 
 void CSuspectBlockBodies::ClearSuspect(const uint256 &hash)
@@ -2010,15 +2012,10 @@ bool CSuspectBlockBodies::IsBadSource(const uint256 &hash, NodeId nodeid) const
     return it != mapBadSources.end() && it->second.count(nodeid) != 0;
 }
 
-void CSuspectBlockBodies::AddBadSource(const uint256 &hash, NodeId nodeid)
+void CSuspectBlockBodies::Forget(const uint256 &hash)
 {
     LOCK(cs_suspect);
-    mapBadSources[hash].insert(nodeid);
-}
-
-void CSuspectBlockBodies::ClearBadSources(const uint256 &hash)
-{
-    LOCK(cs_suspect);
+    setSuspect.erase(hash);
     mapBadSources.erase(hash);
 }
 
@@ -3757,10 +3754,9 @@ void InvalidBlockFound(CBlockIndex *pindex, const CValidationState &state)
     {
         // The body may have been altered in transit: drop it so the block is downloaded again
         const uint256 hash = pindex->GetBlockHash();
-        suspectBlockBodies.MarkSuspect(hash);
         auto it = mapBlockSource.find(hash);
-        if (it != mapBlockSource.end())
-            suspectBlockBodies.AddBadSource(hash, it->second);
+        suspectBlockBodies.MarkSuspect(
+            hash, it != mapBlockSource.end() ? std::optional<NodeId>(it->second) : std::nullopt);
         nodestate.RewindBlockDownloadState(pindex);
         {
             WRITELOCK(cs_mapBlockIndex);
@@ -4313,8 +4309,7 @@ bool ConnectTip(CValidationState &state,
 
     // Block has been received and processed so no need to keep this entry.
     mapBlockSource.erase(pindexNew->GetBlockHash());
-    suspectBlockBodies.ClearSuspect(pindexNew->GetBlockHash());
-    suspectBlockBodies.ClearBadSources(pindexNew->GetBlockHash());
+    suspectBlockBodies.Forget(pindexNew->GetBlockHash());
 
     // When we're in IBD or reindexing then once the block is connected we don't need it in the cache anymore.
     if (IsInitialBlockDownload())
