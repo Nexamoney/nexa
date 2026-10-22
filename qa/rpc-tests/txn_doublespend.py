@@ -60,6 +60,14 @@ class TxnDoubleSpendTest(BitcoinTestFramework):
         # Change how we allocate the coins slightly
         outputs[node1_address] =  outputs[node1_address] - Decimal("5000000.0")
         outputs[change_address] = outputs[change_address] + Decimal("5000000.0")
+        # Give doublespend1 an extra input (returned as change) so the two doublespends have different
+        # input sets.  This makes each spender in the dsproof have a different hashInAmounts and
+        # hashPrevOutputs, so a proof serialization bug that confuses the spenders will be detected.
+        rawtx_input_2 = {}
+        rawtx_input_2["outpoint"] = unspent[2]["outpoint"]
+        rawtx_input_2["amount"] = unspent[2]["amount"]
+        inputs.append(rawtx_input_2)
+        outputs[change_address] = outputs[change_address] + unspent[2]["amount"]
         # And build a doublespend
         rawtx1 = self.nodes[0].createrawtransaction(inputs, outputs)
         doublespend1 = self.nodes[0].signrawtransaction(rawtx1)
@@ -159,6 +167,10 @@ class TxnDoubleSpendTest(BitcoinTestFramework):
         # This is caused by the txpool conflict from the second transaction (the doublepend).
         assert_equal(self.nodes[1].gettxpoolentry(node1_txidem)["doublespent"], True)
 
+        # node1 relays its dsproof to node0, which still has doublespend1 in its txpool.  node0 only attaches
+        # the proof to doublespend1 if the proof deserializes and validates, so this checks the network round trip.
+        waitFor(30, lambda: self.nodes[0].gettxpoolentry(doublespend1_txidem)["doublespent"] == True)
+
         # Check that the balance on node1.
         # A dsproof should have been received causing the coins to be changed from available to unavailable.
         balance = self.nodes[1].getwalletinfo()["balance"]
@@ -224,6 +236,30 @@ class TxnDoubleSpendTest(BitcoinTestFramework):
         # Node1's "from0" account balance should be just the doublespend:
         assert_equal(self.nodes[1].getbalance("from0"), doublespend_amt)
 
+        # Make a second doublespend.  Proof ids are never reused, so node0 and node1 store this
+        # dsproof with an id other than 1.  The "doublespent" flag must still be reported for it.
+        utxo = self.nodes[0].listunspent()[0]
+        inputs = [{ "outpoint" : utxo["outpoint"], "amount" : utxo["amount"]}]
+        outputs = { self.nodes[1].getnewaddress("p2pkh") : utxo["amount"] - self.relayfee }
+        second_spend1 = self.nodes[0].signrawtransaction(self.nodes[0].createrawtransaction(inputs, outputs))
+        outputs = { self.nodes[1].getnewaddress("p2pkh") : utxo["amount"] - 2*self.relayfee }
+        second_spend2 = self.nodes[0].signrawtransaction(self.nodes[0].createrawtransaction(inputs, outputs))
+        assert second_spend1["txidem"] != second_spend2["txidem"], "transactions are not different"
+
+        second_spend1_txidem = self.nodes[1].sendrawtransaction(second_spend1["hex"])
+        waitFor(30, lambda: second_spend1_txidem in self.nodes[0].getrawtxpool())
+        try:
+            self.nodes[1].sendrawtransaction(second_spend2["hex"])
+        except JSONRPCException as e:
+            assert_equal(e.error["code"], -26)
+            assert_equal(e.error["message"], "258: txn-txpool-conflict")
+        else:
+            assert False, "second doublespend was accepted"
+
+        # node1 created this proof locally; node0 received it over the network and validated it.
+        waitFor(30, lambda: self.nodes[1].gettxpoolentry(second_spend1_txidem)["doublespent"] == True)
+        waitFor(30, lambda: self.nodes[0].gettxpoolentry(second_spend1_txidem)["doublespent"] == True)
+
 
 if __name__ == '__main__':
     TxnDoubleSpendTest().main()
@@ -232,7 +268,7 @@ def Test():
     t = TxnDoubleSpendTest()
     t.drop_to_pdb = True
     bitcoinConf = {
-        "debug": ["blk", "mempool", "net", "req"],
+        "debug": ["blk", "mempool", "net", "req","dsproof"],
         "logtimemicros": 1
     }
 

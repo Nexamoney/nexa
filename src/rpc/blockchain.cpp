@@ -266,7 +266,7 @@ void entryToJSON(UniValue &info, const CTxMemPoolEntry &e)
     info.pushKV("modifiedfee", ValueFromAmount(e.GetModifiedFee()));
     info.pushKV("time", e.GetTime());
     info.pushKV("height", (int)e.GetHeight());
-    info.pushKV("doublespent", (e.dsproof == 1 ? true : false));
+    info.pushKV("doublespent", (e.dsproof != -1));
     info.pushKV("startingpriority", e.GetPriority(e.GetHeight()));
 
     double priority = e.GetPriority(chainActive.Height());
