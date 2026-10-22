@@ -101,7 +101,7 @@ void CState::RewindBlockDownloadState(const CBlockIndex *pindex)
     for (auto &item : mapNodeState)
     {
         CBlockIndex *&common = item.second.pindexLastCommonBlock;
-        if (common && common->height() >= pindex->height() && common->GetAncestor(pindex->height()) == pindex)
+        if (common && (common->height() >= pindex->height()) && (common->GetAncestor(pindex->height()) == pindex))
             common = pindex->pprev;
     }
 }
