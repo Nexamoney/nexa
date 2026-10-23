@@ -6,6 +6,7 @@
 #include "dosman.h"
 #include "hashwrapper.h"
 #include "util.h"
+#include "version.h"
 #include <primitives/transaction.h>
 #include <utiltime.h>
 
@@ -63,6 +64,44 @@ void DoubleSpendProofStorage::addOrphan(const DoubleSpendProof &proof, NodeId pe
     // A repeated orphan must not go through add(), which would claim it and stop it from expiring
     if (m_dspIdLookupTable.count(proof.GetHash()))
         return;
+
+    const size_t proofSize = ::GetSerializeSize(proof, SER_NETWORK, PROTOCOL_VERSION);
+    // reject likely garbage orphan proofs that are very large
+    if (proofSize > MAX_ORPHAN_DSPROOF_BYTES)
+    {
+        LOG(DSPROOF, "Dropping orphan dsproof from peer:%d, it is larger than the orphan limit\n", peerId);
+        return;
+    }
+
+    // Evict the oldest orphans. Ids increase as proofs are added, so the lowest id is the oldest.
+    auto orphanSize = [this](int id)
+    {
+        auto iter = m_proofs.find(id);
+        return iter == m_proofs.end() ? 0 : ::GetSerializeSize(iter->second, SER_NETWORK, PROTOCOL_VERSION);
+    };
+    size_t orphanBytes = 0;
+    size_t peerOrphans = 0;
+    int oldestPeerOrphan = -1;
+    for (const auto &orphan : m_orphans)
+    {
+        if (orphan.second.first == peerId && peerOrphans++ == 0)
+            oldestPeerOrphan = orphan.first;
+
+        orphanBytes += orphanSize(orphan.first);
+    }
+    auto evict = [this, &orphanBytes, &orphanSize](int id)
+    {
+        LOG(DSPROOF, "Evicting orphan dsproof %d to stay within the orphan limits\n", id);
+        orphanBytes -= orphanSize(id);
+        remove(id);
+        m_orphans.erase(id); // remove() skips ids missing from m_proofs, so erase anyway so that the loop below always ends
+    };
+    if (peerOrphans >= MAX_ORPHAN_DSPROOFS_PER_PEER)
+        evict(oldestPeerOrphan);
+
+    while (!m_orphans.empty() && orphanBytes + proofSize > MAX_ORPHAN_DSPROOF_BYTES)
+        evict(m_orphans.begin()->first);
+
     const auto res = add(proof);
     if (!res.first) // it was already in the storage
         return;

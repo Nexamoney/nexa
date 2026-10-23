@@ -19,6 +19,11 @@
 
 class COutPoint;
 
+// MAX total serialized size of the orphan proofs held at one time
+static constexpr size_t MAX_ORPHAN_DSPROOF_BYTES = 1000 * 1000;
+// MAX number of orphan proofs held from one peer
+static constexpr size_t MAX_ORPHAN_DSPROOFS_PER_PEER = 20;
+
 class DoubleSpendProofStorage
 {
 public:
@@ -37,6 +42,7 @@ public:
 
     /// this add()s and additionally registers this is an orphan.
     /// you can fetch those upto 90s using 'claim()'.
+    /// the oldest orphans are evicted to stay within MAX_ORPHAN_DSPROOF_BYTES and MAX_ORPHAN_DSPROOFS_PER_PEER.
     void addOrphan(const DoubleSpendProof &proof, NodeId peerId);
     /// Returns all (not yet verified) orphans matching prevOut.
     /// Each item is a pair of a proofId and the nodeId that send the proof to us

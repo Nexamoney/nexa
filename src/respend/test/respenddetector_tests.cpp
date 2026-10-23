@@ -468,4 +468,76 @@ BOOST_AUTO_TEST_CASE(dsproof_storage_orphan_cleanup)
     SetMockTime(0);
 }
 
+// like MakeStorageTestProof, with one pushData item of pushDataSize bytes for each spender
+static DoubleSpendProof MakeSizedStorageTestProof(const COutPoint &prevOut, uint32_t tag, size_t pushDataSize)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << prevOut;
+    for (int i = 0; i < 2; i++)
+        ss << tag << uint32_t(0) << uint32_t(0) << uint256() << uint256() << uint256() << uint256()
+           << std::vector<std::vector<uint8_t> >(1, std::vector<uint8_t>(pushDataSize));
+
+    DoubleSpendProof proof;
+    ss >> proof;
+    return proof;
+}
+
+BOOST_AUTO_TEST_CASE(dsproof_storage_orphan_limits)
+{
+    const COutPoint prevOut(uint256S("0202020202020202020202020202020202020202020202020202020202020202"), 0);
+    const NodeId peer1 = 1;
+    const NodeId peer2 = 2;
+    // four proofs of this pushData size go over MAX_ORPHAN_DSPROOF_BYTES, three do not
+    const size_t quarterPushData = MAX_ORPHAN_DSPROOF_BYTES / 8;
+
+    // a peer over its limit loses its own oldest orphan, not an older one from another peer
+    {
+        DoubleSpendProofStorage storage;
+        DoubleSpendProof otherPeerProof = MakeSizedStorageTestProof(prevOut, 1000, 1);
+        storage.addOrphan(otherPeerProof, peer2);
+        std::vector<DoubleSpendProof> proofs;
+        for (uint32_t tag = 1; tag <= MAX_ORPHAN_DSPROOFS_PER_PEER + 1; tag++)
+        {
+            proofs.push_back(MakeSizedStorageTestProof(prevOut, tag, 1));
+            storage.addOrphan(proofs.back(), peer1);
+        }
+        // peer 2's orphan survived
+        BOOST_CHECK(storage.exists(otherPeerProof.GetHash()));
+        // peer 1's first orphan evicted
+        BOOST_CHECK(!storage.exists(proofs.front().GetHash()));
+        // peer 1's last 20 are there
+        for (size_t i = 1; i < proofs.size(); i++)
+            BOOST_CHECK(storage.exists(proofs[i].GetHash()));
+    }
+
+    // exceeding the size limit evicts the oldest orphans, whichever peer sent them
+    {
+        DoubleSpendProofStorage storage;
+        std::vector<DoubleSpendProof> proofs;
+        for (uint32_t tag = 1; tag <= 4; tag++)
+        {
+            proofs.push_back(MakeSizedStorageTestProof(prevOut, tag, quarterPushData));
+            storage.addOrphan(proofs.back(), tag % 2 ? peer1 : peer2);
+        }
+        // oldest orphan proof was evicted
+        BOOST_CHECK(!storage.exists(proofs[0].GetHash()));
+        // the rest are still there
+        for (size_t i = 1; i < proofs.size(); i++)
+            BOOST_CHECK(storage.exists(proofs[i].GetHash()));
+    }
+
+    // a single proof larger than the size limit is dropped and evicts nothing
+    {
+        DoubleSpendProofStorage storage;
+        DoubleSpendProof small = MakeSizedStorageTestProof(prevOut, 1, 1);
+        storage.addOrphan(small, peer1);
+        DoubleSpendProof oversized = MakeSizedStorageTestProof(prevOut, 2, MAX_ORPHAN_DSPROOF_BYTES / 2);
+        storage.addOrphan(oversized, peer2);
+        // the already stored one shouldn't have been evicted
+        BOOST_CHECK(storage.exists(small.GetHash()));
+        // the large one shouldn't have been stored
+        BOOST_CHECK(!storage.exists(oversized.GetHash()));
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END();
