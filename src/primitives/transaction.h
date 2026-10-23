@@ -150,6 +150,8 @@ public:
             if (ser_action.ForRead())
             {
                 scriptSig.type = ScriptType::PUSH_ONLY;
+                if (!scriptSig.IsWellFormed())
+                    throw std::ios_base::failure("CTxIn: malformed scriptSig");
             }
         }
         READWRITE(nSequence);
