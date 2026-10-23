@@ -94,7 +94,8 @@ void DoubleSpendProofStorage::addOrphan(const DoubleSpendProof &proof, NodeId pe
         LOG(DSPROOF, "Evicting orphan dsproof %d to stay within the orphan limits\n", id);
         orphanBytes -= orphanSize(id);
         remove(id);
-        m_orphans.erase(id); // remove() skips ids missing from m_proofs, so erase anyway so that the loop below always ends
+        // remove() skips ids missing from m_proofs, so erase anyway so that the loop below always ends
+        m_orphans.erase(id);
     };
     if (peerOrphans >= MAX_ORPHAN_DSPROOFS_PER_PEER)
         evict(oldestPeerOrphan);
