@@ -52,6 +52,10 @@ import test_framework.loginit
 # The altered transaction is not push-only in 8 and push-only in 9; both fail
 # script validation, since regtest accepts nonstandard transactions.
 #
+# Finally, every block whose altered body was stored and then replaced must
+# return the honest bytes from getblock, also after a restart, when the body
+# is read from disk instead of the block cache.
+#
 # Every scenario runs even if an earlier one fails, and the test reports all
 # failures at the end.
 #
@@ -90,7 +94,7 @@ from test_framework.nodemessages import (
 )
 from test_framework.script import OP_1, OP_16, OP_INVALIDOPCODE, OP_RETURN, CScriptInvalidError
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal, enable_mocktime, p2p_port, uint256ToRpcHex, waitFor
+from test_framework.util import assert_equal, enable_mocktime, p2p_port, start_node, stop_node, uint256ToRpcHex, waitFor
 
 SEPARATOR = b"\xff"
 # blockLookAheadInterval defaults to 5s after a body starts arriving.
@@ -535,6 +539,8 @@ class RecutBlockBodyTest(BitcoinTestFramework):
                 "[%s] honest body did not become the tip" % label, sleepAmt=0.05)
         connected = node.getblock(honest_rpc)
         assert honest_tx.GetRpcHexId() in connected["txid"]
+        if not malformed:
+            self.replaced.append((label, honest))
 
         child = self.make_block([])
         child.solve()
@@ -619,6 +625,7 @@ class RecutBlockBodyTest(BitcoinTestFramework):
                 "[%s] honest body of C did not become the tip" % label, sleepAmt=0.05)
         assert_equal(connection_dropped(peer_b), False)
         assert_equal(block_reject(peer_b, block_hash), None)
+        self.replaced.append((label, honest))
 
     def make_block_on(self, prev, height, chainwork, ntime, txns, unknown=None):
         # The consensus ancestor may be one of the new blocks, which the node does not have yet
@@ -674,6 +681,7 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         waitFor(30, lambda: node.getbestblockhash() == honest_rpc,
                 "[%s] honest body did not become the tip" % label, sleepAmt=0.05)
         assert_equal(block_reject(peer_b, block_hash), None)
+        self.replaced.append((label, honest))
 
     def run_descendant(self, node, peer_a, peer_b, honest_tx, altered_tx, label):
         """The altered C and the honest D are stored before P; D must connect once C is fetched again."""
@@ -717,6 +725,7 @@ class RecutBlockBodyTest(BitcoinTestFramework):
             peer_b.send_message(msg_block(child))
         waitFor(30, lambda: node.getbestblockhash() == child_rpc,
                 "[%s] stored descendant D did not connect after C was fetched again" % label, sleepAmt=0.05)
+        self.replaced.append((label, honest))
 
     def run_reject_cache(self, node, peer_a, peer_b, honest_tx, altered_tx, label):
         """A relays the altered tx first; the honest tx with the same id must still enter the txpool."""
@@ -736,6 +745,15 @@ class RecutBlockBodyTest(BitcoinTestFramework):
             # Leave an empty txpool for the next scenario
             if node.getrawtxpool():
                 node.generate(1)
+
+    def check_stored_bodies(self, failures, when):
+        """Each replaced body must come back from getblock as the honest bytes."""
+        for label, honest in self.replaced:
+            raw = self.nodes[0].getblock(uint256ToRpcHex(honest.gethash()), 0)
+            if raw != honest.serialize().hex():
+                failures.append("%s: getblock %s returned a body other than the honest one" % (label, when))
+                print("%s getblock %s test FAILED" % (label, when))
+        print("stored bodies %s checked (%d blocks)" % (when, len(self.replaced)))
 
     def run_scenario(self, node, failures, label, run):
         peer_a, peer_b, conn_a, conn_b, nt = self.new_peers(node)
@@ -788,6 +806,7 @@ class RecutBlockBodyTest(BitcoinTestFramework):
             raise AssertionError("this test must run before Upgrade2")
 
         failures = []
+        self.replaced = []
 
         # Scenario 1 (regression): the forged body splits a data push, so the
         # altered scriptSigs no longer decode and the body is rejected at
@@ -829,6 +848,12 @@ class RecutBlockBodyTest(BitcoinTestFramework):
             node, a, b, *make_interior_opcode_pair(node), label="reject-cache-not-push-only"))
         self.run_scenario(node, failures, "reject cache push-only", lambda a, b: self.run_reject_cache(
             node, a, b, *make_op_return_led_pair(node), label="reject-cache-push-only"))
+
+        # Replaced bodies are read back from the block cache or disk now, and from disk after a restart
+        self.check_stored_bodies(failures, "before restart")
+        stop_node(self.nodes[0], 0)
+        self.nodes[0] = start_node(0, self.options.tmpdir, self.extra_args[0])
+        self.check_stored_bodies(failures, "after restart")
 
         if failures:
             raise AssertionError("%d scenario(s) failed:\n%s" % (len(failures), "\n".join(failures)))
