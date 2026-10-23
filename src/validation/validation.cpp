@@ -2675,12 +2675,12 @@ bool ProcessAcceptBlock(CNode *pfrom,
         fRequested |= forceProcessing;
     }
 
-    // A bad source is not asked again, so this body was pushed and would most likely fail the same way.
-    // Accepted() is not called so a pending request to another peer is kept.
-    if (pfrom && !fRequested && suspectBlockBodies.IsBadSource(hash, pfrom->GetId()))
+    // A bad source is not asked again, so this body was pushed and would most likely fail the same way. fRequested
+    // does not tell: it is also true while another peer is asked for the block. Accepted() is not called so a
+    // pending request to another peer is kept.
+    if (pfrom && suspectBlockBodies.IsBadSource(hash, pfrom->GetId()))
     {
-        LOG(BLK, "Ignoring unrequested body of %s from peer=%d, which sent a bad one\n", hash.ToString(),
-            pfrom->GetId());
+        LOG(BLK, "Ignoring body of %s from peer=%d, which sent a bad one\n", hash.ToString(), pfrom->GetId());
         requester.BlockRejected(CInv(MSG_BLOCK, hash), pfrom);
         return true;
     }
