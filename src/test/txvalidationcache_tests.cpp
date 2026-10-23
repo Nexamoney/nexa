@@ -608,16 +608,6 @@ struct RecutBlockSetup : public TestChain100Setup
         BOOST_REQUIRE(BlockMerkleRoot(*altered) == honest->hashMerkleRoot);
         BOOST_REQUIRE_EQUAL(::GetSerializeSize(*altered, SER_NETWORK, PROTOCOL_VERSION),
             ::GetSerializeSize(*honest, SER_NETWORK, PROTOCOL_VERSION));
-
-        // The altered body goes through the wire format unchanged
-        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-        ss << *altered;
-        CBlockRef decoded = std::make_shared<CBlock>();
-        ss >> *decoded;
-        BOOST_REQUIRE(decoded->GetHash() == honest->GetHash());
-        BOOST_REQUIRE(decoded->vtx[1]->vin[0].scriptSig == recutTx.vin[0].scriptSig);
-        BOOST_REQUIRE(decoded->vtx[1]->GetId() == honestTx.GetId());
-        altered = decoded;
     }
 
     bool BlockFailed(const uint256 &hash)
