@@ -40,6 +40,21 @@ import test_framework.loginit
 # stored altered body fails, and only A may be penalized: the node must still
 # fetch C from B. A node that blames the last peer to deliver a body bans B.
 #
+# Scenario 6 (bad-source): after A's altered body fails, A pushes it again.
+# The node must ignore it and fetch the body from B.
+#
+# Scenario 7 (stored-descendant): A delivers the altered body of C and the
+# honest child D before their parent P. Once C is fetched again from B, D must
+# connect too.
+#
+# Scenarios 8 and 9 (reject-cache): A relays the altered transaction, then B
+# relays the honest one. The honest transaction must still enter the txpool.
+# The altered transaction is not push-only in 8 and push-only in 9; both fail
+# script validation, since regtest accepts nonstandard transactions.
+#
+# Every scenario runs even if an earlier one fails, and the test reports all
+# failures at the end.
+#
 # In scenarios 1 to 4 peer A delivers the forged body. Peer B has already
 # advertised the same header, and must be asked for it again. B then delivers
 # the honest body. The block has to become the tip, and a child delivered by B
@@ -51,12 +66,13 @@ import test_framework.loginit
 # the altered body never asks B, and this test fails there.
 
 import sys
+import time
 import pdb
 from decimal import Decimal
 from io import BytesIO
 from test_framework.util import *
 
-from test_framework.blocktools import create_block, create_coinbase, getAncHash
+from test_framework.blocktools import ancestorHeight, create_block, create_coinbase, getAncHash
 from test_framework.mininode import NetworkThread, NodeConn, NodeConnCB, mininode_lock
 from test_framework.nodemessages import (
     CBlock,
@@ -70,6 +86,7 @@ from test_framework.nodemessages import (
     msg_headers,
     msg_ping,
     msg_reject,
+    msg_tx,
 )
 from test_framework.script import OP_1, OP_16, OP_INVALIDOPCODE, OP_RETURN, CScriptInvalidError
 from test_framework.test_framework import BitcoinTestFramework
@@ -151,6 +168,11 @@ def malformed_block_reject(peer):
             if reject.message == b"block" and reject.code == msg_reject.REJECT_MALFORMED:
                 return reject
     return None
+
+
+def block_reject_count(peer, block_hash):
+    with mininode_lock:
+        return sum(1 for r in peer.rejects if r.message == b"block" and r.data == block_hash)
 
 
 def connection_dropped(peer):
@@ -385,6 +407,7 @@ class RecutBlockBodyTest(BitcoinTestFramework):
             "-debug=validation",
             "-debug=net",
             "-debug=req",
+            "-debug=mempool",
             "-logtimemicros=1",
             "-test.parallel=0",
             "-use-thinblocks=0",
@@ -597,6 +620,134 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         assert_equal(connection_dropped(peer_b), False)
         assert_equal(block_reject(peer_b, block_hash), None)
 
+    def make_block_on(self, prev, height, chainwork, ntime, txns, unknown=None):
+        # The consensus ancestor may be one of the new blocks, which the node does not have yet
+        ancestor = (unknown or {}).get(ancestorHeight(height))
+        if ancestor is None:
+            ancestor = getAncHash(height, self.nodes[0])
+        block = create_block(prev, height, chainwork, create_coinbase(height), ancestor, ntime, txns=txns)
+        block.solve()
+        return block
+
+    def make_altered(self, honest, altered_tx):
+        altered = CBlock()
+        altered.deserialize(BytesIO(honest.serialize()))
+        altered.vtx[1] = altered_tx
+        assert honest.serialize() != altered.serialize()
+        assert_equal(altered.gethash(), honest.gethash())
+        return altered
+
+    def run_bad_source(self, node, peer_a, peer_b, honest_tx, altered_tx, label):
+        """A's altered body fails; A then pushes it again, and the node must not process it."""
+        with mininode_lock:
+            peer_a.rejects = []
+            peer_b.rejects = []
+        honest = self.make_block([honest_tx])
+        honest.solve()
+        altered = self.make_altered(honest, altered_tx)
+        block_hash = honest.gethash()
+
+        asked_a = getdata_count(peer_a, block_hash)
+        peer_a.announce(honest)
+        self.wait_getdata(peer_a, block_hash, asked_a, 15, "[%s] peer A was not asked for H" % label)
+        peer_b.announce(honest)
+        peer_b.sync_with_ping()
+        asked_b = getdata_count(peer_b, block_hash)
+        peer_a.send_message(msg_block(altered))
+        waitFor(30, lambda: block_reject(peer_a, block_hash) is not None,
+                "[%s] the altered body was not rejected" % label, sleepAmt=0.5)
+
+        # A pushes the same altered body again. It must be ignored, not validated and rejected again.
+        peer_a.send_message(msg_block(altered))
+        peer_a.sync_with_ping()
+        time.sleep(2)
+        peer_a.sync_with_ping()
+        rejects = block_reject_count(peer_a, block_hash)
+        if rejects != 1:
+            raise AssertionError("[%s] A's repeated altered body was validated again (%d block rejects)" %
+                                 (label, rejects))
+
+        self.wait_getdata(peer_b, block_hash, asked_b, GETDATA_RETRY_TIMEOUT,
+                          "[%s] node did not request H from peer B" % label)
+        peer_b.send_message(msg_block(honest))
+        honest_rpc = uint256ToRpcHex(block_hash)
+        waitFor(30, lambda: node.getbestblockhash() == honest_rpc,
+                "[%s] honest body did not become the tip" % label, sleepAmt=0.05)
+        assert_equal(block_reject(peer_b, block_hash), None)
+
+    def run_descendant(self, node, peer_a, peer_b, honest_tx, altered_tx, label):
+        """The altered C and the honest D are stored before P; D must connect once C is fetched again."""
+        with mininode_lock:
+            peer_a.rejects = []
+            peer_b.rejects = []
+        tip = node.getblock(node.getbestblockhash())
+        height = tip["height"]
+        work = int(tip["chainwork"], 16)
+        parent = self.make_block_on(int(tip["hash"], 16), height + 1, work + 2, tip["time"] + 1, [])
+        unknown = {height + 1: parent.gethash()}
+        honest = self.make_block_on(parent.gethash(), height + 2, work + 4, tip["time"] + 2, [honest_tx], unknown)
+        unknown[height + 2] = honest.gethash()
+        child = self.make_block_on(honest.gethash(), height + 3, work + 6, tip["time"] + 3, [], unknown)
+        altered = self.make_altered(honest, altered_tx)
+        block_hash = honest.gethash()
+        headers = msg_headers([CBlockHeader(parent), CBlockHeader(honest), CBlockHeader(child)])
+
+        asked_a = getdata_count(peer_a, child.gethash())
+        peer_a.send_message(headers)
+        self.wait_getdata(peer_a, child.gethash(), asked_a, 15, "[%s] peer A was not asked for D" % label)
+        peer_b.send_message(headers)
+        peer_b.sync_with_ping()
+        peer_a.send_message(msg_block(altered))
+        peer_a.send_message(msg_block(child))
+        peer_a.sync_with_ping()
+        asked_b = getdata_count(peer_b, block_hash)
+        peer_a.send_message(msg_block(parent))
+        waitFor(30, lambda: block_reject(peer_a, block_hash) is not None,
+                "[%s] the stored altered body of C was not rejected" % label, sleepAmt=0.5)
+
+        self.wait_getdata(peer_b, block_hash, asked_b, GETDATA_RETRY_TIMEOUT,
+                          "[%s] node did not request C from peer B" % label)
+        peer_b.send_message(msg_block(honest))
+        child_rpc = uint256ToRpcHex(child.gethash())
+        honest_rpc = uint256ToRpcHex(block_hash)
+        waitFor(30, lambda: node.getbestblockhash() in (honest_rpc, child_rpc),
+                "[%s] honest body of C did not connect" % label, sleepAmt=0.05)
+        # D's body is already stored; serve it again if the node asks
+        if getdata_count(peer_b, child.gethash()) > 0:
+            peer_b.send_message(msg_block(child))
+        waitFor(30, lambda: node.getbestblockhash() == child_rpc,
+                "[%s] stored descendant D did not connect after C was fetched again" % label, sleepAmt=0.05)
+
+    def run_reject_cache(self, node, peer_a, peer_b, honest_tx, altered_tx, label):
+        """A relays the altered tx first; the honest tx with the same id must still enter the txpool."""
+        assert_equal(node.getrawtxpool(), [])
+        peer_a.send_message(msg_tx(altered_tx))
+        peer_a.sync_with_ping()
+        waitFor(15, lambda: any(r.message == b"tx" for r in peer_a.rejects) or connection_dropped(peer_a),
+                "[%s] the altered transaction was not rejected" % label, sleepAmt=0.5)
+        peer_b.send_message(msg_tx(honest_tx))
+        peer_b.sync_with_ping()
+        honest_id = honest_tx.GetRpcHexId()
+        try:
+            waitFor(15, lambda: honest_id in node.getrawtxpool(False, "id"),
+                    "[%s] honest transaction was refused after the altered copy (reject cache)" % label,
+                    sleepAmt=0.5)
+        finally:
+            # Leave an empty txpool for the next scenario
+            if node.getrawtxpool():
+                node.generate(1)
+
+    def run_scenario(self, node, failures, label, run):
+        peer_a, peer_b, conn_a, conn_b, nt = self.new_peers(node)
+        try:
+            run(peer_a, peer_b)
+            print("%s test succeeded" % label)
+        except Exception as e:
+            print("%s test FAILED: %s" % (label, e))
+            failures.append("%s: %s" % (label, e))
+        finally:
+            self.drop_peers([conn_a, conn_b], nt)
+
     def new_peers(self, node):
         """Connect a fresh pair of peers and the network thread that services them.
 
@@ -636,47 +787,51 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         if info.get("upgradeactive") or info.get("upgradeenforcednextblock"):
             raise AssertionError("this test must run before Upgrade2")
 
+        failures = []
+
         # Scenario 1 (regression): the forged body splits a data push, so the
         # altered scriptSigs no longer decode and the body is rejected at
         # deserialization. CScript::IsWellFormed() must catch this.
-        peer_a, peer_b, conn_a, conn_b, nt = self.new_peers(node)
-        honest_tx, altered_tx = find_recut_pair(node)
-        self.run_recovery(node, peer_a, peer_b, honest_tx, altered_tx, malformed=True, label="pushdata-recut")
-        self.drop_peers([conn_a, conn_b], nt)
-        print("split data push test succeeded")
+        self.run_scenario(node, failures, "split data push", lambda a, b: self.run_recovery(
+            node, a, b, *find_recut_pair(node), malformed=True, label="pushdata-recut"))
 
         # Scenario 2: the same txid forged a different way, so an invalid opcode appears as the first
         # instruction in the scriptSig
-        peer_a, peer_b, conn_a, conn_b, nt = self.new_peers(node)
-        honest_tx, altered_tx = make_parseable_pair(node)
-        self.run_recovery(node, peer_a, peer_b, honest_tx, altered_tx, malformed=True, label="bare-opcode")
-        self.drop_peers([conn_a, conn_b], nt)
-        print("bare opcode test succeeded")
+        self.run_scenario(node, failures, "bare opcode", lambda a, b: self.run_recovery(
+            node, a, b, *make_parseable_pair(node), malformed=True, label="bare-opcode"))
 
         # Scenario 3: the same collision again, but the donated 0xff lands in the
         # middle of a scriptSig, so neither altered scriptSig begins with 0xff.
         # Still well-formed, so it reaches validation and fails there.
-        peer_a, peer_b, conn_a, conn_b, nt = self.new_peers(node)
-        honest_tx, altered_tx = make_interior_opcode_pair(node)
-        self.run_recovery(node, peer_a, peer_b, honest_tx, altered_tx, malformed=False, label="interior-opcode")
-        self.drop_peers([conn_a, conn_b], nt)
-        print("interior opcode test succeeded")
+        self.run_scenario(node, failures, "interior opcode", lambda a, b: self.run_recovery(
+            node, a, b, *make_interior_opcode_pair(node), malformed=False, label="interior-opcode"))
 
         # Scenario 4: both altered scriptSigs are push-only, so no deserialization
         # check that accepts every valid satisfier can reject the body.
-        peer_a, peer_b, conn_a, conn_b, nt = self.new_peers(node)
-        honest_tx, altered_tx = make_op_return_led_pair(node)
-        self.run_recovery(node, peer_a, peer_b, honest_tx, altered_tx, malformed=False, label="op-return-led")
-        self.drop_peers([conn_a, conn_b], nt)
-        print("op-return-led test succeeded")
+        self.run_scenario(node, failures, "op-return-led", lambda a, b: self.run_recovery(
+            node, a, b, *make_op_return_led_pair(node), malformed=False, label="op-return-led"))
 
         # Scenario 5: the altered body is stored before its parent and B later delivers
         # the honest one. Only A may be blamed when the stored body fails.
-        peer_a, peer_b, conn_a, conn_b, nt = self.new_peers(node)
-        honest_tx, altered_tx = make_op_return_led_pair(node)
-        self.run_blame(node, peer_a, peer_b, honest_tx, altered_tx, label="blame-honest-peer")
-        self.drop_peers([conn_a, conn_b], nt)
-        print("blame honest peer test succeeded")
+        self.run_scenario(node, failures, "blame honest peer", lambda a, b: self.run_blame(
+            node, a, b, *make_op_return_led_pair(node), label="blame-honest-peer"))
+
+        # Scenario 6: a peer that sent a bad body is not listened to again for that block.
+        self.run_scenario(node, failures, "bad source", lambda a, b: self.run_bad_source(
+            node, a, b, *make_op_return_led_pair(node), label="bad-source"))
+
+        # Scenario 7: a stored descendant of the altered body connects once the body is replaced.
+        self.run_scenario(node, failures, "stored descendant", lambda a, b: self.run_descendant(
+            node, a, b, *make_op_return_led_pair(node), label="stored-descendant"))
+
+        # Scenarios 8 and 9: the altered transaction does not keep the honest one out of the txpool.
+        self.run_scenario(node, failures, "reject cache not push-only", lambda a, b: self.run_reject_cache(
+            node, a, b, *make_interior_opcode_pair(node), label="reject-cache-not-push-only"))
+        self.run_scenario(node, failures, "reject cache push-only", lambda a, b: self.run_reject_cache(
+            node, a, b, *make_op_return_led_pair(node), label="reject-cache-push-only"))
+
+        if failures:
+            raise AssertionError("%d scenario(s) failed:\n%s" % (len(failures), "\n".join(failures)))
 
 
 if __name__ == "__main__":
