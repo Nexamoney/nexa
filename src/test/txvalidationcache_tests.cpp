@@ -634,6 +634,26 @@ BOOST_FIXTURE_TEST_CASE(block_body_with_recut_satisfiers, RecutBlockSetup)
     BOOST_CHECK(!suspectBlockBodies.IsSuspect(hash));
 }
 
+BOOST_FIXTURE_TEST_CASE(pushdata_recut_does_not_deserialize, RecutBlockSetup)
+{
+    // The recut splits a data push, so the body is rejected before it is stored
+    MakeBlocks();
+    CBlock decoded;
+    CDataStream alteredStream(SER_NETWORK, PROTOCOL_VERSION);
+    alteredStream << *altered;
+    BOOST_CHECK_THROW(alteredStream >> decoded, std::ios_base::failure);
+    CDataStream honestStream(SER_NETWORK, PROTOCOL_VERSION);
+    honestStream << *honest;
+    BOOST_CHECK_NO_THROW(honestStream >> decoded);
+
+    auto raw = [](const std::vector<uint8_t> &bytes) { return CScript(bytes.begin(), bytes.end()); };
+    BOOST_CHECK(CScript().IsWellFormed());
+    BOOST_CHECK(!raw({0x02, 0x01}).IsWellFormed()); // push runs past the end
+    BOOST_CHECK(!raw({OP_INVALIDOPCODE, OP_1}).IsWellFormed());
+    BOOST_CHECK(raw({OP_1, OP_INVALIDOPCODE}).IsWellFormed());
+    BOOST_CHECK(raw({OP_1, OP_RETURN, 0x02}).IsWellFormed()); // not parsed after OP_RETURN
+}
+
 BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
 {
     // The peer that sent the altered body is penalized, not the one that then sends the honest body
