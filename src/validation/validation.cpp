@@ -4812,8 +4812,11 @@ bool ProcessSummaryBlock(CValidationState &state,
     {
         LOG(BLK, "Invalid block %s: time:%d Tx size:%d len:%d CheckBlock: %s\n", hexHash, pblock->nTime,
             pblock->vtx.size(), pblock->GetBlockSize(), state.GetLogString());
+        // A body that doesn't match its header must not stop us from fetching the real one.
+        requester.BlockRejected(CInv(MSG_BLOCK, pblock->GetHash()), pfrom);
+        return error("%s: CheckBlock FAILED", __func__);
     }
-    else if (IsInitialBlockDownload())
+    if (IsInitialBlockDownload())
     {
         LOCK(cs_BlocksAlreadyChecked);
         setBlocksAlreadyChecked.insert(pblock->GetHash());
@@ -4830,13 +4833,6 @@ bool ProcessSummaryBlock(CValidationState &state,
     //                called from other places.  Currently it seems best to leave cs_main here as is.
     CBlockIndex *pindex = nullptr;
     {
-        if (!checked)
-        {
-            // A body that doesn't match its header must not stop us from fetching the real one.
-            requester.BlockRejected(CInv(MSG_BLOCK, pblock->GetHash()), pfrom);
-            return error("%s: CheckBlock FAILED", __func__);
-        }
-
         // Store to disk
         LOCK(cs_main);
         bool ret = ProcessAcceptBlock(pfrom, pblock, state, chainparams, &pindex, dbp);
