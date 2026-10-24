@@ -741,8 +741,9 @@ void ThreadTxAdmission()
                         }
                         else
                         {
-                            // A satisfier failure may come from an altered copy sharing the honest tx id
-                            if (!state.CorruptionPossible())
+                            // An altered copy that still parses needs an OP_RETURN in a satisfier, and shares the
+                            // honest tx id, so do not remember that id as rejected
+                            if (!tx->ContainsSatisfierOpReturn())
                                 recentRejects.insert(tx->GetId());
 
                             if (txd.whitelisted && fWhiteListForceRelay)
@@ -957,8 +958,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
     {
         fRequireStandard = false;
     }
-    bool fSatisfierDependent = false;
-    if (fRequireStandard && !IsStandardTx(tx, reason, &fSatisfierDependent))
+    if (fRequireStandard && !IsStandardTx(tx, reason))
     {
         if (debugger)
         {
@@ -971,8 +971,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
         else
         {
             state.SetDebugMessage("IsStandardTx failed");
-            // Input boundaries and serialized size can differ for the same id.
-            return state.DoS(0, false, REJECT_NONSTANDARD, reason, fSatisfierDependent);
+            return state.DoS(0, false, REJECT_NONSTANDARD, reason);
         }
     }
 
@@ -1012,7 +1011,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
             }
             else
             {
-                return state.DoS(0, false, REJECT_INVALID, "txn-undersize", true);
+                return state.DoS(0, false, REJECT_INVALID, "txn-undersize");
             }
         }
     }
@@ -1260,7 +1259,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                 }
                 else
                 {
-                    return state.DoS(0, false, REJECT_NONSTANDARD, "bad-txns-nonstandard-inputs", true);
+                    return state.Invalid(false, REJECT_NONSTANDARD, "bad-txns-nonstandard-inputs");
                 }
             }
 
@@ -1307,7 +1306,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                 else
                 {
                     return state.DoS(
-                        0, false, REJECT_INVALID, "bad-txns-too-many-sigchecks", true, strprintf("%d", nSigOps));
+                        0, false, REJECT_INVALID, "bad-txns-too-many-sigchecks", false, strprintf("%d", nSigOps));
                 }
             }
             // Place sigchecks into the mempool sigops field, since these are not cotemporaneous

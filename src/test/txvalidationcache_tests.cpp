@@ -811,26 +811,9 @@ BOOST_FIXTURE_TEST_CASE(block_body_recut_rewinds_download_cursors, RecutBlockSet
     BOOST_CHECK(chainActive.Contains(LookupBlockIndex(hash)));
 }
 
-BOOST_FIXTURE_TEST_CASE(recut_satisfiers_do_not_poison_reject_cache, RecutBlockSetup)
+// Runs tx through the admission thread, as a tx received from a peer is
+static void AdmitFromPeer(const CTransactionRef &tx)
 {
-    MakeBlocks();
-    const uint256 id = honest->vtx[1]->GetId();
-    CValidationState alteredState;
-    bool missing = false;
-    BOOST_CHECK(!AcceptToMemoryPool(
-        mempool, alteredState, altered->vtx[1], false, &missing, false, TransactionClass::STANDARD));
-    BOOST_CHECK(!missing);
-    BOOST_CHECK_EQUAL(alteredState.GetRejectReason(), "scriptsig-not-pushonly");
-    BOOST_CHECK(alteredState.CorruptionPossible());
-
-    CMutableTransaction dust(*honest->vtx[1]);
-    dust.vout[0].nValue = 1;
-    CValidationState dustState;
-    BOOST_CHECK(!AcceptToMemoryPool(
-        mempool, dustState, MakeTransactionRef(dust), false, &missing, false, TransactionClass::STANDARD));
-    BOOST_CHECK_EQUAL(dustState.GetRejectReason(), "dust");
-    BOOST_CHECK(!dustState.CorruptionPossible());
-
     const CChainParams savedParams = Params();
     const auto admissionThreads = numTxAdmissionThreads.Value();
     const bool previousShutdown = shutdown_threads.load();
@@ -851,24 +834,44 @@ BOOST_FIXTURE_TEST_CASE(recut_satisfiers_do_not_poison_reject_cache, RecutBlockS
     BOOST_REQUIRE(Params().RequireStandard());
     numTxAdmissionThreads.Set(1);
     shutdown_threads.store(false);
-    BOOST_REQUIRE_EQUAL(TxAlreadyHave(MSG_TX, id), 0U);
+    BOOST_REQUIRE_EQUAL(TxAlreadyHave(MSG_TX, tx->GetId()), 0U);
     CTxInputData incoming;
-    incoming.tx = altered->vtx[1];
+    incoming.tx = tx;
     incoming.msgCookie = 0;
     EnqueueTxForAdmission(incoming);
     worker = boost::thread(&ThreadTxAdmission);
-    for (int i = 0; i < 500 && !filterTransactionKnown.contains(id); i++)
+    for (int i = 0; i < 500 && !filterTransactionKnown.contains(tx->GetId()); i++)
         MilliSleep(10);
+    BOOST_REQUIRE(filterTransactionKnown.contains(tx->GetId()));
+}
 
-    BOOST_REQUIRE(filterTransactionKnown.contains(id));
-    BOOST_CHECK(!recentRejects.contains(id));
-    BOOST_CHECK_EQUAL(TxMayAlreadyHave(MSG_TX, id), 0U);
-    CValidationState honestState;
-    const bool accepted =
-        AcceptToMemoryPool(mempool, honestState, honest->vtx[1], false, &missing, false, TransactionClass::STANDARD);
-    BOOST_CHECK_MESSAGE(accepted, honestState.GetLogString());
-    BOOST_CHECK(mempool.exists(id));
-    mempool.clear();
+BOOST_FIXTURE_TEST_CASE(op_return_satisfier_rejects_are_not_cached, RecutBlockSetup)
+{
+    // An altered copy that still parses needs an OP_RETURN in a satisfier and shares the honest tx id, so a
+    // rejected tx with one must not be remembered as rejected
+    MakeBlocks();
+    CMutableTransaction withOpReturn(*honest->vtx[1]);
+    withOpReturn.vin[0].scriptSig << OP_RETURN; // a legacy scriptSig fails when it runs OP_RETURN
+    const CTransactionRef tx = MakeTransactionRef(withOpReturn);
+    BOOST_REQUIRE(tx->ContainsSatisfierOpReturn());
+
+    AdmitFromPeer(tx);
+    BOOST_CHECK(!mempool.exists(tx->GetId()));
+    BOOST_CHECK(!recentRejects.contains(tx->GetId()));
+    BOOST_CHECK_EQUAL(TxMayAlreadyHave(MSG_TX, tx->GetId()), 0U);
+}
+
+BOOST_FIXTURE_TEST_CASE(other_rejects_are_cached, RecutBlockSetup)
+{
+    MakeBlocks();
+    CMutableTransaction dust(*honest->vtx[1]);
+    dust.vout[0].nValue = 1;
+    const CTransactionRef tx = MakeTransactionRef(dust);
+    BOOST_REQUIRE(!tx->ContainsSatisfierOpReturn());
+
+    AdmitFromPeer(tx);
+    BOOST_CHECK(!mempool.exists(tx->GetId()));
+    BOOST_CHECK(recentRejects.contains(tx->GetId()));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -63,11 +63,9 @@ static const bool DEFAULT_ACCEPT_DATACARRIER = true;
 bool IsStandard(const CScript &scriptPubKey, txnouttype &whichType);
 /**
  * Check for standard transaction types
- * @param[out] pfSatisfierDependent set if the failure depends on the exact satisfier bytes, which the txid does
- *             not commit to
  * @return True if all outputs (scriptPubKeys) use only standard transaction forms
  */
-bool IsStandardTx(const CTransactionRef tx, std::string &reason, bool *pfSatisfierDependent = nullptr);
+bool IsStandardTx(const CTransactionRef tx, std::string &reason);
 /**
  * Check for standard transaction types
  * @param[in] mapInputs    Map of previous transactions that have outputs we're spending
