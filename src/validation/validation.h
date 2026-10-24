@@ -243,16 +243,14 @@ bool DisconnectTip(CValidationState &state, const Consensus::Params &consensusPa
 bool ActivateBestChain(CValidationState &state,
     const CChainParams &chainparams,
     ConstCBlockRef pblock = nullptr,
-    bool fParallel = false,
-    CNode *pfrom = nullptr);
+    bool fParallel = false);
 
 /** Find the best known block, and make it the tip of the block chain.  Expects that cs_main is taken and
     tx admission is paused. */
 bool _ActivateBestChain(CValidationState &state,
     const CChainParams &chainparams,
     ConstCBlockRef pblock = nullptr,
-    bool fParallel = false,
-    CNode *pfrom = nullptr);
+    bool fParallel = false);
 
 /** Initially performs a re-org if necessary before connecting all the blocks to the most work chain */
 bool ActivateBestChainSummaryBlocks(CValidationState &state,

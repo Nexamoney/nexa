@@ -4615,21 +4615,13 @@ bool ActivateBestChainSummaryBlocks(CValidationState &state,
  * or an activated best chain. pblock is either nullptr or a pointer to a block
  * that is already loaded (to avoid loading it again from disk).
  */
-bool ActivateBestChain(CValidationState &state,
-    const CChainParams &chainparams,
-    ConstCBlockRef pblock,
-    bool fParallel,
-    CNode *pfrom)
+bool ActivateBestChain(CValidationState &state, const CChainParams &chainparams, ConstCBlockRef pblock, bool fParallel)
 {
     LOCK(cs_main);
-    return _ActivateBestChain(state, chainparams, pblock, fParallel, pfrom);
+    return _ActivateBestChain(state, chainparams, pblock, fParallel);
 }
 
-bool _ActivateBestChain(CValidationState &state,
-    const CChainParams &chainparams,
-    ConstCBlockRef pblock,
-    bool fParallel,
-    CNode *pfrom)
+bool _ActivateBestChain(CValidationState &state, const CChainParams &chainparams, ConstCBlockRef pblock, bool fParallel)
 {
     bool result = true;
     CBlockIndex *pindexMostWork = nullptr;
@@ -4729,22 +4721,12 @@ bool _ActivateBestChain(CValidationState &state,
         if (!ActivateBestChainSummaryBlocks(state, chainparams, pindexMostWork,
                 ((pblock) && pblock->GetHash() == pindexMostWork->GetBlockHash() ? pblock : nullptr), fParallel, false))
         {
-            // If we fail to activate a chain because it is bad, send a reject message
-            // but keep iterating to reactivate the best known chain.
-            int nDoS = 0;
-            if (state.IsInvalid(nDoS))
+            // If we fail to activate a chain because it is bad, keep iterating to reactivate the best known chain.
+            // InvalidBlockFound() already sent the reject to the peer that sent the block.
+            if (state.IsInvalid())
             {
                 LOGA("Chain activation failed, returning to next best choice\n");
                 result = false;
-
-                if (pfrom)
-                {
-                    if (pblock)
-                        pfrom->PushMessage(NetMsgType::REJECT, (std::string)NetMsgType::BLOCK, state.GetRejectCode(),
-                            state.GetRejectReason().substr(0, MAX_REJECT_MESSAGE_LENGTH), pblock->GetHash());
-                    if (nDoS > 0)
-                        dosMan.Misbehaving(pfrom, nDoS, BanReasonInvalidBlock);
-                }
             }
             else
             {
