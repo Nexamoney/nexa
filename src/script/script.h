@@ -960,6 +960,23 @@ public:
     }
 
     /**
+     * Returns true if the well-formed script contains an OP_RETURN opcode.
+     */
+    bool ContainsOpReturn() const
+    {
+        const_iterator pc = begin();
+        while (pc < end())
+        {
+            opcodetype opcode;
+            if (!GetOp(pc, opcode))
+                return false;
+            if (opcode == OP_RETURN)
+                return true;
+        }
+        return false;
+    }
+
+    /**
      * Returns whether the script is guaranteed to fail at execution,
      * regardless of the initial stack. This allows outputs to be pruned
      * instantly when entering the UTXO set.

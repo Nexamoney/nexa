@@ -355,6 +355,17 @@ public:
     // the data ID is defined as a 4 byte pushdata containing a little endian 4 byte integer.
     bool HasData(uint32_t dataID) const;
 
+    /** Return true if any input's satisfier script (scriptSig) contains an OP_RETURN. */
+    bool ContainsSatisfierOpReturn() const
+    {
+        for (const auto &in : vin)
+        {
+            if (in.scriptSig.ContainsOpReturn())
+                return true;
+        }
+        return false;
+    }
+
     /** Return sum of txouts. */
     CAmount GetValueOut() const;
     /** Return sum of non-readonly txins. */
