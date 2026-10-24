@@ -67,40 +67,25 @@ void DoubleSpendProofStorage::addOrphan(const DoubleSpendProof &proof, NodeId pe
 
     const size_t proofSize = ::GetSerializeSize(proof, SER_NETWORK, PROTOCOL_VERSION);
     // reject likely garbage orphan proofs that are very large
-    if (proofSize > MAX_ORPHAN_DSPROOF_BYTES)
+    if (proofSize > MAX_ORPHAN_DSPROOF_SIZE)
     {
-        LOG(DSPROOF, "Dropping orphan dsproof from peer:%d, it is larger than the orphan limit\n", peerId);
+        LOG(DSPROOF, "Dropping orphan dsproof from peer:%d, it is larger than the orphan proof size limit\n", peerId);
         return;
     }
 
     // Evict the oldest orphans. Ids increase as proofs are added, so the lowest id is the oldest.
-    auto orphanSize = [this](int id)
-    {
-        auto iter = m_proofs.find(id);
-        return iter == m_proofs.end() ? 0 : ::GetSerializeSize(iter->second, SER_NETWORK, PROTOCOL_VERSION);
-    };
-    size_t orphanBytes = 0;
-    size_t peerOrphans = 0;
-    int oldestPeerOrphan = -1;
-    for (const auto &orphan : m_orphans)
-    {
-        if (orphan.second.first == peerId && peerOrphans++ == 0)
-            oldestPeerOrphan = orphan.first;
-
-        orphanBytes += orphanSize(orphan.first);
-    }
-    auto evict = [this, &orphanBytes, &orphanSize](int id)
+    auto evict = [this](int id)
     {
         LOG(DSPROOF, "Evicting orphan dsproof %d to stay within the orphan limits\n", id);
-        orphanBytes -= orphanSize(id);
         remove(id);
         // remove() skips ids missing from m_proofs, so erase anyway so that the loop below always ends
-        m_orphans.erase(id);
+        eraseOrphan(id);
     };
-    if (peerOrphans >= MAX_ORPHAN_DSPROOFS_PER_PEER)
-        evict(oldestPeerOrphan);
+    auto peerOrphans = m_orphansByPeer.find(peerId);
+    if (peerOrphans != m_orphansByPeer.end() && peerOrphans->second.size() >= MAX_ORPHAN_DSPROOFS_PER_PEER)
+        evict(*peerOrphans->second.begin());
 
-    while (!m_orphans.empty() && orphanBytes + proofSize > MAX_ORPHAN_DSPROOF_BYTES)
+    while (!m_orphans.empty() && m_orphanBytes + proofSize > MAX_ORPHAN_DSPROOF_BYTES)
         evict(m_orphans.begin()->first);
 
     const auto res = add(proof);
@@ -109,7 +94,29 @@ void DoubleSpendProofStorage::addOrphan(const DoubleSpendProof &proof, NodeId pe
 
     const int32_t id = res.second;
     m_orphans.emplace(id, std::make_pair(peerId, GetTime()));
+    m_orphanBytes += proofSize;
+    m_orphansByPeer[peerId].insert(id);
     m_prevTxIdLookupTable[proof.Outpoint().hash.GetCheapHash()].push_back(id);
+}
+
+void DoubleSpendProofStorage::eraseOrphan(int proofId)
+{
+    AssertLockHeld(dsproofStorageLock);
+    auto orphan = m_orphans.find(proofId);
+    if (orphan == m_orphans.end())
+        return;
+
+    auto proofIter = m_proofs.find(proofId);
+    if (proofIter != m_proofs.end())
+        m_orphanBytes -= ::GetSerializeSize(proofIter->second, SER_NETWORK, PROTOCOL_VERSION);
+    auto peerOrphans = m_orphansByPeer.find(orphan->second.first);
+    if (peerOrphans != m_orphansByPeer.end())
+    {
+        peerOrphans->second.erase(proofId);
+        if (peerOrphans->second.empty())
+            m_orphansByPeer.erase(peerOrphans);
+    }
+    m_orphans.erase(orphan);
 }
 
 std::list<std::pair<int, int> > DoubleSpendProofStorage::findOrphans(const COutPoint &prevOut)
@@ -151,13 +158,24 @@ size_t DoubleSpendProofStorage::orphanLookupCount() const
         count += entry.second.size();
     return count;
 }
+size_t DoubleSpendProofStorage::orphanBytes() const
+{
+    LOCK(dsproofStorageLock);
+    return m_orphanBytes;
+}
+size_t DoubleSpendProofStorage::peerOrphanCount(NodeId peerId) const
+{
+    LOCK(dsproofStorageLock);
+    auto peerOrphans = m_orphansByPeer.find(peerId);
+    return peerOrphans == m_orphansByPeer.end() ? 0 : peerOrphans->second.size();
+}
 void DoubleSpendProofStorage::claimOrphan(int proofId)
 {
     LOCK(dsproofStorageLock);
     auto orphan = m_orphans.find(proofId);
     if (orphan != m_orphans.end())
     {
-        m_orphans.erase(orphan);
+        eraseOrphan(proofId);
 
         for (auto iter = m_prevTxIdLookupTable.begin(); iter != m_prevTxIdLookupTable.end(); ++iter)
         {
@@ -186,7 +204,7 @@ void DoubleSpendProofStorage::remove(int proof)
     auto orphan = m_orphans.find(iter->first);
     if (orphan != m_orphans.end())
     {
-        m_orphans.erase(orphan);
+        eraseOrphan(proof);
         auto orphanLookup = m_prevTxIdLookupTable.find(iter->second.Outpoint().hash.GetCheapHash());
         if (orphanLookup != m_prevTxIdLookupTable.end())
         {
