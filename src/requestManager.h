@@ -53,8 +53,6 @@ static const uint32_t MAX_SOURCES_TO_ADD = 3;
 
 // When should I request a tx from someone else (in microseconds).
 static const unsigned int DEFAULT_MIN_TX_REQUEST_RETRY_INTERVAL = 5 * 1000 * 1000;
-// A tx rejected for insufficient fee is retried after this many retry intervals
-static const int64_t RATE_LIMITED_TX_BACKOFF = 8;
 
 // When should I request a block from someone else (in microseconds).
 static const unsigned int DEFAULT_MIN_BLK_REQUEST_RETRY_INTERVAL = 5 * 1000 * 1000;
@@ -113,7 +111,6 @@ class CUnknownObj
 public:
     typedef std::list<CNodeRequestData> ObjectSourceList;
     CInv obj;
-    bool rateLimited;
     int64_t nDownloadingSince; // last time we started downloading the object
     bool fProcessing; // object was received but is still being processed
     int64_t lastRequestTime; // In stopwatch time microseconds, 0 means no request
@@ -125,7 +122,6 @@ public:
 
     CUnknownObj()
     {
-        rateLimited = false;
         nDownloadingSince = 0;
         fProcessing = false;
         outstandingReqs = 0;

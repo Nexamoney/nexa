@@ -1508,14 +1508,15 @@ BOOST_AUTO_TEST_CASE(reject_does_not_pin_txn_requests)
     rman.SendRequests();
     BOOST_REQUIRE(rman_access.GetMapTxnInfo().count(inv.hash));
 
+    BOOST_CHECK_EQUAL(rman_access.GetMapTxnInfo()[inv.hash].outstandingReqs, 1);
+
     // A reject from B, which was never asked, is ignored
     rman.Rejected(inv, nodeB, REJECT_INSUFFICIENTFEE);
-    BOOST_CHECK(!rman_access.GetMapTxnInfo()[inv.hash].rateLimited);
+    BOOST_CHECK_EQUAL(rman_access.GetMapTxnInfo()[inv.hash].outstandingReqs, 1);
 
-    // A reject from A rate limits it, but only for a while: it is then retried and, with no
-    // sources left, dropped
+    // A reject from A is counted, and the request is then retried and, with no sources left, dropped
     rman.Rejected(inv, nodeA, REJECT_INSUFFICIENTFEE);
-    BOOST_CHECK(rman_access.GetMapTxnInfo()[inv.hash].rateLimited);
+    BOOST_CHECK_EQUAL(rman_access.GetMapTxnInfo()[inv.hash].outstandingReqs, 0);
     MilliSleep(50);
     rman_access.SendTxnReRequests();
     BOOST_CHECK_EQUAL(rman_access.GetSetDeleter().count(inv.hash), 1);

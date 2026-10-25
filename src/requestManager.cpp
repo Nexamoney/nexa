@@ -461,7 +461,6 @@ void CRequestManager::Rejected(const CInv &obj, CNode *from, unsigned char reaso
     }
     else if (reason == REJECT_INSUFFICIENTFEE)
     {
-        item->second.rateLimited = true;
     }
     else if (reason == REJECT_DUPLICATE)
     {
@@ -1211,112 +1210,105 @@ void CRequestManager::SendTxnRequests(OdMap &mapTxns)
         // if never requested then lastRequestTime==0 so this will always be true
         if (now - item.lastRequestTime > _txReqRetryInterval)
         {
-            // A rate limited item backs off longer, then is retried from its next source like any other
-            if (item.rateLimited && now - item.lastRequestTime > RATE_LIMITED_TX_BACKOFF * _txReqRetryInterval)
-                item.rateLimited = false;
-
-            if (!item.rateLimited)
+            // If item.lastRequestTime is true then we've requested at least once, so this is a rerequest -> a txn
+            // request was dropped.
+            if (item.lastRequestTime)
             {
-                // If item.lastRequestTime is true then we've requested at least once, so this is a rerequest -> a txn
-                // request was dropped.
-                if (item.lastRequestTime)
-                {
-                    LOG(REQ, "Request timeout for %s.  Retrying\n", item.obj.ToString().c_str());
-                }
+                LOG(REQ, "Request timeout for %s.  Retrying\n", item.obj.ToString().c_str());
+            }
 
-                if (item.availableFrom.empty())
+            if (item.availableFrom.empty())
+            {
+                // There can be no block sources because a node dropped out.  In this case, nothing can be done so
+                // remove the item.
+                LOG(REQ, "Tx has no sources for %s.  Removing\n", item.obj.ToString().c_str());
+                cleanup(itemIter);
+            }
+            else // Ok, we have at least one source so request this item.
+            {
+                CNodeRequestData next;
+                // Go thru the availableFrom list, looking for the first node that isn't disconnected
+                while (!item.availableFrom.empty() && (next.noderef.get() == nullptr))
                 {
-                    // There can be no block sources because a node dropped out.  In this case, nothing can be done so
-                    // remove the item.
-                    LOG(REQ, "Tx has no sources for %s.  Removing\n", item.obj.ToString().c_str());
-                    cleanup(itemIter);
-                }
-                else // Ok, we have at least one source so request this item.
-                {
-                    CNodeRequestData next;
-                    // Go thru the availableFrom list, looking for the first node that isn't disconnected
-                    while (!item.availableFrom.empty() && (next.noderef.get() == nullptr))
-                    {
-                        next = item.availableFrom.front(); // Grab the next location where we can find this object.
-                        item.availableFrom.pop_front();
-                        if (next.noderef.get() != nullptr)
-                        {
-                            // Node was disconnected so we can't request from it
-                            if (next.noderef.get()->IsDisconnecting())
-                            {
-                                continue;
-                            }
-                        }
-                    }
-
+                    next = item.availableFrom.front(); // Grab the next location where we can find this object.
+                    item.availableFrom.pop_front();
                     if (next.noderef.get() != nullptr)
                     {
-                        // This commented code skips requesting TX if the node is not synced. The request
-                        // manager should not make this decision but rather the caller should not give us the TX.
-                        if (1)
+                        // Node was disconnected so we can't request from it
+                        if (next.noderef.get()->IsDisconnecting())
                         {
-                            // If item.lastRequestTime is true then we've requested at least once, so this is a
-                            // rerequest -> a txn request was dropped.
-                            if (item.lastRequestTime)
-                            {
-                                LOG(REQ, "Request timeout for %s.  Retrying\n", item.obj.ToString().c_str());
-                                // Not reducing inFlight; it's still outstanding and will be cleaned up when
-                                // item is removed from map.
-                                // Note we can never be sure its really dropped verses just delayed for a long
-                                // time so this is not authoritative.
-                                droppedTxns += 1;
+                            continue;
+                        }
+                    }
+                }
 
-                                // if we've requested before then increment the re-request counter for the
-                                // previous peer we requested from.
-                                if (item.prevRequestNode.get() != nullptr)
-                                    item.prevRequestNode.get()->nReRequests++;
+                if (next.noderef.get() != nullptr)
+                {
+                    // This commented code skips requesting TX if the node is not synced. The request
+                    // manager should not make this decision but rather the caller should not give us the TX.
+                    if (1)
+                    {
+                        // If item.lastRequestTime is true then we've requested at least once, so this is a
+                        // rerequest -> a txn request was dropped.
+                        if (item.lastRequestTime)
+                        {
+                            LOG(REQ, "Request timeout for %s.  Retrying\n", item.obj.ToString().c_str());
+                            // Not reducing inFlight; it's still outstanding and will be cleaned up when
+                            // item is removed from map.
+                            // Note we can never be sure its really dropped verses just delayed for a long
+                            // time so this is not authoritative.
+                            droppedTxns += 1;
+
+                            // if we've requested before then increment the re-request counter for the
+                            // previous peer we requested from.
+                            if (item.prevRequestNode.get() != nullptr)
+                                item.prevRequestNode.get()->nReRequests++;
+                        }
+
+                        item.outstandingReqs++;
+                        item.lastRequestTime = now;
+                        item.prevRequestNode = next.noderef;
+
+                        if (next.noderef.get()->fPeerWantsINV2)
+                        {
+                            uint64_t cheaphash = item.obj.hash.GetCheapHash();
+                            mapBatchTxnRequestsInv2[next.noderef].emplace_back(CExtInv(MSG_EXT_TX, cheaphash));
+
+                            // If we have 1000 requests for this peer then send them right away.
+                            if (mapBatchTxnRequestsInv2[next.noderef].size() >= 1000)
+                            {
+                                next.noderef.get()->PushMessageWithCookie(NetMsgType::EXTGETDATA,
+                                    (++requestCookie << 16), mapBatchTxnRequestsInv2[next.noderef]);
+
+                                LOG(REQ, "Sent batched request with %d transactions to node %s\n",
+                                    mapBatchTxnRequestsInv2[next.noderef].size(), next.noderef.get()->GetLogName());
+
+                                mapBatchTxnRequestsInv2.erase(next.noderef);
                             }
+                        }
+                        else
+                        {
+                            mapBatchTxnRequests[next.noderef].emplace_back(item.obj);
 
-                            item.outstandingReqs++;
-                            item.lastRequestTime = now;
-                            item.prevRequestNode = next.noderef;
-
-                            if (next.noderef.get()->fPeerWantsINV2)
+                            // If we have 1000 requests for this peer then send them right away.
+                            if (mapBatchTxnRequests[next.noderef].size() >= 1000)
                             {
-                                uint64_t cheaphash = item.obj.hash.GetCheapHash();
-                                mapBatchTxnRequestsInv2[next.noderef].emplace_back(CExtInv(MSG_EXT_TX, cheaphash));
+                                next.noderef.get()->PushMessageWithCookie(
+                                    NetMsgType::GETDATA, getCookie(), mapBatchTxnRequests[next.noderef]);
+                                LOG(REQ, "Sent batched request with %d transactions to node %s\n",
+                                    mapBatchTxnRequests[next.noderef].size(), next.noderef.get()->GetLogName());
 
-                                // If we have 1000 requests for this peer then send them right away.
-                                if (mapBatchTxnRequestsInv2[next.noderef].size() >= 1000)
-                                {
-                                    next.noderef.get()->PushMessageWithCookie(NetMsgType::EXTGETDATA,
-                                        (++requestCookie << 16), mapBatchTxnRequestsInv2[next.noderef]);
-
-                                    LOG(REQ, "Sent batched request with %d transactions to node %s\n",
-                                        mapBatchTxnRequestsInv2[next.noderef].size(), next.noderef.get()->GetLogName());
-
-                                    mapBatchTxnRequestsInv2.erase(next.noderef);
-                                }
-                            }
-                            else
-                            {
-                                mapBatchTxnRequests[next.noderef].emplace_back(item.obj);
-
-                                // If we have 1000 requests for this peer then send them right away.
-                                if (mapBatchTxnRequests[next.noderef].size() >= 1000)
-                                {
-                                    next.noderef.get()->PushMessageWithCookie(
-                                        NetMsgType::GETDATA, getCookie(), mapBatchTxnRequests[next.noderef]);
-                                    LOG(REQ, "Sent batched request with %d transactions to node %s\n",
-                                        mapBatchTxnRequests[next.noderef].size(), next.noderef.get()->GetLogName());
-
-                                    mapBatchTxnRequests.erase(next.noderef);
-                                }
+                                mapBatchTxnRequests.erase(next.noderef);
                             }
                         }
                     }
-                    else
-                    {
-                        // We requested from all available sources so remove the source. This should not
-                        // happen and would indicate some other problem.
-                        LOG(REQ, "Tx has no sources for %s.  Removing\n", item.obj.ToString().c_str());
-                        cleanup(itemIter);
-                    }
+                }
+                else
+                {
+                    // We requested from all available sources so remove the source. This should not
+                    // happen and would indicate some other problem.
+                    LOG(REQ, "Tx has no sources for %s.  Removing\n", item.obj.ToString().c_str());
+                    cleanup(itemIter);
                 }
             }
         }
