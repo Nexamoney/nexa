@@ -751,4 +751,36 @@ BOOST_AUTO_TEST_CASE(get_next_harder_compact_bits_test)
     }
 }
 
+// A fork from an old block pays its parent's difficulty for its first header only. That header can carry the
+// current time, which puts the fork far behind the ASERT schedule, so every later header is at powLimit (NX-19).
+BOOST_AUTO_TEST_CASE(asert_fork_from_old_block_reaches_pow_limit)
+{
+    SelectParams(CBaseChainParams::NEXA);
+    const Consensus::Params &params = Params().GetConsensus();
+    const uint32_t powLimitBits = UintToArith256(params.powLimit).GetCompact();
+    CBlockHeader blkHeaderDummy;
+
+    std::vector<CBlockIndex> blocks(1003);
+    blocks[0].SetBlockHeaderHeight(0);
+    blocks[0].SetBlockHeaderTime(1656000000);
+    blocks[0].SetBlockHeaderBits(powLimitBits);
+    blocks[0].SetBlockHeaderChainWork(ArithToUint256(blocks[0].GetBlockWork()));
+    // Anchor and an on-schedule chain far harder than powLimit
+    const arith_uint256 chainTarget = UintToArith256(params.powLimit) >> 30;
+    blocks[1] = GetBlockIndex(&blocks[0], params.nPowTargetSpacing, chainTarget.GetCompact());
+    for (size_t i = 2; i < 1002; i++)
+    {
+        uint32_t nBits = GetNextASERTWorkRequired(&blocks[i - 1], &blkHeaderDummy, params, &blocks[1]);
+        blocks[i] = GetBlockIndex(&blocks[i - 1], params.nPowTargetSpacing, nBits);
+    }
+
+    // The fork's first header, 90 days after its parent, still needs the chain's difficulty
+    uint32_t forkBits = GetNextASERTWorkRequired(&blocks[1001], &blkHeaderDummy, params, &blocks[1]);
+    BOOST_CHECK(forkBits != powLimitBits);
+    blocks[1002] = GetBlockIndex(&blocks[1001], 90 * 24 * 3600, forkBits);
+
+    // Every header after it is at the minimum difficulty
+    BOOST_CHECK_EQUAL(GetNextASERTWorkRequired(&blocks[1002], &blkHeaderDummy, params, &blocks[1]), powLimitBits);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
