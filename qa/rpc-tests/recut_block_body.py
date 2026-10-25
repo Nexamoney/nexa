@@ -3,6 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 import test_framework.loginit
+import traceback
 
 # The transaction id hashes the input satisfier scripts joined by a 0xff
 # separator, with no length prefix. Two different sets of scriptSigs that
@@ -55,6 +56,9 @@ import test_framework.loginit
 # Finally, every block whose altered body was stored and then replaced must
 # return the honest bytes from getblock, also after a restart, when the body
 # is read from disk instead of the block cache.
+#
+# Scenarios 10 to 13 check invalid-chain bookkeeping, source attribution for
+# an uncached body, repeated bodies from a whitelisted peer, and policy-only bans.
 #
 # Every scenario runs even if an earlier one fails, and the test reports all
 # failures at the end.
@@ -182,6 +186,18 @@ def block_reject_count(peer, block_hash):
 def connection_dropped(peer):
     with mininode_lock:
         return bool(getattr(peer, "disconnected", False))
+
+
+def ban_reasons(node):
+    # The test peers all connect from 127.0.0.1, so a ban of any of them is listed under that address
+    return [b["ban_reason"] for b in node.listbanned() if b["address"].startswith("127.0.0.1")]
+
+
+def create_cache_coinbase(height):
+    coinbase = create_coinbase(height)
+    coinbase.vout[0].scriptPubKey += CScript([OP_RETURN, b"\x00" * 90000])
+    coinbase.rehash()
+    return coinbase
 
 
 def recut_transaction(tx, cut):
@@ -404,14 +420,15 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         # announcements are direct-fetched instead of treated as ancient.
         enable_mocktime()
         # Full-block GETDATA only. One message thread keeps B's announcement
-        # ordered ahead of A's body. A localhost peer is never banned and its
-        # ban score is reset to 0, so the checks look at which peer gets the
-        # block reject instead.
+        # ordered ahead of A's body. The test peers connect from localhost, which
+        # is normally never banned; test.banLocalPeers bans them so the checks can
+        # see which peer is dropped. Bans are cleared between scenarios.
         self.extra_args = [[
             "-debug=validation",
             "-debug=net",
             "-debug=req",
             "-debug=mempool",
+            "-debug=blk",
             "-logtimemicros=1",
             "-test.parallel=0",
             "-use-thinblocks=0",
@@ -419,6 +436,7 @@ class RecutBlockBodyTest(BitcoinTestFramework):
             "-use-compactblocks=0",
             "-net.msgHandlerThreads=1",
             "-net.txAdmissionThreads=1",
+            "-test.banLocalPeers=1",
         ]]
 
     def make_block(self, txns):
@@ -452,7 +470,8 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         altered scriptSigs no longer decode (rejected at deserialization -- the
         block never enters the index, so success is A's connection being dropped
         or a parse-error reject), False when they decode but fail script
-        validation (a hash-carrying block reject).
+        validation (a hash-carrying block reject, or A banned as "Invalid block":
+        the ban can close A's connection before the reject reaches it).
         """
         print("[%s] honest tx\n" % label, honest_tx)
         print("[%s] altered tx\n" % label, altered_tx)
@@ -505,6 +524,10 @@ class RecutBlockBodyTest(BitcoinTestFramework):
                 return connection_dropped(peer_a) or malformed_block_reject(peer_a) is not None
             reject = block_reject(peer_a, block_hash)
             if reject is None:
+                # test.banLocalPeers: the DoS(100) for the invalid body bans A, and the disconnect can win
+                # the race with the reject. The ban reason still shows it failed validation, not parsing.
+                if connection_dropped(peer_a) and "Invalid block" in ban_reasons(node):
+                    return True
                 return False
             reason = reject.reason.decode("utf-8", "replace")
             # The script queue reports this failure as bad-blk-signatures.
@@ -518,8 +541,9 @@ class RecutBlockBodyTest(BitcoinTestFramework):
             if malformed:
                 return "[%s] sender not dropped and no parse-error reject for H\ntip=%s\ndropped=%s\nrejects=%s" % (
                     label, node.getbestblockhash(), connection_dropped(peer_a), rejects)
-            return "[%s] no block reject for H\ntip=%s\ntips=%s\nrejects=%s" % (
-                label, node.getbestblockhash(), node.getchaintips(), rejects)
+            return "[%s] no block reject or invalid-block ban for H\ntip=%s\ntips=%s\nrejects=%s\ndropped=%s\nbans=%s" % (
+                label, node.getbestblockhash(), node.getchaintips(), rejects, connection_dropped(peer_a),
+                ban_reasons(node))
 
         waitFor(30, altered_failed, reject_timeout, sleepAmt=1)
         assert_equal(node.getbestblockhash(), start_tip)
@@ -553,11 +577,11 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         waitFor(30, lambda: node.getbestblockhash() == child_rpc,
                 "[%s] child of H did not connect" % label, sleepAmt=0.05)
 
-        assert_equal(peer_b.disconnected, False)
+        assert_equal(connection_dropped(peer_b), False)
         assert_equal(block_reject(peer_b, block_hash), None)
         assert_equal(node.getrawtxpool(), [])
 
-    def run_blame(self, node, peer_a, peer_b, honest_tx, altered_tx, label):
+    def run_blame(self, node, peer_a, peer_b, honest_tx, altered_tx, label, uncached=False):
         """A's altered body for C is stored before its parent P; B then delivers the honest C.
 
         The node must blame A, not the last peer to deliver C, and recover C from B.
@@ -574,7 +598,8 @@ class RecutBlockBodyTest(BitcoinTestFramework):
                               tip["time"] + 1, txns=[])
         parent.solve()
         honest = create_block(parent.gethash(), tip["height"] + 2, int(tip["chainwork"], 16) + 4,
-                              create_coinbase(tip["height"] + 2), getAncHash(tip["height"] + 2, node),
+                              create_cache_coinbase(tip["height"] + 2) if uncached else create_coinbase(tip["height"] + 2),
+                              getAncHash(tip["height"] + 2, node),
                               tip["time"] + 2, txns=[honest_tx])
         honest.solve()
         altered = CBlock()
@@ -584,14 +609,25 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         assert honest.serialize() != altered.serialize()
         assert_equal(altered.gethash(), block_hash)
 
-        # 1. A announces P and C, then delivers only the altered C. It is stored and waits for P.
-        asked_a = getdata_count(peer_a, block_hash)
-        peer_a.send_message(msg_headers([CBlockHeader(parent), CBlockHeader(honest)]))
-        self.wait_getdata(peer_a, block_hash, asked_a, 15, "[%s] peer A was not asked for C" % label)
-        peer_b.send_message(msg_headers([CBlockHeader(parent), CBlockHeader(honest)]))
-        peer_b.sync_with_ping()
+        # 1. Store the altered C before P; the disk-read case requests C from B.
+        if uncached:
+            # Exercise disk loading even when the body comes from a peer that was not asked for it.
+            peer_a.announce(parent)
+            asked_b = getdata_count(peer_b, block_hash)
+            peer_b.send_message(msg_headers([CBlockHeader(parent), CBlockHeader(honest)]))
+            self.wait_getdata(peer_b, block_hash, asked_b, 15, "[%s] peer B was not asked for C" % label)
+        else:
+            asked_a = getdata_count(peer_a, block_hash)
+            peer_a.send_message(msg_headers([CBlockHeader(parent), CBlockHeader(honest)]))
+            self.wait_getdata(peer_a, block_hash, asked_a, 15, "[%s] peer A was not asked for C" % label)
+            peer_b.send_message(msg_headers([CBlockHeader(parent), CBlockHeader(honest)]))
+            peer_b.sync_with_ping()
         peer_a.send_message(msg_block(altered))
         peer_a.sync_with_ping()
+        if uncached:
+            with node.assert_debug_log(expected_msgs=[], unexpected_msgs=[
+                    "Retrieved block from memory cache: " + uint256ToRpcHex(block_hash)]):
+                assert_equal(node.getblock(uint256ToRpcHex(block_hash), 0), altered.serialize().hex())
 
         # 2. B delivers the honest C, which the node already has a body for.
         peer_b.send_message(msg_block(honest))
@@ -607,13 +643,23 @@ class RecutBlockBodyTest(BitcoinTestFramework):
 
         def altered_failed():
             return (block_reject(peer_a, block_hash) is not None or block_reject(peer_b, block_hash) is not None or
-                    connection_dropped(peer_b))
+                    connection_dropped(peer_a) or connection_dropped(peer_b))
 
-        waitFor(30, altered_failed, "[%s] the stored altered body of C was not rejected" % label, sleepAmt=0.5)
-        # The reject goes to the peer the node blames, together with DoS(100)
-        if connection_dropped(peer_b) or block_reject(peer_b, block_hash) is not None:
-            raise AssertionError("[%s] honest peer B was blamed for A's altered body (dropped=%s, reject=%s)" % (
+        waitFor(30, altered_failed, "[%s] no peer was blamed for the stored altered body of C" % label, sleepAmt=0.5)
+        # The reject goes to the peer the node blames, together with DoS(100), which bans it (test.banLocalPeers)
+        waitFor(30, lambda: connection_dropped(peer_a) or connection_dropped(peer_b),
+                "[%s] no peer was banned for the altered body of C" % label, sleepAmt=0.5)
+        if connection_dropped(peer_b):
+            raise AssertionError("[%s] honest peer B was dropped for A's altered body (dropped=%s, reject=%s)" % (
                 label, connection_dropped(peer_b), block_reject(peer_b, block_hash)))
+
+        if block_reject(peer_b, block_hash) is not None:
+            raise AssertionError("[%s] honest peer B was sent a rejection for A's altered body (dropped=%s, reject=%s)" % (
+                label, connection_dropped(peer_b), block_reject(peer_b, block_hash)))
+
+        if not connection_dropped(peer_a):
+            raise AssertionError("[%s] peer A was not banned for its altered body (reject=%s)" % (
+                label, block_reject(peer_a, block_hash)))
         assert_equal(node.getbestblockhash(), parent_rpc)
 
         # 4. The node asks B for C again and connects the honest body.
@@ -645,7 +691,7 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         return altered
 
     def run_bad_source(self, node, peer_a, peer_b, honest_tx, altered_tx, label):
-        """A's altered body fails; A then pushes it again, and the node must not process it."""
+        """A's altered body fails and A is banned; A cannot reconnect to push it again, and B supplies the body."""
         with mininode_lock:
             peer_a.rejects = []
             peer_b.rejects = []
@@ -661,18 +707,27 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         peer_b.sync_with_ping()
         asked_b = getdata_count(peer_b, block_hash)
         peer_a.send_message(msg_block(altered))
-        waitFor(30, lambda: block_reject(peer_a, block_hash) is not None,
+        waitFor(30, lambda: block_reject(peer_a, block_hash) is not None or connection_dropped(peer_a),
                 "[%s] the altered body was not rejected" % label, sleepAmt=0.5)
 
-        # A pushes the same altered body again. It must be ignored, not validated and rejected again.
-        peer_a.send_message(msg_block(altered))
-        peer_a.sync_with_ping()
-        time.sleep(2)
-        peer_a.sync_with_ping()
-        rejects = block_reject_count(peer_a, block_hash)
-        if rejects != 1:
-            raise AssertionError("[%s] A's repeated altered body was validated again (%d block rejects)" %
-                                 (label, rejects))
+        # The altered body costs A DoS(100), so it is disconnected and banned (test.banLocalPeers), and the
+        # honest peer B stays connected.
+        waitFor(30, lambda: connection_dropped(peer_a), "[%s] peer A was not banned" % label, sleepAmt=0.5)
+        assert_equal(connection_dropped(peer_b), False)
+        banned = [b["address"] for b in node.listbanned()]
+        if not any(addr.startswith("127.0.0.1") for addr in banned):
+            raise AssertionError("[%s] A's address is not in the ban list (%s)" % (label, banned))
+
+        # A tries to reconnect to push the same altered body again. The node must refuse the connection.
+        peer_retry = BodyPeer()
+        conn_retry = NodeConn("127.0.0.1", p2p_port(0), node, peer_retry)
+        peer_retry.add_connection(conn_retry)
+        try:
+            waitFor(15, lambda: connection_dropped(peer_retry),
+                    "[%s] banned peer A was allowed to reconnect" % label, sleepAmt=0.2)
+        finally:
+            if not connection_dropped(peer_retry):
+                conn_retry.disconnect_node()
 
         self.wait_getdata(peer_b, block_hash, asked_b, GETDATA_RETRY_TIMEOUT,
                           "[%s] node did not request H from peer B" % label)
@@ -710,8 +765,23 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         peer_a.sync_with_ping()
         asked_b = getdata_count(peer_b, block_hash)
         peer_a.send_message(msg_block(parent))
-        waitFor(30, lambda: block_reject(peer_a, block_hash) is not None,
-                "[%s] the stored altered body of C was not rejected" % label, sleepAmt=0.5)
+        def not_rejected():
+            with mininode_lock:
+                rejects = list(peer_a.rejects)
+            return ("[%s] the stored altered body of C was not rejected\ntip=%s (P=%s C=%s D=%s)\ntips=%s\n"
+                    "A rejects=%s\nA dropped=%s B dropped=%s\nbans=%s" % (
+                        label, node.getbestblockhash(), uint256ToRpcHex(parent.gethash()),
+                        uint256ToRpcHex(block_hash), uint256ToRpcHex(child.gethash()), node.getchaintips(),
+                        rejects, connection_dropped(peer_a), connection_dropped(peer_b), ban_reasons(node)))
+
+        # The altered C costs A DoS(100), which bans it (test.banLocalPeers); the disconnect can beat the reject
+        waitFor(30, lambda: block_reject(peer_a, block_hash) is not None or connection_dropped(peer_a),
+                not_rejected, sleepAmt=0.5)
+        waitFor(30, lambda: connection_dropped(peer_a), "[%s] peer A was not banned for its altered C" % label,
+                sleepAmt=0.5)
+        if connection_dropped(peer_b) or block_reject(peer_b, block_hash) is not None:
+            raise AssertionError("[%s] honest peer B was blamed for A's altered C (dropped=%s, reject=%s)" % (
+                label, connection_dropped(peer_b), block_reject(peer_b, block_hash)))
 
         self.wait_getdata(peer_b, block_hash, asked_b, GETDATA_RETRY_TIMEOUT,
                           "[%s] node did not request C from peer B" % label)
@@ -755,6 +825,85 @@ class RecutBlockBodyTest(BitcoinTestFramework):
                 print("%s getblock %s test FAILED" % (label, when))
         print("stored bodies %s checked (%d blocks)" % (when, len(self.replaced)))
 
+    def run_invalid_chain(self, node, peer_a, peer_b, honest_tx, altered_tx):
+        with node.assert_debug_log(expected_msgs=["bad-blk-signatures"], unexpected_msgs=[
+                "InvalidChainFound: invalid block="]):
+            self.run_recovery(node, peer_a, peer_b, honest_tx, altered_tx, False, "invalid-chain")
+
+    def run_uncached_source(self, node, peer_a, peer_b, honest_tx, altered_tx):
+        tip = node.getblock(node.getbestblockhash())
+        fillers = []
+        # 64 bodies of at least 90 KB exceed the fixed 5 MB cache without advancing the tip.
+        for i in range(64):
+            block = create_block(int(tip["previousblockhash"], 16), tip["height"], int(tip["chainwork"], 16),
+                                 create_cache_coinbase(tip["height"]),
+                                 getAncHash(tip["height"], node), tip["time"] + i + 1, txns=[])
+            block.solve()
+            fillers.append(block)
+            peer_a.send_message(msg_block(block))
+        peer_a.sync_with_ping()
+        assert_equal(node.getbestblockhash(), tip["hash"])
+        for block in fillers:
+            assert_equal(node.getblock(uint256ToRpcHex(block.gethash()), 0), block.serialize().hex())
+        self.run_blame(node, peer_a, peer_b, honest_tx, altered_tx, "uncached-source", uncached=True)
+
+    def run_whitelisted_source(self, node, peer_a, peer_b, honest_tx, altered_tx):
+        honest = self.make_block([honest_tx])
+        honest.solve()
+        altered = self.make_altered(honest, altered_tx)
+        block_hash = honest.gethash()
+        asked_a = getdata_count(peer_a, block_hash)
+        peer_a.announce(honest)
+        self.wait_getdata(peer_a, block_hash, asked_a, 15, "peer A was not asked for H")
+        peer_b.announce(honest)
+        peer_b.sync_with_ping()
+        asked_b = getdata_count(peer_b, block_hash)
+        peer_a.send_message(msg_block(altered))
+        peer_a.sync_with_ping()
+        assert_equal(block_reject_count(peer_a, block_hash), 1)
+        assert_equal(connection_dropped(peer_a), False)
+
+        peer_a.send_message(msg_block(altered))
+        peer_a.sync_with_ping()
+        rejects = block_reject_count(peer_a, block_hash)
+        assert rejects == 1, "whitelisted peer: repeated bad body was validated again (%d rejects)" % rejects
+
+        self.wait_getdata(peer_b, block_hash, asked_b, GETDATA_RETRY_TIMEOUT,
+                          "node did not request H from peer B after the repeated bad body")
+        peer_b.send_message(msg_block(honest))
+        waitFor(30, lambda: node.getbestblockhash() == uint256ToRpcHex(block_hash), "honest H did not connect")
+        self.replaced.append(("whitelisted-source", honest))
+
+    def run_policy_reject(self, node, peer_a, honest_tx):
+        node.set("relay.dustThreshold=%d" % (honest_tx.vout[0].nValue + 1))
+        with node.assert_debug_log(expected_msgs=["Rejected tx: dust(64)"], unexpected_msgs=[
+                "BAN THRESHOLD EXCEEDED"]):
+            peer_a.send_message(msg_tx(honest_tx))
+
+            def rejected():
+                if connection_dropped(peer_a):
+                    return True
+                with mininode_lock:
+                    return any(
+                        r.message == b"tx" and r.code == msg_reject.REJECT_NONSTANDARD for r in peer_a.rejects)
+
+            waitFor(15, rejected, "the transaction was not rejected by dust policy", sleepAmt=0.05)
+            # Acceptance in a block distinguishes relay policy from a consensus failure.
+            block = self.make_block([honest_tx])
+            block.solve()
+            result = node.submitblock(block.serialize().hex())
+            assert_equal(result["result"], None)
+            assert_equal(node.getbestblockhash(), uint256ToRpcHex(block.gethash()))
+            assert_equal(connection_dropped(peer_a), False)
+            assert_equal(node.listbanned(), [])
+
+    def restart_for_scenario(self, extra_args):
+        stop_node(self.nodes[0], 0)
+        node = start_node(0, self.options.tmpdir, self.extra_args[0] + extra_args)
+        self.nodes[0] = node
+        node.setmocktime(node.getblock(node.getbestblockhash())["time"] + 1)
+        return node
+
     def run_scenario(self, node, failures, label, run):
         peer_a, peer_b, conn_a, conn_b, nt = self.new_peers(node)
         try:
@@ -762,15 +911,19 @@ class RecutBlockBodyTest(BitcoinTestFramework):
             print("%s test succeeded" % label)
         except Exception as e:
             print("%s test FAILED: %s" % (label, e))
+            traceback.print_exc()
             failures.append("%s: %s" % (label, e))
         finally:
             self.drop_peers([conn_a, conn_b], nt)
+            # A scenario may ban 127.0.0.1, which would refuse the next scenario's peers
+            node.clearbanned()
 
     def new_peers(self, node):
         """Connect a fresh pair of peers and the network thread that services them.
 
-        Each scenario gets its own peers: a scenario may ban the sender (scenarios
-        2 and 3 do), and a banned connection cannot be reused by the next one.
+        Each scenario gets its own peers: a scenario may ban the sender, and a
+        banned connection cannot be reused by the next one.  run_scenario() clears
+        the ban list after each scenario so these new connections are accepted.
         """
         peer_a = BodyPeer()
         peer_b = BodyPeer()
@@ -809,7 +962,7 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         self.replaced = []
 
         # Scenario 1 (regression): the forged body splits a data push, so the
-        # altered scriptSigs no longer decode and the body is rejected at
+        # altered scriptSigs no longer decode and the block body is rejected at
         # deserialization. CScript::IsWellFormed() must catch this.
         self.run_scenario(node, failures, "split data push", lambda a, b: self.run_recovery(
             node, a, b, *find_recut_pair(node), malformed=True, label="pushdata-recut"))
@@ -826,20 +979,20 @@ class RecutBlockBodyTest(BitcoinTestFramework):
             node, a, b, *make_interior_opcode_pair(node), malformed=False, label="interior-opcode"))
 
         # Scenario 4: both altered scriptSigs are push-only, so no deserialization
-        # check that accepts every valid satisfier can reject the body.
+        # check that accepts every valid satisfier can reject the block body.
         self.run_scenario(node, failures, "op-return-led", lambda a, b: self.run_recovery(
             node, a, b, *make_op_return_led_pair(node), malformed=False, label="op-return-led"))
 
-        # Scenario 5: the altered body is stored before its parent and B later delivers
-        # the honest one. Only A may be blamed when the stored body fails.
+        # Scenario 5: the altered block body is stored before its parent and B later delivers
+        # the honest one. Only A may be blamed when the stored block body fails.
         self.run_scenario(node, failures, "blame honest peer", lambda a, b: self.run_blame(
             node, a, b, *make_op_return_led_pair(node), label="blame-honest-peer"))
 
-        # Scenario 6: a peer that sent a bad body is not listened to again for that block.
+        # Scenario 6: a peer that sent a bad block body is not listened to again for that block.
         self.run_scenario(node, failures, "bad source", lambda a, b: self.run_bad_source(
             node, a, b, *make_op_return_led_pair(node), label="bad-source"))
 
-        # Scenario 7: a stored descendant of the altered body connects once the body is replaced.
+        # Scenario 7: a stored descendant of the altered block body connects once the block body is replaced.
         self.run_scenario(node, failures, "stored descendant", lambda a, b: self.run_descendant(
             node, a, b, *make_op_return_led_pair(node), label="stored-descendant"))
 
@@ -848,6 +1001,21 @@ class RecutBlockBodyTest(BitcoinTestFramework):
             node, a, b, *make_interior_opcode_pair(node), label="reject-cache-not-push-only"))
         self.run_scenario(node, failures, "reject cache push-only", lambda a, b: self.run_reject_cache(
             node, a, b, *make_op_return_led_pair(node), label="reject-cache-push-only"))
+
+        self.run_scenario(node, failures, "invalid-chain bookkeeping", lambda a, b: self.run_invalid_chain(
+            node, a, b, *make_op_return_led_pair(node)))
+
+        node = self.restart_for_scenario(["-cache.maxTxPool=5"])
+        self.run_scenario(node, failures, "uncached body source", lambda a, b: self.run_uncached_source(
+            node, a, b, *make_op_return_led_pair(node)))
+
+        node = self.restart_for_scenario(["-whitelist=127.0.0.1"])
+        self.run_scenario(node, failures, "whitelisted bad source", lambda a, b: self.run_whitelisted_source(
+            node, a, b, *make_op_return_led_pair(node)))
+
+        node = self.restart_for_scenario(["-acceptnonstdtxn=0"])
+        self.run_scenario(node, failures, "policy-only rejection", lambda a, b: self.run_policy_reject(
+            node, a, make_op_return_led_pair(node)[0]))
 
         # Replaced bodies are read back from the block cache or disk now, and from disk after a restart
         self.check_stored_bodies(failures, "before restart")

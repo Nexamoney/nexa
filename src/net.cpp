@@ -37,6 +37,7 @@
 #include "utiltranslate.h"
 
 extern CTweak<bool> ignoreNetTimeouts;
+extern CTweak<bool> banLocalPeers;
 extern uint64_t nMaxReceiveBufferSize;
 extern uint64_t nMaxSendBufferSize;
 extern CTweak<bool> syncMempoolWithPeers;
@@ -3504,7 +3505,7 @@ void CNode::DisconnectIfBanned()
         {
             LOG(THIN, "Warning: not banning expedited peer %s!\n", GetLogName());
         }
-        else if (addr.IsLocal())
+        else if (addr.IsLocal() && !banLocalPeers.Value())
         {
             nMisbehavior.store(0);
             nBanType.store(-1);

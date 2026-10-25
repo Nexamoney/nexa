@@ -568,6 +568,10 @@ CTweak<unsigned int> numTxAdmissionThreads("net.txAdmissionThreads",
     "Max transaction mempool admission threads Auto detection is zero (default: 0).",
     0);
 
+CTweak<bool> banLocalPeers("test.banLocalPeers",
+    "Ban local peers that exceed the ban threshold (default: false).",
+    false);
+
 CTweak<bool> enforceMinTxSize("test.enforceMinTxSize",
     "Whether we will enforce the min tx size limit of 100 bytes or not (default: true)",
     true);
