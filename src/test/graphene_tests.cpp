@@ -188,6 +188,40 @@ BOOST_AUTO_TEST_CASE(graphene_set_finds_brute_force_opt_for_small_blocks)
     BOOST_CHECK_EQUAL(grapheneSet.OptimalSymDiff(version, n, m, m - mu, 1), best_a);
 }
 
+BOOST_AUTO_TEST_CASE(graphene_set_finds_brute_force_opt_for_large_mempools)
+{
+    // The brute force search stops early; it must still find the optimum of the full search
+    const uint64_t nBlockTxs = 100;
+    const uint8_t nChecksumBits = MAX_CHECKSUM_BITS;
+    for (uint64_t nReceiverPoolTx : {1000, 50000, 1000000})
+    {
+        const uint64_t nReceiverExcessTxs = nReceiverPoolTx - nBlockTxs;
+        auto T = [&](uint64_t a)
+        {
+            float fpr = std::min(a / float(nReceiverExcessTxs), FILTER_FPR_MAX);
+            double F = floor(FILTER_CELL_SIZE * (-1 / LN2SQUARED * nBlockTxs * log(fpr) / 8));
+            uint8_t n_iblt_hash = CIblt::OptimalNHash(a);
+            uint64_t padded_cells = (int)(CIblt::OptimalOverhead(a) * a);
+            uint64_t cells = n_iblt_hash * int(ceil(padded_cells / float(n_iblt_hash)));
+            return F + (nChecksumBits / 8 + IBLT_FIXED_CELL_SIZE) * cells;
+        };
+
+        uint64_t best_a = 1;
+        double best_T = std::numeric_limits<double>::max();
+        for (uint64_t a = 1; a < nReceiverPoolTx; a++)
+        {
+            if (T(a) < best_T)
+            {
+                best_T = T(a);
+                best_a = a;
+            }
+        }
+
+        BOOST_CHECK_EQUAL(
+            CGrapheneSet::BruteForceSymDiff(nBlockTxs, nReceiverPoolTx, nReceiverExcessTxs, 1, nChecksumBits), best_a);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(graphene_set_finds_approx_opt_for_large_blocks)
 {
     uint64_t version = MAX_GRAPHENE_SET_VERSION;
@@ -225,6 +259,49 @@ BOOST_AUTO_TEST_CASE(graphene_set_approx_opt_close_to_optimal)
         BOOST_CHECK_CLOSE(totalBytesApprox, totalBytesBrute, 15);
         BOOST_CHECK_CLOSE(totalBytesApprox, totalBytesBruteOpt, 15);
     }
+}
+
+BOOST_AUTO_TEST_CASE(graphene_set_optimization_params_any_receiver_count)
+{
+    // The receiver count comes from the peer and used to be truncated to int
+    const uint64_t counts[] = {0, 1, 1ULL << 16, (1ULL << 31) - 1, 1ULL << 31, 1ULL << 32, (1ULL << 32) + 5, 1ULL << 63,
+        std::numeric_limits<uint64_t>::max()};
+    const uint64_t nItemsList[] = {5, 4 * (uint64_t)APPROX_ITEMS_THRESH};
+    for (uint64_t nReceiverUniverseItems : counts)
+    {
+        for (uint64_t nItems : nItemsList)
+        {
+            for (uint64_t version = 0; version <= MAX_GRAPHENE_SET_VERSION; version++)
+            {
+                GrapheneSetOptimizationParams params =
+                    CGrapheneSet::DetermineGrapheneSetOptimizationParams(nReceiverUniverseItems, 100, nItems, version);
+                BOOST_CHECK(params.nReceiverExcessItems <= nReceiverUniverseItems);
+                BOOST_CHECK(params.nReceiverMissingItems >= 1 && params.nReceiverMissingItems <= nItems);
+            }
+        }
+    }
+
+    // In range values give the same result as before
+    GrapheneSetOptimizationParams params =
+        CGrapheneSet::DetermineGrapheneSetOptimizationParams(1000, 100, 5, MAX_GRAPHENE_SET_VERSION);
+    BOOST_CHECK_EQUAL(params.nReceiverExcessItems, 995);
+    BOOST_CHECK_EQUAL(params.nReceiverMissingItems, 1);
+    params = CGrapheneSet::DetermineGrapheneSetOptimizationParams(10, 100, 50, MAX_GRAPHENE_SET_VERSION);
+    BOOST_CHECK_EQUAL(params.nReceiverExcessItems, 10);
+    BOOST_CHECK_EQUAL(params.nReceiverMissingItems, 50);
+
+    // Building a set and a recovery IBLT for such counts must not abort
+    std::vector<uint256> items;
+    std::set<uint64_t> cheapHashes;
+    for (unsigned int i = 1; i <= 5; i++)
+    {
+        items.push_back(GetHash(i));
+        cheapHashes.insert(GetHash(i).GetCheapHash());
+    }
+    CGrapheneSet grapheneSet(1ULL << 31, 100, items, 0, 0, MAX_GRAPHENE_SET_VERSION, 0, false, true, true);
+    CIblt iblt = grapheneSet.FailureRecoveryIblt(cheapHashes, items.size(), 1ULL << 31, 1000,
+        FAILURE_RECOVERY_SUCCESS_RATE, 0.001, CGrapheneBlock::GetGrapheneSetVersion(GRAPHENE_MAX_VERSION_SUPPORTED), 3);
+    BOOST_CHECK(iblt.size() > 0);
 }
 
 BOOST_AUTO_TEST_CASE(graphene_set_decodes_empty_intersection)
