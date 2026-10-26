@@ -45,6 +45,9 @@ public:
     //! Returns how many orphans have this proof id
     int orphanCount(int proofId);
 
+    //! Returns how many proof ids the orphan outpoint lookup table holds
+    size_t orphanLookupCount() const;
+
     void claimOrphan(int proofId);
 
     DoubleSpendProof lookup(const uint256 &proofId) const;

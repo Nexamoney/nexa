@@ -400,4 +400,72 @@ BOOST_AUTO_TEST_CASE(dsproof_orphan_handling)
     // Cleanup
     vNodes.erase(vNodes.end() - 1);
 }
+// A proof for prevOut that differs from others by tag; storage does not validate proofs
+static DoubleSpendProof MakeStorageTestProof(const COutPoint &prevOut, uint32_t tag)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << prevOut;
+    for (int i = 0; i < 2; i++)
+        ss << tag << uint32_t(0) << uint32_t(0) << uint256() << uint256() << uint256() << uint256()
+           << std::vector<std::vector<uint8_t> >();
+    DoubleSpendProof proof;
+    ss >> proof;
+    return proof;
+}
+
+BOOST_AUTO_TEST_CASE(dsproof_storage_orphan_cleanup)
+{
+    const COutPoint prevOut(uint256S("0101010101010101010101010101010101010101010101010101010101010101"), 0);
+    const NodeId peerId = 1;
+    const int64_t now = GetTime();
+
+    // An expired orphan leaves nothing in the outpoint lookup table
+    {
+        DoubleSpendProofStorage storage;
+        SetMockTime(now);
+        DoubleSpendProof proof = MakeStorageTestProof(prevOut, 1);
+        storage.addOrphan(proof, peerId);
+        BOOST_CHECK_EQUAL(storage.orphanLookupCount(), 1);
+        SetMockTime(now + 100);
+        storage.periodicCleanup(boost::system::error_code());
+        BOOST_CHECK(!storage.exists(proof.GetHash()));
+        BOOST_CHECK_EQUAL(storage.orphanLookupCount(), 0);
+    }
+
+    // An orphan received twice still expires
+    {
+        DoubleSpendProofStorage storage;
+        SetMockTime(now);
+        DoubleSpendProof proof = MakeStorageTestProof(prevOut, 1);
+        storage.addOrphan(proof, peerId);
+        storage.addOrphan(proof, peerId);
+        BOOST_CHECK_EQUAL(storage.findOrphans(prevOut).size(), 1);
+        SetMockTime(now + 100);
+        storage.periodicCleanup(boost::system::error_code());
+        BOOST_CHECK(!storage.exists(proof.GetHash()));
+        BOOST_CHECK_EQUAL(storage.orphanLookupCount(), 0);
+    }
+
+    // Removing any orphan of several for one outpoint, including the last queued, removes only that one
+    {
+        DoubleSpendProofStorage storage;
+        SetMockTime(now);
+        std::vector<DoubleSpendProof> proofs;
+        for (uint32_t tag = 1; tag <= 3; tag++)
+        {
+            proofs.push_back(MakeStorageTestProof(prevOut, tag));
+            storage.addOrphan(proofs.back(), peerId);
+        }
+        std::list<std::pair<int, NodeId> > orphans = storage.findOrphans(prevOut);
+        BOOST_REQUIRE_EQUAL(orphans.size(), 3);
+        storage.remove(orphans.back().first);
+        BOOST_CHECK_EQUAL(storage.orphanLookupCount(), 2);
+        BOOST_CHECK_EQUAL(storage.findOrphans(prevOut).size(), 2);
+        storage.remove(orphans.front().first);
+        BOOST_CHECK_EQUAL(storage.orphanLookupCount(), 1);
+        BOOST_CHECK_EQUAL(storage.findOrphans(prevOut).size(), 1);
+    }
+    SetMockTime(0);
+}
+
 BOOST_AUTO_TEST_SUITE_END();
