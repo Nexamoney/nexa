@@ -169,7 +169,12 @@ public:
             throw std::ios_base::failure("nHashFuncs must be in the range [1,32], inclusive");
         READWRITE(nFilterBits);
         if (ser_action.ForRead())
-            nFilterBytes = 8 * nFilterBits;
+        {
+            // Bit indexes are taken modulo nFilterBits - 1 and must fall inside vData
+            if (nFilterBits < 2 || nFilterBits > 8 * (uint64_t)vData.size())
+                throw std::ios_base::failure("nFilterBits is inconsistent with the filter data");
+            nFilterBytes = vData.size();
+        }
     }
 };
 

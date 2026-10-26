@@ -115,6 +115,40 @@ BOOST_AUTO_TEST_CASE(variablefastfilter_many_hash_funcs_deterministic)
     BOOST_CHECK_EQUAL(build(), build());
 }
 
+BOOST_AUTO_TEST_CASE(variablefastfilter_rejects_inconsistent_size)
+{
+    // A received filter's bit count must fit its data, or lookups divide by zero or read out of bounds
+    for (uint64_t bits :
+        {(uint64_t)0, (uint64_t)1, (uint64_t)17, (uint64_t)1000000, std::numeric_limits<uint64_t>::max()})
+    {
+        CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+        ds << std::vector<unsigned char>(2, 0xff) << (uint8_t)1 << bits;
+        CVariableFastFilter f;
+        BOOST_CHECK_THROW(ds >> f, std::ios_base::failure);
+    }
+    for (uint64_t bits : {(uint64_t)2, (uint64_t)16})
+    {
+        CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+        ds << std::vector<unsigned char>(2, 0xff) << (uint8_t)1 << bits;
+        CVariableFastFilter f;
+        BOOST_CHECK_NO_THROW(ds >> f);
+        BOOST_CHECK_EQUAL(f.nFilterBytes, 2);
+    }
+
+    // A filter built locally round trips, and reset() clears only its own data
+    uint256 hash = uint256S("f00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeed");
+    CVariableFastFilter orig(100, 0.01);
+    orig.insert(hash);
+    CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+    ds << orig;
+    CVariableFastFilter copy;
+    ds >> copy;
+    BOOST_CHECK_EQUAL(copy.nFilterBytes, orig.nFilterBytes);
+    BOOST_CHECK(copy.contains(hash));
+    copy.reset();
+    BOOST_CHECK(!copy.contains(hash));
+}
+
 BOOST_AUTO_TEST_CASE(fastfilter_tests)
 {
     // Like a bloom filter the fast filter can have false positives but not false negatives
