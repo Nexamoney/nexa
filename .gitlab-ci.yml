@@ -28,6 +28,7 @@ workflow:
               on_new_commit: none
         - if: $CI_MERGE_REQUEST_IID
         - if: $CI_COMMIT_BRANCH == "dev"
+        - if: $CI_COMMIT_BRANCH =~ /^security-/
 
 default:
     interruptible: true
