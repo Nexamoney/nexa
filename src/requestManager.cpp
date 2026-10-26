@@ -1668,6 +1668,13 @@ void CRequestManager::MarkBlockAsReceivedByAnother(const uint256 &hash)
     }
 }
 
+bool CRequestManager::IsBlockInFlightFrom(const uint256 &hash, NodeId nodeid)
+{
+    LOCK(cs_objDownloader);
+    auto itHash = mapBlocksInFlight.find(hash);
+    return itHash != mapBlocksInFlight.end() && itHash->second.count(nodeid);
+}
+
 // Returns a bool if successful in indicating we originally asked for this block.
 bool CRequestManager::MarkBlockAsReceived(const uint256 &hash, CNode *pnode)
 {

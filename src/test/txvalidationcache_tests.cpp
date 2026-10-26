@@ -704,6 +704,8 @@ BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
     }
 
     // B's body is then fetched again and connects
+    requester.InitializeNodeState(nodeB.GetId());
+    requester.MarkBlockAsInFlight(nodeB.GetId(), honest->GetHash(), objType::BLOCK);
     CValidationState state2;
     ProcessSummaryBlock(state2, Params(), &nodeB, honest, true, nullptr, SINGLE_THREADED);
     BOOST_CHECK(chainActive.Tip()->GetBlockHash() == honest->GetHash());
@@ -713,6 +715,7 @@ BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
         vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &nodeA), vNodes.end());
         vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &nodeB), vNodes.end());
     }
+    requester.RemoveNodeState(nodeB.GetId());
     dosMan.ClearBanned();
 }
 

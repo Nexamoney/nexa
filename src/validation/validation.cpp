@@ -2668,9 +2668,11 @@ bool ProcessAcceptBlock(CNode *pfrom,
     const uint256 &hash = pblock->GetHash();
 
     bool fRequested = false;
+    bool fRequestedFromPeer = false;
     if (pfrom)
     {
         bool forceProcessing = pfrom->fWhitelisted && !IsInitialBlockDownload();
+        fRequestedFromPeer = requester.IsBlockInFlightFrom(hash, pfrom->GetId()) || forceProcessing;
         fRequested = requester.MarkBlockAsReceived(hash, pfrom);
         fRequested |= forceProcessing;
     }
@@ -2681,6 +2683,14 @@ bool ProcessAcceptBlock(CNode *pfrom,
     if (pfrom && suspectBlockBodies.IsBadSource(hash, pfrom->GetId()))
     {
         LOG(BLK, "Ignoring body of %s from peer=%d, which sent a bad one\n", hash.ToString(), pfrom->GetId());
+        requester.BlockRejected(CInv(MSG_BLOCK, hash), pfrom);
+        return true;
+    }
+
+    // Only a peer we asked may replace a suspect body, so pushed copies cost no disk writes
+    if (pfrom && !fRequestedFromPeer && suspectBlockBodies.IsSuspect(hash))
+    {
+        LOG(BLK, "Ignoring unrequested body of suspect block %s from peer=%d\n", hash.ToString(), pfrom->GetId());
         requester.BlockRejected(CInv(MSG_BLOCK, hash), pfrom);
         return true;
     }
