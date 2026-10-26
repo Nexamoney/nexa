@@ -8,6 +8,9 @@
 
 #include "fastfilter.h"
 #include "hashwrapper.h"
+#include "streams.h"
+#include "utilstrencodings.h"
+#include "version.h"
 
 void TestVariableFastFilter(CVariableFastFilter filt, int buffer, int n, double fpr)
 {
@@ -81,6 +84,35 @@ BOOST_AUTO_TEST_CASE(variablefastfilter_tests)
     int buffer = 2;
     CVariableFastFilter filt(n, fpr);
     TestVariableFastFilter(filt, buffer, n, fpr);
+}
+
+BOOST_AUTO_TEST_CASE(variablefastfilter_bit_layout)
+{
+    // Filter bits are sent to peers, so the layout must not change. Over 8 hash funcs also covers the rotation.
+    CVariableFastFilter filt(4, 0.001);
+    for (int i = 1; i <= 2; i++)
+    {
+        uint256 t = ArithToUint256(i);
+        filt.insert(Hash(t.begin(), t.end()));
+    }
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << filt;
+    BOOST_CHECK_EQUAL(HexStr(ss.begin(), ss.end()), "08b6a82291880492400b4000000000000000");
+}
+
+BOOST_AUTO_TEST_CASE(variablefastfilter_many_hash_funcs_deterministic)
+{
+    // 16 or more hash funcs used to read one word past the hash
+    auto build = []()
+    {
+        CVariableFastFilter filt(4, 0.000001);
+        uint256 t = ArithToUint256(1);
+        filt.insert(Hash(t.begin(), t.end()));
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << filt;
+        return HexStr(ss.begin(), ss.end());
+    };
+    BOOST_CHECK_EQUAL(build(), build());
 }
 
 BOOST_AUTO_TEST_CASE(fastfilter_tests)

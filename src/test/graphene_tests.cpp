@@ -297,6 +297,14 @@ BOOST_AUTO_TEST_CASE(item_rank_encodes_and_decodes)
     BOOST_CHECK_EQUAL_COLLECTIONS(outputItems.begin(), outputItems.end(), inputItems.begin(), inputItems.end());
 }
 
+BOOST_AUTO_TEST_CASE(item_rank_padding_is_zero)
+{
+    // 3 bits in one byte, the 5 padding bits must not carry heap contents
+    std::vector<unsigned char> encoded = CGrapheneSet::EncodeRank({5}, 3);
+    BOOST_CHECK_EQUAL(encoded.size(), 1);
+    BOOST_CHECK_EQUAL(encoded[0], 5);
+}
+
 BOOST_AUTO_TEST_CASE(graphene_set_rejects_invalid_item_rank)
 {
     uint64_t version = MAX_GRAPHENE_SET_VERSION;

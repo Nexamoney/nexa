@@ -520,7 +520,8 @@ std::vector<unsigned char> CGrapheneSet::EncodeRank(std::vector<uint64_t> items,
     std::vector<unsigned char> encoded(nEncodedWords, 0);
 
     // form boolean array (low-order first)
-    std::unique_ptr<bool[]> bits(new bool[nEncodedWords * WORD_BITS]);
+    // Zeroed so the padding bits past the last item are deterministic
+    std::unique_ptr<bool[]> bits(new bool[nEncodedWords * WORD_BITS]());
     for (size_t i = 0; i < items.size(); i++)
     {
         uint64_t item = items[i];
