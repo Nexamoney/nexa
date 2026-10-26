@@ -289,8 +289,7 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
 
         if (IsTailstormSummaryBlock(block))
         {
-            if ((ret.vSubblockProofs.size() != chainparams.GetConsensus().tailstorm_k - 1) &&
-                (ret.vSubblockProofs.size() != (ret.nUncles + ret.nSubblocks)))
+            if (!IsSummaryProofCountValid(chainparams.GetConsensus(), ret))
             {
                 return state.DoS(
                     100, error("%s(): incomplete miner data", __func__), REJECT_INVALID, "bad-miner-data-size");
@@ -2880,8 +2879,7 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
                 100, error("%s : incorrect miner data", __func__), REJECT_INVALID, "bad-subblock-difficulty");
         }
 
-        if ((ret.vSubblockProofs.size() != chainparams.GetConsensus().tailstorm_k - 1) &&
-            (ret.vSubblockProofs.size() != (ret.nUncles + ret.nSubblocks)))
+        if (!IsSummaryProofCountValid(chainparams.GetConsensus(), ret))
         {
             return state.DoS(100, error("%s : incorrect miner data", __func__), REJECT_INVALID, "bad-miner-data-size");
         }

@@ -14,6 +14,11 @@ bool CheckBlockHeader(const Consensus::Params &consensusParams,
     CValidationState &state,
     bool fCheckPOW = true);
 
+struct CSummaryBlockMinerData;
+
+/** A Tailstorm summary must carry exactly K-1 proofs, split into the declared uncles and sub-blocks */
+bool IsSummaryProofCountValid(const Consensus::Params &consensusParams, const CSummaryBlockMinerData &data);
+
 bool CheckTailstormSummaryBlockProofOfWork(const Consensus::Params &consensusParams,
     const CBlockHeader &block,
     CValidationState &state);
