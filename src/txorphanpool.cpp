@@ -208,7 +208,7 @@ unsigned int CTxOrphanPool::LimitPoolSize(unsigned int nMaxItems, uint64_t nMaxB
         // Uncache any coins that may exist for orphans that will be erased
         pcoinsTip->UncacheTx(*it->second.ptx);
 
-        EraseOrphanTx(it->first);
+        EraseNonFinalTx(it->first);
         ++nEvicted;
     }
     return nEvicted;

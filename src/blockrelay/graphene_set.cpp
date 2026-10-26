@@ -343,7 +343,7 @@ std::vector<uint64_t> CGrapheneSet::Reconcile(const std::set<uint64_t> &setSende
 
     std::vector<uint64_t> receiverSetItems(receiverSet.begin(), receiverSet.end());
 
-    if (!_ordered)
+    if (!_ordered || receiverSetItems.empty())
         return receiverSetItems;
 
     // Place items in order
@@ -351,8 +351,15 @@ std::vector<uint64_t> CGrapheneSet::Reconcile(const std::set<uint64_t> &setSende
     std::vector<uint64_t> itemRank = CGrapheneSet::DecodeRank(_encodedRank, receiverSetItems.size(), nBits);
     std::sort(receiverSetItems.begin(), receiverSetItems.end(), [](uint64_t i1, uint64_t i2) { return i1 < i2; });
     std::vector<uint64_t> orderedSetItems(itemRank.size(), 0);
+    // Ranks come from the peer and must be a permutation of the item positions
+    std::vector<bool> rankSeen(itemRank.size(), false);
     for (size_t i = 0; i < itemRank.size(); i++)
+    {
+        if (itemRank[i] >= orderedSetItems.size() || rankSeen[itemRank[i]])
+            throw std::runtime_error("Graphene set has invalid item rank");
+        rankSeen[itemRank[i]] = true;
         orderedSetItems[itemRank[i]] = receiverSetItems[i];
+    }
 
     return orderedSetItems;
 }
@@ -508,7 +515,8 @@ CIblt CGrapheneSet::FailureRecoveryIblt(std::set<uint64_t> &relevantCheapHashes,
 std::vector<unsigned char> CGrapheneSet::EncodeRank(std::vector<uint64_t> items, uint16_t nBitsPerItem)
 {
     size_t nItems = items.size();
-    size_t nEncodedWords = int(ceil(nBitsPerItem * nItems / float(WORD_BITS)));
+    // Integer math: float rounding undersizes the buffer for large sets
+    size_t nEncodedWords = (nBitsPerItem * nItems + WORD_BITS - 1) / WORD_BITS;
     std::vector<unsigned char> encoded(nEncodedWords, 0);
 
     // form boolean array (low-order first)
@@ -536,7 +544,9 @@ std::vector<unsigned char> CGrapheneSet::EncodeRank(std::vector<uint64_t> items,
 
 std::vector<uint64_t> CGrapheneSet::DecodeRank(std::vector<unsigned char> encoded, size_t nItems, uint16_t nBitsPerItem)
 {
-    size_t nEncodedWords = int(ceil(nBitsPerItem * nItems / float(WORD_BITS)));
+    size_t nEncodedWords = (nBitsPerItem * nItems + WORD_BITS - 1) / WORD_BITS;
+    if (encoded.size() != nEncodedWords)
+        throw std::runtime_error("Graphene set has invalid encoded rank size");
 
     // decode into boolean array (low-order first)
     std::unique_ptr<bool[]> bits(new bool[nEncodedWords * WORD_BITS]);

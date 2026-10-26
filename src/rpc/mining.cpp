@@ -159,10 +159,16 @@ UniValue generateBlocks(boost::shared_ptr<CReserveScript> coinbaseScript,
         }
         // Ok we found a block, so process it
 
-        // If it's a subblock then accept it into the dag
+        // A subblock gets the checks a peer's subblock gets, such as none before the fork
         if (pblock->IsSubblock())
         {
-            AcceptSubblock(pblock);
+            CValidationState state;
+            CBlockIndex *pindex = nullptr;
+            LOCK(cs_main);
+            if (!ProcessAcceptBlock(nullptr, pblock, state, Params(), &pindex, nullptr))
+                throw JSONRPCError(RPC_INTERNAL_ERROR,
+                    strprintf("Subblock rejected: %s at height %ld reason: %s", pblock->GetHash().GetHex(),
+                        pblock->height, state.GetRejectReason().c_str()));
         }
         else
         {
@@ -962,10 +968,12 @@ UniValue SubmitBlock(ConstCBlockRef pblock, CValidationState &state)
         // we must terminate any block validation threads that are currently running,
         // Unless they have more work than our own block or are processing a chain
         // that has more work than our block.
+        // A subblock gets the checks a peer's subblock gets, such as none before the fork
         if (pblock->IsSubblock())
         {
-            AcceptSubblock(pblock);
-            fAccepted = true;
+            CBlockIndex *pindex = nullptr;
+            LOCK(cs_main);
+            fAccepted = ProcessAcceptBlock(nullptr, pblock, state, Params(), &pindex, nullptr);
         }
         else
         {

@@ -80,7 +80,6 @@ bool CThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom)
     pblock->thinblock = std::make_shared<CThinBlock>(std::forward<CThinBlock>(tmp));
 
     std::shared_ptr<CThinBlock> thinBlock = pblock->thinblock;
-    bool fSummaryBlock = IsSummaryBlock(thinBlock->header);
 
     // Message consistency checking
     if (!IsThinBlockValid(pfrom, thinBlock->vMissingTx, thinBlock->header, thinBlock->vTxHashes.size()))
@@ -92,7 +91,7 @@ bool CThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom)
 
     // Is there a previous block or header to connect with?
     CBlockIndex *pprev = LookupBlockIndex(thinBlock->header.hashPrevBlock);
-    if (fSummaryBlock && !pprev)
+    if (!pprev)
         return error("thinblock from peer %s will not connect, unknown previous block %s", pfrom->GetLogName(),
             thinBlock->header.hashPrevBlock.ToString());
 

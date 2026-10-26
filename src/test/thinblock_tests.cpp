@@ -10,7 +10,9 @@
 #include "blockrelay/thinblock.h"
 #include "bloom.h"
 #include "chainparams.h"
+#include "daa.h"
 #include "main.h"
+#include "miner.h"
 #include "primitives/block.h"
 #include "random.h"
 #include "serialize.h"
@@ -21,9 +23,11 @@
 #include "util.h"
 #include "utilstrencodings.h"
 #include "validation/tailstorm.h"
+#include "validation/validation.h"
 #include "version.h"
 
 #include "test/test_nexa.h"
+#include "test/testutil.h"
 
 #include <boost/test/unit_test.hpp>
 #include <sstream>
@@ -142,6 +146,44 @@ static bool ReceiveRelayBlock(CNode &node, const CBlock &block, const std::strin
     return CThinBlock::HandleMessage(stream, &node);
 }
 
+BOOST_FIXTURE_TEST_CASE(relay_blocks_with_unknown_parent, TestChain100Setup)
+{
+    const Consensus::Params &consensus = Params().GetConsensus();
+    for (bool subblock : {false, true})
+    {
+        CBlock block = Params().GenesisBlock();
+        block.hashPrevBlock = InsecureRand256();
+        if (subblock)
+            block.minerData = {DEFAULT_MINER_DATA_SUBBLOCK_VERSION};
+        block.nBits = UintToArith256(consensus.powLimit).GetCompact();
+        block.nonce.resize(3);
+        block.UpdateHeader();
+        CValidationState state;
+        uint32_t count = 0;
+        while (!CheckBlockHeader(consensus, block, state))
+        {
+            BOOST_REQUIRE_EQUAL(state.GetRejectReason(), "high-hash");
+            BOOST_REQUIRE(++count < (1 << 23));
+            for (unsigned int x = 0; x < block.nonce.size(); x++)
+                block.nonce[x] = (count >> (x * 8)) & 255;
+            state = CValidationState();
+        }
+        BOOST_REQUIRE(LookupBlockIndex(block.hashPrevBlock) == nullptr);
+        const uint256 hash = block.GetHash();
+        for (const auto &command : {NetMsgType::THINBLOCK, NetMsgType::CMPCTBLOCK})
+        {
+            CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c005, 10000)), "", true);
+            const std::string thinType = command == NetMsgType::THINBLOCK ? NetMsgType::XTHINBLOCK : command;
+            BOOST_REQUIRE(thinrelay.AddBlockInFlight(&node, hash, thinType));
+            BOOST_CHECK(!ReceiveRelayBlock(node, block, command));
+            BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 0);
+            BOOST_CHECK(!node.fShouldBan.load());
+            BOOST_CHECK(!node.IsDisconnecting());
+            thinrelay.ClearAllBlockData(&node, hash);
+        }
+    }
+}
+
 // Unsolicited and late replies must neither retain reconstruction state nor penalize the peer.
 BOOST_AUTO_TEST_CASE(unsolicited_relay_blocks)
 {
@@ -212,6 +254,70 @@ BOOST_AUTO_TEST_CASE(unrequested_relay_preserves_pending_block)
         BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 0);
         thinrelay.ClearAllBlockData(&node, hash);
     }
+}
+
+struct GrapheneRegtestSetup : public TestingSetup
+{
+    CNode node;
+
+    GrapheneRegtestSetup()
+        : TestingSetup(CBaseChainParams::REGTEST),
+          node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c004, 10000)), "", true)
+    {
+    }
+
+    ~GrapheneRegtestSetup()
+    {
+        // The recovery request queues a reference that must not outlive this peer.
+        LOCK(cs_prioritySendQ);
+        for (auto it = vPrioritySendQ.begin(); it != vPrioritySendQ.end();)
+        {
+            if (it->get() == &node)
+                it = vPrioritySendQ.erase(it);
+            else
+                ++it;
+        }
+    }
+};
+
+// A Graphene set that reconciles to no transactions must not reach the canonical sort.
+BOOST_FIXTURE_TEST_CASE(graphene_empty_reconciled_set, GrapheneRegtestSetup)
+{
+    node.negotiatedGrapheneVersion = 4;
+
+    CKey key;
+    key.MakeNewKey(true);
+    CBlockRef block = BlockAssembler(Params()).CreateNewBlock(p2pkh(key.GetPubKey().GetID()))->block;
+    block->nonce.resize(3);
+    BOOST_REQUIRE(MineBlock(*block, 1 << 23, Params().GetConsensus()));
+    const uint256 hash = block->GetHash();
+
+    // Build the set over no transactions and ship the coinbase as an additional tx
+    CBlock emptyBlock = *block;
+    emptyBlock.vtx.clear();
+    CGrapheneBlock grapheneBlock(
+        MakeBlockRef(emptyBlock), 5, 6, node.negotiatedGrapheneVersion, NegotiateFastFilterSupport(&node));
+    BOOST_REQUIRE(grapheneBlock.header.GetHash() == hash);
+    grapheneBlock.vAdditionalTxs.push_back(block->vtx[0]);
+
+    CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+    stream << grapheneBlock;
+    BOOST_REQUIRE(thinrelay.AddBlockInFlight(&node, hash, NetMsgType::GRAPHENEBLOCK));
+    BOOST_CHECK(CGrapheneBlock::HandleMessage(stream, &node, 0, NetMsgType::GRAPHENEBLOCK, 0));
+    auto pending = thinrelay.GetBlockToReconstruct(&node, hash);
+    BOOST_REQUIRE(pending && pending->grapheneblock);
+    BOOST_CHECK(pending->grapheneblock->vTxHashes256.empty());
+    BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 0);
+    thinrelay.ClearAllBlockData(&node, hash);
+
+    // A recovery reply can also leave no hashes, with nBlockTxs taken from the peer
+    CGrapheneBlock emptyGrapheneBlock(4);
+    emptyGrapheneBlock.nBlockTxs = 0;
+    auto relayBlock = std::make_shared<CBlockThinRelay>();
+    *(CBlockHeader *)relayBlock.get() = block->GetBlockHeader();
+    CDataStream recvStream(SER_NETWORK, PROTOCOL_VERSION);
+    BOOST_CHECK(!emptyGrapheneBlock.ValidateAndRecontructBlock(
+        hash, relayBlock, std::map<uint64_t, CTransactionRef>(), NetMsgType::GRAPHENE_RECOVERY, &node, recvStream));
 }
 
 struct ExpeditedTestPeer

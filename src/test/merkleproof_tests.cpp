@@ -1138,4 +1138,40 @@ BOOST_AUTO_TEST_CASE(merkleProofLimits)
     BOOST_CHECK(!r);
 }
 
+template <typename Hasher, int HashSize>
+void truncatedSiblingTest()
+{
+    MerkleProof<Hasher, HashSize> mp;
+    VchType leaf(HashSize, 1);
+    VchType sibling(HashSize, 2);
+    for (uint8_t step : {MULTIPROOF_LEFT_SIBLING, MULTIPROOF_RIGHT_SIBLING})
+    {
+        VchType proof = VchType() << step << sibling;
+        BOOST_CHECK(!mp.computeMultiproofRoot({leaf}, proof).empty());
+        // Every truncation of the sibling hash, down to the step byte alone, must fail
+        // without reading past the end of the proof
+        while (proof.size() > 1)
+        {
+            proof.pop_back();
+            BOOST_CHECK(mp.computeMultiproofRoot({leaf}, proof).empty());
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(truncatedSiblingProof)
+{
+    truncatedSiblingTest<CSHA256, 32>();
+    truncatedSiblingTest<CHash160, 20>();
+
+    // The opcode rejects a proof that ends inside a sibling hash
+    VchType one(32);
+    one[0] = 1;
+    for (const VchType &proof : {VchType() << MULTIPROOF_RIGHT_SIBLING, VchType() << MULTIPROOF_LEFT_SIBLING << 7})
+    {
+        CScript s = CScript() << proof << one << 1 << merkleRootOption(MerkleRootAlg::SHA256, MerkleRootFlags::MR_NONE)
+                              << OP_MERKLEROOT;
+        CheckError(MANDATORY_SCRIPT_VERIFY_FLAGS, Stack(), s, SCRIPT_ERR_INVALID_PARAMETER);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

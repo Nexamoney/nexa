@@ -476,18 +476,20 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
             std::vector<CapdMsgRef> msgs = msgpool.find(content);
             if (type == CAPD_QUERY_TYPE_MSG)
             {
-                quantity = std::min((int)CAPD_QUERY_MAX_MSGS, (int)quantity);
+                quantity = std::min<uint32_t>(CAPD_QUERY_MAX_MSGS, quantity);
                 pfrom->PushMessageWithCookie(NetMsgType::CAPDQUERYREPLY, msgCookie | 0xFFFF, cookie, type,
                     (uint32_t)msgs.size(), PtrVectorSpan<CapdMsgRef>(msgs, start, quantity));
             }
             else if (type == CAPD_QUERY_TYPE_MSG_HASH)
             {
-                int qty = std::min(
-                    std::min((int)CAPD_QUERY_MAX_INVS + start, (int)start + quantity), (int)msgs.size() - start);
                 std::vector<uint256> hashes;
-                for (int i = start; i < qty; i++)
+                if (start < msgs.size())
                 {
-                    hashes.push_back(msgs[i]->GetHash());
+                    size_t qty = std::min<size_t>(std::min<size_t>(CAPD_QUERY_MAX_INVS, quantity), msgs.size() - start);
+                    for (size_t i = start; i < start + qty; i++)
+                    {
+                        hashes.push_back(msgs[i]->GetHash());
+                    }
                 }
                 pfrom->PushMessageWithCookie(
                     NetMsgType::CAPDQUERYREPLY, msgCookie | 0xFFFF, cookie, type, (uint32_t)msgs.size(), hashes);

@@ -277,6 +277,8 @@ VchType MerkleProof<Hasher, HashSize>::computeMultiproofRoot(const std::vector<V
         switch (option)
         {
         case MULTIPROOF_RIGHT_SIBLING:
+            if (proof.size() - proofPos < HashSize)
+                return VchType(); // Error truncated sibling hash
             cur = Hash(cur, &proof[proofPos]);
             proofPos += HashSize;
             updateIndex(returnIndexes, elementIndexDepth, returnAdjacent, elementPos, depth, 0, 0xFD);
@@ -285,6 +287,8 @@ VchType MerkleProof<Hasher, HashSize>::computeMultiproofRoot(const std::vector<V
             depth++;
             break;
         case MULTIPROOF_LEFT_SIBLING:
+            if (proof.size() - proofPos < HashSize)
+                return VchType(); // Error truncated sibling hash
             cur = Hash(&proof[proofPos], cur);
             proofPos += HashSize;
             updateIndex(returnIndexes, elementIndexDepth, returnAdjacent, elementPos, depth, 1, 0xFE);

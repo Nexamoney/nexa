@@ -141,7 +141,6 @@ bool CompactBlock::HandleMessage(CDataStream &vRecv, uint32_t msgCookie, CNode *
     pblock->cmpctblock = std::make_shared<CompactBlock>(std::forward<CompactBlock>(tmp));
 
     std::shared_ptr<CompactBlock> compactBlock = pblock->cmpctblock;
-    bool fSummaryBlock = IsSummaryBlock(compactBlock->header);
 
     // Message consistency checking
     if (!IsCompactBlockValid(pfrom, compactBlock))
@@ -153,7 +152,7 @@ bool CompactBlock::HandleMessage(CDataStream &vRecv, uint32_t msgCookie, CNode *
 
     // Is there a previous block or header to connect with?
     CBlockIndex *pprev = LookupBlockIndex(compactBlock->header.hashPrevBlock);
-    if (fSummaryBlock && !pprev)
+    if (!pprev)
         return error("compact block from peer %s will not connect, unknown previous block %s", pfrom->GetLogName(),
             compactBlock->header.hashPrevBlock.ToString());
 

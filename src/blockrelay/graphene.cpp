@@ -131,6 +131,12 @@ bool CGrapheneBlock::ValidateAndRecontructBlock(const uint256 &blockhash,
     CDataStream &vRecv)
 {
     size_t msgSize = vRecv.size();
+    // A failure recovery reply can also reconcile to no transactions
+    if (vTxHashes256.empty())
+    {
+        thinrelay.ClearAllBlockData(pfrom, pblock->GetHash());
+        return error("Graphene block %s has no transactions, peer=%s", blockhash.ToString(), pfrom->GetLogName());
+    }
     OrderTxHashes(pfrom);
 
     // At this point we should have all the full hashes in the block. Check that the merkle
@@ -621,6 +627,9 @@ bool CGrapheneBlock::process(CNode *pfrom, std::string strCommand, std::shared_p
             setHashesToRequest = grapheneBlock->UpdateResolvedTxsAndIdentifyMissing(
                 mapPartialTxHash, blockCheapHashes, NegotiateGrapheneVersion(pfrom));
             grapheneBlock->SituateCoinbase(coinbase);
+            // The peer can send a set that reconciles to nothing
+            if (grapheneBlock->vTxHashes256.empty())
+                throw std::runtime_error("Graphene set reconciled to no transactions");
 
             // coinbase is always first
             std::sort(grapheneBlock->vTxHashes256.begin() + 1, grapheneBlock->vTxHashes256.end());

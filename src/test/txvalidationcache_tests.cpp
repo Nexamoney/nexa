@@ -15,6 +15,7 @@
 #include "script/standard.h"
 #include "test/test_nexa.h"
 #include "txadmission.h"
+#include "txdebugger.h"
 #include "txmempool.h"
 #include "txorphanpool.h"
 #include "utiltime.h"
@@ -22,6 +23,8 @@
 #include "validation/parallel.h"
 
 #include <boost/test/unit_test.hpp>
+
+#include <algorithm>
 
 extern CTweak<uint32_t> minRelayFee;
 extern void LimitMempoolSize(CTxMemPool &pool, size_t limit, unsigned long age);
@@ -94,6 +97,71 @@ BOOST_FIXTURE_TEST_CASE(tx_mempool_block_doublespend, TestChain100Setup)
     // block with spends[0] is accepted:
     BOOST_CHECK_EQUAL(mempool.size(), 0UL);
     mempool.clear();
+}
+
+BOOST_FIXTURE_TEST_CASE(tx_mempool_rejects_out_of_range_input_amounts, TestChain100Setup)
+{
+    // Declared input amounts are only range checked when summed during admission,
+    // which must reject the transaction rather than throw.
+    auto makeSpend = [this](const std::vector<CAmount> &amounts)
+    {
+        CMutableTransaction tx;
+        for (size_t i = 0; i < amounts.size(); i++)
+        {
+            tx.vin.push_back(coinbaseTxns[i].SpendOutput(0));
+            tx.vin.back().amount = amounts[i];
+        }
+        tx.vout.resize(1);
+        tx.vout[0].nValue = 1 * CENT;
+        tx.vout[0].scriptPubKey = coinbaseLockingScript;
+        return tx;
+    };
+
+    // {1, maxAmount} needs UBSan to catch an addition before the input range check.
+    const CAmount maxAmount = std::numeric_limits<CAmount>::max();
+    std::vector<CMutableTransaction> spends = {makeSpend({MAX_MONEY + 1}), makeSpend({MAX_MONEY, MAX_MONEY}),
+        makeSpend({maxAmount, maxAmount}), makeSpend({1, maxAmount}), makeSpend({-1})};
+    for (CMutableTransaction &tx : spends)
+    {
+        BOOST_CHECK_THROW(CTransaction(tx).GetValueIn(), std::runtime_error);
+        BOOST_CHECK(!ToMemPool(tx, "bad-txns-inputvalues-outofrange"));
+    }
+    BOOST_CHECK_EQUAL(mempool.size(), 0UL);
+}
+
+BOOST_FIXTURE_TEST_CASE(tx_debugger_rejects_out_of_range_output_amounts, TestChain100Setup)
+{
+    // Debugger mode continues after CheckTransaction rejects invalid outputs,
+    // so GetValueOut must report the error without letting an exception escape.
+    const std::vector<std::vector<CAmount> > outputs = {
+        {-1}, {MAX_MONEY + 1}, {MAX_MONEY, 1}, {1, std::numeric_limits<CAmount>::max()}};
+    for (const auto &amounts : outputs)
+    {
+        CMutableTransaction tx;
+        tx.vin.push_back(coinbaseTxns[0].SpendOutput(0));
+        for (CAmount amount : amounts)
+            tx.vout.emplace_back(amount, coinbaseLockingScript);
+
+        CValidationState state;
+        CValidationDebugger debugger;
+        bool missingInputs = false;
+        bool isRespend = false;
+        std::vector<COutPoint> coinsToUncache;
+        const CTransactionRef ptx = MakeTransactionRef(tx);
+        BOOST_CHECK_THROW(ptx->GetValueOut(), std::runtime_error);
+        {
+            CORRAL(txProcessingCorral, CORRAL_TX_PROCESSING);
+            BOOST_CHECK(!ParallelAcceptToMemoryPool(mempool, state, ptx, false, &missingInputs, false,
+                TransactionClass::DEFAULT, coinsToUncache, &isRespend, &debugger));
+        }
+        BOOST_CHECK(!missingInputs);
+        BOOST_CHECK(debugger.IsInvalid());
+        BOOST_CHECK(!debugger.mineable);
+        BOOST_CHECK(!debugger.futureMineable);
+        const auto reasons = debugger.GetRejectReasons();
+        BOOST_CHECK(std::find(reasons.begin(), reasons.end(), "bad-txns-outputvalues-outofrange") != reasons.end());
+    }
+    BOOST_CHECK_EQUAL(mempool.size(), 0UL);
 }
 
 BOOST_FIXTURE_TEST_CASE(cache_configuration, TestChain100Setup)

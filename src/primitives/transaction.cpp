@@ -161,8 +161,10 @@ CAmount CTransaction::GetValueOut() const
     CAmount nValueOut = 0;
     for (std::vector<CTxOut>::const_iterator it(vout.begin()); it != vout.end(); ++it)
     {
+        if (!MoneyRange(it->nValue))
+            throw std::runtime_error("CTransaction::GetValueOut(): value out of range");
         nValueOut += it->nValue;
-        if (!MoneyRange(it->nValue) || !MoneyRange(nValueOut))
+        if (!MoneyRange(nValueOut))
             throw std::runtime_error("CTransaction::GetValueOut(): value out of range");
     }
     return nValueOut;
@@ -174,8 +176,11 @@ CAmount CTransaction::GetValueIn() const
     {
         if (!i.IsReadOnly())
         {
+            // Check before adding, a declared amount can overflow the sum
+            if (!MoneyRange(i.amount))
+                throw std::runtime_error("CTransaction::GetValueIn(): value out of range");
             amount += i.amount;
-            if (!MoneyRange(i.amount) || !MoneyRange(amount))
+            if (!MoneyRange(amount))
                 throw std::runtime_error("CTransaction::GetValueIn(): value out of range");
         }
     }
