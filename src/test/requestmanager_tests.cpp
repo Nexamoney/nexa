@@ -1764,4 +1764,26 @@ BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_parent_context, RegtestRe
     parent->SetBlockHeaderBits(parentBits);
 }
 
+BOOST_AUTO_TEST_CASE(askfor_one_peer_cannot_fill_txn_requests)
+{
+    // Declared before rman so they outlive the references it holds.
+    CNode attacker(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode honest(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+
+    CRequestManager rman;
+    CRequestManagerTest rman_access(&rman);
+
+    // One peer announces more unknown transactions than the global cap, and they become in-flight requests.
+    for (uint64_t i = 0; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &attacker, objType::TXN);
+    std::map<uint256, CUnknownObj> mapTmp;
+    rman.GetTxnRequests(mapTmp);
+    rman.AddNewTxnRequests(mapTmp);
+
+    // Another peer's announcement must still be requested.
+    CInv inv(MSG_TX, GetRandHash());
+    rman.AskFor(inv, &honest, objType::TXN);
+    BOOST_CHECK_EQUAL(rman_access.GetMapTxnToAdd().count(inv.hash), 1);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

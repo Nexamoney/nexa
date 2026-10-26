@@ -219,6 +219,7 @@ testScripts = [ RpcTest(t) for t in [
     'rejectReply',
     'handshake_timeout',
     'extgetdata_deferred',
+    'txn_request_cap',
     'msgCookie',
     'tailstorm_uncle_sync',
     'capd',
