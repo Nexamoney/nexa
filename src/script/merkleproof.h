@@ -208,7 +208,8 @@ protected:
         bool leftAdjacencySet = false;
         if (eid != nullptr)
         {
-            bit = bit << depth;
+            // A shift >= 64 is UB and differs by CPU; mask it as x86-64 and ARM64 do
+            bit = bit << (depth & 63);
             for (uint64_t i = 0; i <= elementPos; i++)
             {
                 if ((*eid)[i] <= depth)
