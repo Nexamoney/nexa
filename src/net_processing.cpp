@@ -975,6 +975,7 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
     }
 
     bool fTxnLimitsUpdated = false;
+    uint256 hashLastUnknownBlock;
     for (unsigned int nInv = 0; nInv < vInvSize; nInv++)
     {
         if (shutdown_threads.load() == true)
@@ -1013,7 +1014,7 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
                 // we will instead request the header rather than the block.  This is safer and prevents an
                 // attacker from sending us fake INV's for blocks that do not exist or try to get us to request
                 // and download fake blocks.
-                pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), inv.hash);
+                hashLastUnknownBlock = inv.hash;
             }
             else
             {
@@ -1061,6 +1062,10 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
         // Track requests for our stuff.
         GetMainSignals().Inventory(inv.hash);
     }
+
+    // One request is enough: the peer replies with its headers from our locator up to the last announced block.
+    if (!hashLastUnknownBlock.IsNull())
+        pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), hashLastUnknownBlock);
 
     return true;
 }
