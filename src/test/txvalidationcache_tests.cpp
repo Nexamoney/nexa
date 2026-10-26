@@ -716,6 +716,63 @@ BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
     dosMan.ClearBanned();
 }
 
+BOOST_FIXTURE_TEST_CASE(suspect_body_is_stored_only_from_requested_peer, RecutBlockSetup)
+{
+    // While a body is suspect, a body pushed by a peer that was not asked for it must not be written to disk
+    MakeBlocks();
+    const uint256 hash = honest->GetHash();
+    // On the heap: earlier tests leave vPrioritySendQ references to dead stack nodes that these would overwrite
+    auto pnodeA = std::make_unique<CNode>(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c021, 10000)), "", true);
+    auto pnodeB = std::make_unique<CNode>(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c022, 10000)), "", true);
+    auto pnodeC = std::make_unique<CNode>(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c023, 10000)), "", true);
+    CNode &nodeA = *pnodeA;
+    CNode &nodeB = *pnodeB;
+    CNode &nodeC = *pnodeC;
+    for (CNode *node : {&nodeA, &nodeB, &nodeC})
+    {
+        LOCK(cs_vNodes);
+        vNodes.push_back(node);
+        requester.InitializeNodeState(node->GetId());
+    }
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = nullptr;
+        CValidationState stateA;
+        ProcessAcceptBlock(&nodeA, altered, stateA, Params(), &pindex, nullptr);
+    }
+    CValidationState state;
+    ActivateBestChain(state, Params());
+    BOOST_REQUIRE(suspectBlockBodies.IsSuspect(hash));
+    const CDiskBlockPos storedPos = LookupBlockIndex(hash)->GetBlockPos();
+
+    // C was not asked for the block, so its copy is dropped without being written or validated
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = nullptr;
+        CValidationState stateC;
+        BOOST_CHECK(ProcessAcceptBlock(&nodeC, altered, stateC, Params(), &pindex, nullptr));
+    }
+    CValidationState stateC;
+    ActivateBestChain(stateC, Params());
+    BOOST_CHECK(LookupBlockIndex(hash)->GetBlockPos() == storedPos);
+    BOOST_CHECK_EQUAL(nodeC.nMisbehavior.load(), 0);
+    BOOST_CHECK(suspectBlockBodies.IsSuspect(hash));
+
+    // B was asked, so its body is stored and connects
+    requester.MarkBlockAsInFlight(nodeB.GetId(), hash, objType::BLOCK);
+    CValidationState stateB;
+    ProcessSummaryBlock(stateB, Params(), &nodeB, honest, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() == hash);
+    BOOST_CHECK_EQUAL(nodeB.nMisbehavior.load(), 0);
+    for (CNode *node : {&nodeA, &nodeB, &nodeC})
+    {
+        LOCK(cs_vNodes);
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), node), vNodes.end());
+        requester.RemoveNodeState(node->GetId());
+    }
+    dosMan.ClearBanned();
+}
+
 BOOST_FIXTURE_TEST_CASE(block_body_with_bad_scripts_is_not_connected, RecutBlockSetup)
 {
     // Invalid scripts must never connect, even though the body does not prove header invalidity.
