@@ -49,6 +49,7 @@ extern CTweak<unsigned int> blockDownloadWindow;
 extern CTweak<unsigned int> blockLookAheadInterval;
 extern CTweak<unsigned int> blkRetryInterval;
 extern CTweak<unsigned int> txRetryInterval;
+extern CTweak<unsigned int> txRequestPeerShare;
 extern CTweak<bool> requestMissingSubblocks;
 
 // Request management
@@ -99,6 +100,16 @@ void CRequestManager::Cleanup()
         auto prev = i;
         ++i;
         cleanup(prev); // cleanup erases which is why I need to advance the iterator first
+    }
+}
+
+// Give the announcing peer back its share of the transaction request limit.
+static void ReleaseTxnAnnouncer(CUnknownObj &item)
+{
+    if (item.announcer)
+    {
+        item.announcer->nTxnRequests--;
+        item.announcer = nullptr;
     }
 }
 
@@ -158,16 +169,29 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
             }
         }
 
-        // Don't allow the in flight requests to grow unbounded.
-        if (mapTxnInfo.size() > std::max(MAX_IN_FLIGHT_REQS, (nApproximateTxnPerSec * 10)))
-        {
-            LOG(REQ, "Tx request buffer full: Dropping request for %s", obj.hash.ToString());
-            return;
-        }
-
         LOCK(cs_addTxn);
-        std::pair<OdMap::iterator, bool> result = mapTxnToAdd.emplace(obj.hash, CUnknownObj());
-        OdMap::iterator &item = result.first;
+        OdMap::iterator item = mapTxnToAdd.find(obj.hash);
+        if (item == mapTxnToAdd.end())
+        {
+            // Don't allow the in flight requests to grow unbounded, nor one peer to fill them.
+            uint64_t maxReqs = std::max(MAX_IN_FLIGHT_REQS, (nApproximateTxnPerSec * 10));
+            if (mapTxnInfo.size() + mapTxnToAdd.size() > maxReqs)
+            {
+                LOG(REQ, "Tx request buffer full: Dropping request for %s", obj.hash.ToString());
+                return;
+            }
+            unsigned int share = std::min(std::max(txRequestPeerShare.Value(), 1U), 100U);
+            if (from->nTxnRequests >= maxReqs * share / 100)
+            {
+                LOG(REQ, "Tx request share of peer %d full: Dropping request for %s", from->GetId(),
+                    obj.hash.ToString());
+                return;
+            }
+            item = mapTxnToAdd.emplace(obj.hash, CUnknownObj()).first;
+            item->second.announcer = noderef;
+            from->nTxnRequests++;
+            pendingTxns += 1;
+        }
         CUnknownObj &data = item->second;
         data.obj = obj;
         data.objType = objType;
@@ -177,11 +201,6 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
         // if multiple invs were received before the transaction
         // was actually requested.
         data.AddSource(noderef, obj);
-
-        if (result.second) // inserted new
-        {
-            pendingTxns += 1;
-        }
     }
     else if (IsBlockType(obj) && (objType == objType::BLOCK || objType == objType::SUBBLOCK))
     {
@@ -856,8 +875,15 @@ void CRequestManager::RunTxnDeleter(OdMap &maybeToSend)
     }
     for (const uint256 &hash : setTemp)
     {
-        maybeToSend.erase(hash);
-        mapTxnInfo.erase(hash);
+        for (OdMap *map : {&maybeToSend, &mapTxnInfo})
+        {
+            OdMap::iterator it = map->find(hash);
+            if (it != map->end())
+            {
+                ReleaseTxnAnnouncer(it->second);
+                map->erase(it);
+            }
+        }
     }
 }
 
@@ -1162,6 +1188,7 @@ void CRequestManager::CheckIfNewSource(OdMap &mapNewRequests, OdMap &mapOldReque
                 iterOld->second.AddSource(item.noderef, iterNew->second.obj);
             }
             // Remove the the new request
+            ReleaseTxnAnnouncer(iterNew->second);
             iterNew = mapNewRequests.erase(iterNew);
         }
         else

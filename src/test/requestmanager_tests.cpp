@@ -1784,6 +1784,13 @@ BOOST_AUTO_TEST_CASE(askfor_one_peer_cannot_fill_txn_requests)
     CInv inv(MSG_TX, GetRandHash());
     rman.AskFor(inv, &honest, objType::TXN);
     BOOST_CHECK_EQUAL(rman_access.GetMapTxnToAdd().count(inv.hash), 1);
+
+    // The attacker filled only its share, and gets it back once its requests are erased.
+    BOOST_CHECK_EQUAL(attacker.nTxnRequests.load(), MAX_IN_FLIGHT_REQS * DEFAULT_TX_REQUEST_PEER_SHARE / 100);
+    rman.Cleanup();
+    std::map<uint256, CUnknownObj> mapEmpty;
+    rman.RunTxnDeleter(mapEmpty);
+    BOOST_CHECK_EQUAL(attacker.nTxnRequests.load(), 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -40,8 +40,13 @@ static const uint32_t BEGIN_PRUNING_PEERS = 4;
 // How many blocks forward to download during IBD
 static const uint32_t DEFAULT_BLOCK_DOWNLOAD_WINDOW = 1024;
 
-// How many requests can be active in the request manager at any one time
+// How many transaction requests can be active in the request manager at any one time when traffic is low.
+// The limit grows with throughput (10 s of measured tx/s), so this only applies below 10,000 tx/s, or
+// while the measured rate lags a sudden burst.
 static const uint64_t MAX_IN_FLIGHT_REQS = 100000;
+
+// Percent of the transaction request limit that one peer's announcements may fill
+static const unsigned int DEFAULT_TX_REQUEST_PEER_SHARE = 25;
 
 // How many object sources can we add to the new request.  This will prevent
 // too many re-requests from happening and also prevent the unnecessary adding
@@ -119,6 +124,7 @@ public:
     int64_t nEntryTime;
     int objType;
     CNodeRef prevRequestNode; // The last node we made a request from
+    CNodeRef announcer; // For transactions, the node whose announcement created this request
 
     CUnknownObj()
     {
