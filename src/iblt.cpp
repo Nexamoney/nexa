@@ -297,21 +297,20 @@ bool CIblt::listEntries(std::set<std::pair<uint64_t, std::vector<uint8_t> > > &p
         vToCheck.pop_back();
         vQueued[i] = false;
 
-        HashTableEntry &entry = peeled.hashTable.at(i);
-        if (!entry.isPure(keycheckMask))
+        if (!peeled.hashTable.at(i).isPure(keycheckMask))
             continue;
+
+        const HashTableEntry entry = peeled.hashTable.at(i);
         if (entry.count == 1)
         {
-            positive.insert(std::make_pair(entry.keySum, entry.valueSum));
+            positive.emplace(entry.keySum, entry.valueSum);
         }
         else
         {
-            negative.insert(std::make_pair(entry.keySum, entry.valueSum));
+            negative.emplace(entry.keySum, entry.valueSum);
         }
-        // NOTE: Need to create a copy of valueSum here as entry is just a reference!
-        std::vector<uint8_t> vec = entry.valueSum;
         vTouched.clear();
-        peeled._insert(-entry.count, entry.keySum, vec, &vTouched);
+        peeled._insert(-entry.count, entry.keySum, entry.valueSum, &vTouched);
         ++nTotalErased;
 
         for (size_t j : vTouched)
