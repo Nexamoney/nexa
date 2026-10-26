@@ -8,6 +8,7 @@
 
 // Counterparty and protocol discovery
 #include <array>
+#include <cmath>
 #include <limits>
 #include <queue>
 
@@ -43,7 +44,7 @@ extern uint64_t NOMINAL_MSG_SIZE; // A message of this size or less has no prior
 extern arith_uint256 MIN_FORWARD_MSG_DIFFICULTY;
 extern arith_uint256 MIN_LOCAL_MSG_DIFFICULTY;
 
-extern uint64_t MSG_LIFETIME_SEC; //!< expected message lifetime in seconds
+extern uint64_t MSG_LIFETIME_SEC; //!< expected message halflife in seconds
 
 /** The minimum message priority accepted and forwarded by the network
     Having a minimum reduces spam even if the msg pool is under utilized */
@@ -218,6 +219,8 @@ public:
     std::vector<uint8_t> nonce; //!< needed to prove this message's POW
 
     mutable uint256 cachedHash = uint256();
+    //! (not serialized) InitialPriority() cache, NaN means not yet calculated
+    mutable PriorityType cachedInitialPriority = std::numeric_limits<PriorityType>::quiet_NaN();
 
     CapdMsg(uint8_t ver = CURRENT_VERSION) : version(ver) {}
     CapdMsg(const std::string &indata, uint8_t ver = CURRENT_VERSION)
@@ -343,7 +346,11 @@ public:
     bool Solve(long int creationTime = 0);
 
     /** Set difficulty bits based on difficulty value */
-    void SetPowTarget(arith_uint256 target) { difficultyBits = target.GetCompact(); }
+    void SetPowTarget(arith_uint256 target)
+    {
+        difficultyBits = target.GetCompact();
+        cachedInitialPriority = std::numeric_limits<PriorityType>::quiet_NaN();
+    }
     void SetPowTarget(uint256 target) { SetPowTarget(UintToArith256(target)); }
     /** Sets the difficulty to be harder than the the provided priority.
     This function adjusts based on message size, and assumes no creation time penalty.
@@ -383,7 +390,12 @@ static inline CapdMsgRef MsgRefCopy(const CapdMsg &in) { return std::make_shared
 class CompareCapdMsgRefByPriority
 {
 public:
-    bool operator()(const CapdMsgRef &a, const CapdMsgRef &b) const { return (a->Priority() < b->Priority()); }
+    // Time-invariant form of a->Priority() < b->Priority() (see Priority()), so the sort order never changes
+    bool operator()(const CapdMsgRef &a, const CapdMsgRef &b) const
+    {
+        return a->InitialPriority() + (double)a->createTime / MSG_LIFETIME_SEC <
+               b->InitialPriority() + (double)b->createTime / MSG_LIFETIME_SEC;
+    }
 };
 
 // extracts a TxMemPoolEntry's transaction hash

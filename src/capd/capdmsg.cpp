@@ -17,7 +17,7 @@ const long int YEAR_OF_SECONDS = 31536000;
 arith_uint256 MIN_FORWARD_MSG_DIFFICULTY("007fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
 arith_uint256 MIN_LOCAL_MSG_DIFFICULTY("00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
 
-uint64_t MSG_LIFETIME_SEC = 60 * 10; // expected message lifetime in seconds
+uint64_t MSG_LIFETIME_SEC = 60 * 10; // expected message halflife in seconds
 uint64_t NOMINAL_MSG_SIZE = 100; // A message of this size or less has no penalty
 
 PriorityType MIN_RELAY_PRIORITY = Priority(MIN_FORWARD_MSG_DIFFICULTY, NOMINAL_MSG_SIZE, 0);
@@ -51,16 +51,14 @@ PriorityType Priority(arith_uint256 hashTarget, size_t msgContentSize, uint64_t 
         ret = (ret / msgContentSize) * NOMINAL_MSG_SIZE;
     }
 
-    // Next subtract the creation time based penalty
-    double penaltyPerSec = ret / MSG_LIFETIME_SEC;
-    double totalPenalty = penaltyPerSec * age;
-
-    ret -= totalPenalty;
-    return ret;
+    // Priority is log2 based, so it falls by 1 (halves) every MSG_LIFETIME_SEC.  Every message falls at the same rate,
+    // so relative order never changes, and a > MSG_LIFETIME_SEC old relay-minimum msg is below a new local-minimum msg.
+    return std::log2(ret) - (double)age / MSG_LIFETIME_SEC;
 }
 
 arith_uint256 aPriorityToPowTarget(PriorityType priority, size_t msgContentSize)
 {
+    priority = std::exp2(priority);
     if (msgContentSize > NOMINAL_MSG_SIZE)
     {
         priority = (priority * msgContentSize) / NOMINAL_MSG_SIZE;
@@ -101,8 +99,16 @@ uint256 CapdMsg::CalcHash() const
     return hash;
 }
 
-PriorityType CapdMsg::Priority() const { return ::Priority(difficultyBits, data.size(), GetTime() - createTime); }
-PriorityType CapdMsg::InitialPriority() const { return ::Priority(difficultyBits, data.size(), 0); }
+PriorityType CapdMsg::Priority() const
+{
+    return InitialPriority() - (double)(uint64_t)(GetTime() - createTime) / MSG_LIFETIME_SEC;
+}
+PriorityType CapdMsg::InitialPriority() const
+{
+    if (std::isnan(cachedInitialPriority))
+        cachedInitialPriority = ::Priority(difficultyBits, data.size(), 0);
+    return cachedInitialPriority;
+}
 bool CapdMsg::DoesPowMeetTarget() const { return GetPowTarget() > GetHash(); }
 std::string CapdMsg::EncodeHex()
 {
@@ -128,6 +134,7 @@ bool CapdMsg::checkNonce(unsigned char *stage1, const arith_uint256 &hashTarget)
 bool CapdMsg::Solve(long int time)
 {
     cachedHash = uint256(); // Clear the hash because we are changing the message
+    cachedInitialPriority = std::numeric_limits<PriorityType>::quiet_NaN();
     if (time < YEAR_OF_SECONDS)
         createTime = GetTime() - time;
     else

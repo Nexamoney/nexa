@@ -380,8 +380,8 @@ BOOST_AUTO_TEST_CASE(capd_pool_test_vectors)
         BOOST_CHECK_MESSAGE(qty == 1, strprintf("expected 1 got %d", qty).c_str());
     }
 
-    SetMockTime(now + MSG_LIFETIME_SEC);
-    // Every message inserted should have a negative priority at this point, so relay priority should be the minimum
+    SetMockTime(now + 10 * MSG_LIFETIME_SEC);
+    // Every message inserted has decayed by 10 (1024x) at this point, so relay priority should be the minimum
     BOOST_CHECK(mp.GetRelayPriority() == MIN_RELAY_PRIORITY);
 
     // although other messages have expired, a new message should be easily added
@@ -441,7 +441,7 @@ BOOST_AUTO_TEST_CASE(capd_pool_test_vectors2)
     for (int count = 0; count < 200; count++)
     {
         // Move forward to where the high priority message should be aged out
-        SetMockTime(now + MSG_LIFETIME_SEC + (count * 10));
+        SetMockTime(now + 5 * MSG_LIFETIME_SEC + (count * 10));
 
         CapdMsg m(" message12345678 " + std::to_string(count));
         auto diff = mp.GetRelayPowTarget();

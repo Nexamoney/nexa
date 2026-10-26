@@ -7,8 +7,9 @@ CAPD_NOMINAL_MSG_SIZE = 100
 CAPD_MIN_FORWARD_MSG_DIFFICULTY = 0x007fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 CAPD_MIN_LOCAL_MSG_DIFFICULTY = 0x00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 
-CAPD_MIN_RELAY_PRIORITY = 2
-CAPD_MIN_LOCAL_PRIORITY = 1
+# Priorities are log2 based
+CAPD_MIN_RELAY_PRIORITY = 1
+CAPD_MIN_LOCAL_PRIORITY = 0
 
 CAPD_QUERY_TYPE_MSG = 1
 CAPD_QUERY_TYPE_MSG_HASH = 2
@@ -18,6 +19,7 @@ CAPD_QUERY_TYPE_NOTIFICATION = 0x80
 
 
 def CapdMsgPriorityToDifficultyTarget(priority, msgContentSize):
+    priority = 2.0 ** float(priority)
     if msgContentSize > CAPD_NOMINAL_MSG_SIZE:
         priority = float(priority * msgContentSize) / float(CAPD_NOMINAL_MSG_SIZE)
 
