@@ -3146,6 +3146,22 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     if (!PV->BeginValidation(this_id, pindexEpoch, fParallel))
         return false;
 
+    // Read only inputs come from the shared tip, which a competing block can change once cs_main is released.
+    // Copy them now so the checks below see the state this block builds on.
+    CCoinsView noCoins;
+    CCoinsViewCache readonlySnapshot(&noCoins);
+    for (const CTransactionRef &txref : pblock->vtx)
+    {
+        for (const CTxIn &txin : txref->vin)
+        {
+            if (!txin.IsReadOnly())
+                continue;
+            CoinAccessor coin(readonlyinputs, txin.prevout);
+            if (!coin->IsSpent())
+                readonlySnapshot.AddCoin(txin.prevout, Coin(*coin), true);
+        }
+    }
+
     /*********************************************************************************************
      If in PV, unlock cs_main here so we have no contention when we're checking inputs and scripts
      *********************************************************************************************/
@@ -3181,7 +3197,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                 {
                     bool fReadOnlyUnavailable = false;
                     {
-                        CoinAccessor coin(readonlyinputs, txref->vin[j].prevout);
+                        CoinAccessor coin(readonlySnapshot, txref->vin[j].prevout);
                         fReadOnlyUnavailable = coin->IsSpent();
                     }
                     if (fReadOnlyUnavailable)
@@ -3329,8 +3345,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                 // The helper walks the inputs once: presence, amount match, fee
                 // accumulation, BIP68 and CheckInputs. On an input failure it sets
                 // state.relevantInput / relevantTxid for the diagnostics below.
-                if (!CheckTxFinalAndInputs(txref, state, view, readonlyinputs, *pindexEpoch, chainparams, fCheckInputs,
-                        fScriptChecks, fJustCheck, fCheckInputs ? &txResourceTracker[i] : nullptr,
+                if (!CheckTxFinalAndInputs(txref, state, view, readonlySnapshot, *pindexEpoch, chainparams,
+                        fCheckInputs, fScriptChecks, fJustCheck, fCheckInputs ? &txResourceTracker[i] : nullptr,
                         (fCheckInputs && PV->ThreadCount()) ? &vChecks : nullptr, &nFees))
                 {
                     // The helper reports an input failure by setting relevantInput; the code then
