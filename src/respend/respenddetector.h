@@ -5,17 +5,27 @@
 #ifndef NEXA_RESPEND_RESPENDDETECTOR_H
 #define NEXA_RESPEND_RESPENDDETECTOR_H
 
+#include "respend/dsproof.h"
 #include "respend/respendaction.h"
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 
 class CRollingBloomFilter;
+class DoubleSpendProofStorage;
 
 namespace respend
 {
 std::vector<RespendActionPtr> CreateDefaultActions();
+
+//! Validates the orphan proofs for outpoint, claims the first valid one and removes the rest
+//! Returns the claimed proof id and sets proofHash, or returns -1 if no proof was claimed
+int ClaimOrphanProof(DoubleSpendProofStorage &storage,
+    const COutPoint &outpoint,
+    uint256 &proofHash,
+    const std::function<DoubleSpendProof::Validity(const DoubleSpendProof &)> &validate);
 
 // Detects if a transaction is in conflict with mempool, and feeds various
 // actions with data about the respend. Finally triggers the actions.

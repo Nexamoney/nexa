@@ -63,7 +63,9 @@ public:
     //! Returns how many orphan proofs are held from this peer
     size_t peerOrphanCount(NodeId peerId) const;
 
-    void claimOrphan(int proofId);
+    //! Stops an orphan from expiring or being evicted.
+    //! Returns false if proofId is no longer an orphan (after eviction or expiry)
+    bool claimOrphan(int proofId);
 
     DoubleSpendProof lookup(const uint256 &proofId) const;
     bool exists(const uint256 &proofId) const;

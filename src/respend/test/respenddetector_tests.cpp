@@ -597,4 +597,106 @@ BOOST_AUTO_TEST_CASE(dsproof_storage_orphan_limits)
     }
 }
 
+// adds large orphans for another outpoint, from enough peers to stay within the per-peer limit,
+// until the total size limit evicts proofId. Returns false if proofId was never evicted
+static bool FloodUntilEvicted(DoubleSpendProofStorage &storage, int proofId, uint32_t &tag)
+{
+    const COutPoint floodOut(uint256S("0404040404040404040404040404040404040404040404040404040404040404"), 0);
+    const size_t largePushData = MAX_ORPHAN_DSPROOF_SIZE / 2 - 200;
+    // twice as many as fits is enough to evict anything stored before the flood
+    for (size_t i = 0; i < 2 * MAX_ORPHAN_DSPROOF_BYTES / largePushData && !storage.proof(proofId).isEmpty(); i++)
+        storage.addOrphan(
+            MakeSizedStorageTestProof(floodOut, tag++, largePushData), NodeId(100 + i / MAX_ORPHAN_DSPROOFS_PER_PEER));
+    return storage.proof(proofId).isEmpty();
+}
+
+BOOST_AUTO_TEST_CASE(dsproof_orphan_claim_eviction)
+{
+    const COutPoint prevOut(uint256S("0303030303030303030303030303030303030303030303030303030303030303"), 0);
+    const NodeId peer1 = 1;
+    const NodeId peer2 = 2;
+    // same size as the flood, so evicting one of these makes room for exactly one flood proof
+    const size_t largePushData = MAX_ORPHAN_DSPROOF_SIZE / 2 - 200;
+    uint32_t floodTag = 1000;
+
+    // with no eviction, the first valid orphan is claimed and the others are removed
+    {
+        DoubleSpendProofStorage storage;
+        DoubleSpendProof first = MakeSizedStorageTestProof(prevOut, 1, largePushData);
+        DoubleSpendProof second = MakeSizedStorageTestProof(prevOut, 2, largePushData);
+        storage.addOrphan(first, peer1);
+        storage.addOrphan(second, peer2);
+        std::list<std::pair<int, NodeId> > orphans = storage.findOrphans(prevOut);
+        BOOST_REQUIRE_EQUAL(orphans.size(), 2);
+
+        uint256 proofHash;
+        const int proofId = ClaimOrphanProof(
+            storage, prevOut, proofHash, [](const DoubleSpendProof &) { return DoubleSpendProof::Valid; });
+        // the first was claimed - it is still stored, and no longer an orphan
+        BOOST_CHECK_EQUAL(proofId, orphans.front().first);
+        BOOST_CHECK(proofHash == first.GetHash());
+        BOOST_CHECK(storage.exists(first.GetHash()));
+        BOOST_CHECK_EQUAL(storage.orphanCount(proofId), 0);
+        // the second was removed
+        BOOST_CHECK(!storage.exists(second.GetHash()));
+    }
+
+    // an orphan evicted after findOrphans() is skipped, not validated as an empty proof
+    {
+        DoubleSpendProofStorage storage;
+        DoubleSpendProof first = MakeSizedStorageTestProof(prevOut, 1, largePushData);
+        DoubleSpendProof second = MakeSizedStorageTestProof(prevOut, 2, largePushData);
+        storage.addOrphan(first, peer1);
+        storage.addOrphan(second, peer2);
+        std::list<std::pair<int, NodeId> > orphans = storage.findOrphans(prevOut);
+        BOOST_REQUIRE_EQUAL(orphans.size(), 2);
+        const int secondId = orphans.back().first;
+
+        std::vector<DoubleSpendProof> validated;
+        uint256 proofHash;
+        const int proofId = ClaimOrphanProof(storage, prevOut, proofHash,
+            [&](const DoubleSpendProof &dsp)
+            {
+                validated.push_back(dsp);
+                // while the first is validated, other peers' orphans evict the second
+                if (validated.size() == 1)
+                    BOOST_REQUIRE(FloodUntilEvicted(storage, secondId, floodTag));
+                return DoubleSpendProof::Invalid;
+            });
+        BOOST_CHECK_EQUAL(proofId, -1);
+        // only the first was validated. An evicted proof validates as an empty proof, which is
+        // invalid and would cost its honest peer misbehavior points
+        BOOST_REQUIRE_EQUAL(validated.size(), 1);
+        BOOST_CHECK(validated[0].GetHash() == first.GetHash());
+    }
+
+    // an orphan evicted while it is validated is not claimed, and the next valid orphan is claimed instead
+    {
+        DoubleSpendProofStorage storage;
+        DoubleSpendProof first = MakeSizedStorageTestProof(prevOut, 1, largePushData);
+        DoubleSpendProof second = MakeSizedStorageTestProof(prevOut, 2, largePushData);
+        storage.addOrphan(first, peer1);
+        storage.addOrphan(second, peer2);
+        std::list<std::pair<int, NodeId> > orphans = storage.findOrphans(prevOut);
+        BOOST_REQUIRE_EQUAL(orphans.size(), 2);
+        const int firstId = orphans.front().first;
+        const int secondId = orphans.back().first;
+
+        uint256 proofHash;
+        const int proofId = ClaimOrphanProof(storage, prevOut, proofHash,
+            [&](const DoubleSpendProof &dsp)
+            {
+                // while the first is validated, other peers' orphans evict it
+                if (dsp.GetHash() == first.GetHash())
+                    BOOST_REQUIRE(FloodUntilEvicted(storage, firstId, floodTag));
+                return DoubleSpendProof::Valid;
+            });
+        // the second was claimed, not the first that was evicted
+        BOOST_CHECK_EQUAL(proofId, secondId);
+        BOOST_CHECK(proofHash == second.GetHash());
+        BOOST_CHECK(storage.exists(second.GetHash()));
+        BOOST_CHECK_EQUAL(storage.orphanCount(proofId), 0);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END();

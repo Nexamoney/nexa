@@ -169,7 +169,7 @@ size_t DoubleSpendProofStorage::peerOrphanCount(NodeId peerId) const
     auto peerOrphans = m_orphansByPeer.find(peerId);
     return peerOrphans == m_orphansByPeer.end() ? 0 : peerOrphans->second.size();
 }
-void DoubleSpendProofStorage::claimOrphan(int proofId)
+bool DoubleSpendProofStorage::claimOrphan(int proofId)
 {
     LOCK(dsproofStorageLock);
     auto orphan = m_orphans.find(proofId);
@@ -187,11 +187,13 @@ void DoubleSpendProofStorage::claimOrphan(int proofId)
                     list.erase(i);
                     if (list.size() == 0)
                         m_prevTxIdLookupTable.erase(iter);
-                    return;
+                    return true;
                 }
             }
         }
+        return true;
     }
+    return false;
 }
 
 void DoubleSpendProofStorage::remove(int proof)
