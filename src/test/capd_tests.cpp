@@ -456,6 +456,52 @@ BOOST_AUTO_TEST_CASE(capd_pool_test_vectors2)
     BOOST_CHECK(findings.size() == 0);
 }
 
+// Messages of differing size, POW and creation time must never change relative priority order as they age
+BOOST_AUTO_TEST_CASE(capd_pool_order_is_time_invariant)
+{
+    int64_t t = GetTime();
+    CapdMsgPool mp;
+    mp.SetMaxSize(100000);
+
+    const unsigned int sizes[] = {10, 100, 150, 400, 700}; // > NOMINAL_MSG_SIZE incurs a size penalty
+    const unsigned int powMults[] = {16, 32, 64};
+    char c = 'a';
+    for (auto sz : sizes)
+    {
+        for (auto mult : powMults)
+        {
+            t += 37; // stagger creation times so older higher-POW msgs interleave with newer lower-POW ones
+            SetMockTime(t);
+            CapdMsg m(std::string(sz, c++));
+            m.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(mult));
+            m.Solve();
+            mp.add(MsgRefCopy(m));
+        }
+    }
+
+    std::vector<CapdMsgRef> order;
+    mp.visit([&order](const CapdMsgRef &m) {
+        order.push_back(m);
+        return true;
+    });
+    BOOST_CHECK_EQUAL(order.size(), 15U);
+
+    for (int64_t dt : {0, 1, 300, 600, 3600, 86400})
+    {
+        SetMockTime(t + dt);
+        std::vector<CapdMsgRef> cur;
+        mp.visit([&cur](const CapdMsgRef &m) {
+            cur.push_back(m);
+            return true;
+        });
+        BOOST_CHECK(cur == order);
+        // the pool's (fixed) order must still match every message's current priority
+        for (size_t i = 1; i < cur.size(); i++)
+            BOOST_CHECK(cur[i - 1]->Priority() <= cur[i]->Priority() + 1e-9);
+    }
+    SetMockTime(0);
+}
+
 
 BOOST_AUTO_TEST_CASE(capd_http) { BOOST_CHECK(1 == 1); }
 class CMsgMaker
