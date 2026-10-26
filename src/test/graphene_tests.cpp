@@ -621,4 +621,73 @@ BOOST_AUTO_TEST_CASE(graphene_failure_recovery_params_sanity)
     BOOST_CHECK_EQUAL(y_star_desired, y_star_actual);
 }
 
+// A Graphene set whose regular Bloom filter claims nHashFuncs hash functions
+static CDataStream GrapheneSetWithFilterHashes(unsigned int nHashFuncs)
+{
+    std::vector<uint256> senderItems = {SerializeHash(3)};
+    CGrapheneSet sentGrapheneSet(1, 1, senderItems, 0, 0, MAX_GRAPHENE_SET_VERSION, 0, false, false, true);
+    CDataStream filter(SER_NETWORK, PROTOCOL_VERSION);
+    filter << std::vector<unsigned char>(8, 0x55) << nHashFuncs << (unsigned int)0 << (unsigned char)0;
+    filter >> *sentGrapheneSet.GetRegularFilter();
+    CDataStream ss(SER_DISK, 0);
+    ss << sentGrapheneSet;
+    return ss;
+}
+
+BOOST_AUTO_TEST_CASE(graphene_set_with_too_many_filter_hashes_is_rejected)
+{
+    CGrapheneSet received(MAX_GRAPHENE_SET_VERSION);
+    CDataStream ok = GrapheneSetWithFilterHashes(MAX_HASH_FUNCS);
+    BOOST_CHECK_NO_THROW(ok >> received);
+    CDataStream tooMany = GrapheneSetWithFilterHashes(MAX_HASH_FUNCS + 1);
+    BOOST_CHECK_THROW(tooMany >> received, std::runtime_error);
+
+    // The filter we build for the smallest false positive rate a sender can choose stays within the limit
+    for (unsigned int nItems : {1, 2, 3, 10, 1000})
+    {
+        CBloomFilter filter(
+            nItems, 1.0 / LARGE_MEM_POOL_SIZE, 0, BLOOM_UPDATE_ALL, true, std::numeric_limits<uint32_t>::max());
+        BOOST_CHECK_LE(filter.NumHashFuncs(), MAX_HASH_FUNCS);
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(graphene_recovery_response_must_be_requested, TestingSetup)
+{
+    CAddress addr(ipaddress(0xa0b0c001, 10000));
+    CNode node(INVALID_SOCKET, addr, "", true);
+    SetConnected(node);
+    node.negotiatedGrapheneVersion = 4;
+
+    const CBlock block = TestBlock1();
+    const uint256 hash = block.GetHash();
+    auto pblock = thinrelay.SetBlockToReconstruct(&node, hash);
+    *((CBlockHeader *)pblock.get()) = block.GetBlockHeader();
+    pblock->grapheneblock = std::make_shared<CGrapheneBlock>(MakeBlockRef(CBlock(block)), 1, 1, 4, false);
+
+    CGrapheneReceiverRecover response;
+    response.blockhash = hash;
+    response.pRevisedIblt = std::make_shared<CIblt>(1, CGrapheneSet::GetCIbltVersion(4));
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << response;
+
+    // Nothing was requested: ignored, and the block is still being reconstructed
+    CDataStream unrequested(ss);
+    BOOST_CHECK(!HandleGrapheneBlockRecoveryResponse(unrequested, &node, Params()));
+    BOOST_CHECK(thinrelay.GetBlockToReconstruct(&node, hash) == pblock);
+
+    // A request allows one response. Reconstructing this synthetic block can throw, as ProcessMessage expects.
+    pblock->grapheneblock->fRecoveryRequested = true;
+    CDataStream requested(ss);
+    try
+    {
+        HandleGrapheneBlockRecoveryResponse(requested, &node, Params());
+    }
+    catch (const std::exception &)
+    {
+    }
+    BOOST_CHECK(!pblock->grapheneblock->fRecoveryRequested);
+
+    thinrelay.ClearAllBlockData(&node, hash);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

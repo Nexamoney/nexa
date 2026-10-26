@@ -167,7 +167,7 @@ uint32_t CIblt::saltedHashValue(size_t hashFuncIdx, const std::vector<uint8_t> &
         return MurmurHash3(hashFuncIdx, kvec);
 }
 
-void CIblt::_insert(int plusOrMinus, uint64_t k, const std::vector<uint8_t> &v)
+void CIblt::_insert(int plusOrMinus, uint64_t k, const std::vector<uint8_t> &v, std::vector<size_t> *pTouched)
 {
     if (!n_hash)
         return;
@@ -183,7 +183,10 @@ void CIblt::_insert(int plusOrMinus, uint64_t k, const std::vector<uint8_t> &v)
         size_t startEntry = i * bucketsPerHash;
 
         uint32_t h = saltedHashValue(i, kvec);
-        HashTableEntry &entry = hashTable.at(startEntry + (h % bucketsPerHash));
+        const size_t idx = startEntry + (h % bucketsPerHash);
+        if (pTouched)
+            pTouched->push_back(idx);
+        HashTableEntry &entry = hashTable.at(idx);
         entry.count += plusOrMinus;
         entry.keySum ^= k;
         entry.keyCheck = (entry.keyCheck ^ kchk) & keycheckMask;
@@ -278,32 +281,47 @@ bool CIblt::listEntries(std::set<std::pair<uint64_t, std::vector<uint8_t> > > &p
 {
     CIblt peeled = *this;
 
-    size_t nErased = 0;
+    // Only the cells a peel touches can become pure, so check those rather than sweeping the whole table again.
+    // A peer supplied table could otherwise cost O(cells^2).
+    const size_t nCells = peeled.hashTable.size();
+    std::vector<size_t> vToCheck(nCells);
+    for (size_t i = 0; i < nCells; i++)
+        vToCheck[i] = nCells - 1 - i; // pop from the back in index order
+    std::vector<bool> vQueued(nCells, true);
+    std::vector<size_t> vTouched;
+
     size_t nTotalErased = 0;
-    do
+    while (!vToCheck.empty() && nTotalErased < nCells / MIN_OVERHEAD)
     {
-        nErased = 0;
-        for (size_t i = 0; i < peeled.hashTable.size(); i++)
+        const size_t i = vToCheck.back();
+        vToCheck.pop_back();
+        vQueued[i] = false;
+
+        if (!peeled.hashTable.at(i).isPure(keycheckMask))
+            continue;
+
+        const HashTableEntry entry = peeled.hashTable.at(i);
+        if (entry.count == 1)
         {
-            HashTableEntry &entry = peeled.hashTable.at(i);
-            if (entry.isPure(keycheckMask))
+            positive.emplace(entry.keySum, entry.valueSum);
+        }
+        else
+        {
+            negative.emplace(entry.keySum, entry.valueSum);
+        }
+        vTouched.clear();
+        peeled._insert(-entry.count, entry.keySum, entry.valueSum, &vTouched);
+        ++nTotalErased;
+
+        for (size_t j : vTouched)
+        {
+            if (!vQueued[j])
             {
-                if (entry.count == 1)
-                {
-                    positive.insert(std::make_pair(entry.keySum, entry.valueSum));
-                }
-                else
-                {
-                    negative.insert(std::make_pair(entry.keySum, entry.valueSum));
-                }
-                // NOTE: Need to create a copy of valueSum here as entry is just a reference!
-                std::vector<uint8_t> vec = entry.valueSum;
-                peeled._insert(-entry.count, entry.keySum, vec);
-                ++nErased;
+                vQueued[j] = true;
+                vToCheck.push_back(j);
             }
         }
-        nTotalErased += nErased;
-    } while (nErased > 0 && nTotalErased < peeled.hashTable.size() / MIN_OVERHEAD);
+    }
 
     if (!n_hash)
         return false;

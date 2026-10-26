@@ -77,6 +77,7 @@ public:
     std::map<uint64_t, CTransactionRef> mapMissingTx; // Map of transactions that were re-requested
     std::vector<CTransactionRef> vAdditionalTxs; // vector of transactions receiver probably does not have
     std::set<CTransactionRef> vRecoveredTxs; // set of transactions collected during failure recovery
+    bool fRecoveryRequested = false; // a failure recovery request is waiting for its response
 
 public:
     // These describe, in two parts, the 128-bit secret key used for SipHash

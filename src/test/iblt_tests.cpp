@@ -10,6 +10,7 @@
 #include "serialize.h"
 #include "test/test_nexa.h"
 #include "utilstrencodings.h"
+#include "utiltime.h"
 
 const std::vector<uint8_t> IBLT_NULL_VALUE = {};
 
@@ -307,6 +308,57 @@ BOOST_AUTO_TEST_CASE(iblt_performs_subtraction_properly)
         BOOST_CHECK(positive == expectedNegative); // Opposite subtraction, opposite results
         BOOST_CHECK(negative == expectedPositive);
     }
+}
+
+// Exposes the table so a test can build the cells a peer could send
+class CIbltCells : public CIblt
+{
+public:
+    using CIblt::hashTable;
+    using CIblt::n_hash;
+};
+
+// One pure cell placed away from where its key hashes: peeling it changes another cell, so it stays pure
+static CIbltCells MisplacedPureCell(size_t nCells)
+{
+    CIbltCells honest;
+    honest.hashTable.resize(nCells);
+    const uint64_t key = 0x0123456789abcdef;
+    honest.insert(key, std::vector<uint8_t>());
+    size_t pos = 0;
+    while (honest.hashTable[pos].empty())
+        pos++;
+
+    CIbltCells crafted;
+    crafted.hashTable.resize(nCells);
+    crafted.hashTable[(pos + 1) % nCells] = honest.hashTable[pos];
+    return crafted;
+}
+
+// Sweeping the whole table after every peel made this cost O(cells^2): about 10 s for 30000 cells
+BOOST_AUTO_TEST_CASE(misplaced_pure_cell_decodes_in_linear_time)
+{
+    CIbltCells crafted = MisplacedPureCell(30000);
+    std::set<std::pair<uint64_t, std::vector<uint8_t> > > positive, negative;
+    const int64_t start = GetStopwatchMicros();
+    BOOST_CHECK(!crafted.listEntries(positive, negative));
+    BOOST_CHECK_LT(GetStopwatchMicros() - start, 1000000);
+}
+
+BOOST_AUTO_TEST_CASE(iblt_with_too_many_hash_functions_is_rejected)
+{
+    CIbltCells iblt;
+    iblt.hashTable.resize(10);
+    iblt.n_hash = CIblt::MaxNHash();
+    CDataStream ok(SER_NETWORK, PROTOCOL_VERSION);
+    ok << iblt;
+    CIblt decoded;
+    BOOST_CHECK_NO_THROW(ok >> decoded);
+
+    iblt.n_hash = CIblt::MaxNHash() + 1;
+    CDataStream tooMany(SER_NETWORK, PROTOCOL_VERSION);
+    tooMany << iblt;
+    BOOST_CHECK_THROW(tooMany >> decoded, std::ios_base::failure);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

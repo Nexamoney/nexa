@@ -1461,6 +1461,10 @@ bool HandleGrapheneBlockRecoveryResponse(CDataStream &vRecv, CNode *pfrom, const
     if (pblock == nullptr)
         return error("No block available to reconstruct for grrec");
     DbgAssert(pblock->grapheneblock != nullptr, return false);
+    // One response per request: each one costs a full IBLT decode
+    if (!pblock->grapheneblock->fRecoveryRequested)
+        return error("Unrequested graphene recovery response from peer=%s", pfrom->GetLogName());
+    pblock->grapheneblock->fRecoveryRequested = false;
     CGrapheneBlock grapheneBlock = *(pblock->grapheneblock);
 
     CIblt localIblt((*recoveryResponse.pRevisedIblt));
@@ -1517,7 +1521,7 @@ bool HandleGrapheneBlockRecoveryResponse(CDataStream &vRecv, CNode *pfrom, const
     }
 
     // Attempt to reconcile IBLT
-    static std::vector<uint64_t> blockCheapHashes;
+    std::vector<uint64_t> blockCheapHashes;
     try
     {
         blockCheapHashes = CGrapheneSet::Reconcile(setSenderFilterPositiveCheapHashes, localIblt,
@@ -1630,6 +1634,7 @@ void RequestFailureRecovery(CNode *pfrom,
     CRequestGrapheneReceiverRecover recoveryRequest = CRequestGrapheneReceiverRecover(
         vSenderFilterPositiveHahses, *grapheneBlock, vSenderFilterPositiveHahses.size());
 
+    grapheneBlock->fRecoveryRequested = true;
     pfrom->PushMessage(NetMsgType::GET_GRAPHENE_RECOVERY, recoveryRequest);
 }
 
