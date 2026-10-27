@@ -710,7 +710,7 @@ static void SetTooManyIbltHashes(CIblt &iblt)
     iblt = bad;
 }
 
-BOOST_FIXTURE_TEST_CASE(graphene_set_outside_limits_bans_sender, TestingSetup)
+BOOST_FIXTURE_TEST_CASE(graphene_set_outside_limits_penalises_sender, TestingSetup)
 {
     const CBlock block = TestBlock1();
     const uint64_t prevFilterCompatibility = grapheneFastFilterCompatibility.Value();
@@ -729,7 +729,7 @@ BOOST_FIXTURE_TEST_CASE(graphene_set_outside_limits_bans_sender, TestingSetup)
         CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
         ss << grapheneBlock;
         BOOST_CHECK_NO_THROW(CGrapheneBlock::HandleMessage(ss, &node, 0, NetMsgType::GRAPHENEBLOCK, 0));
-        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 100);
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
     }
 
     // A Graphene block whose IBLT has too many hash functions
@@ -742,7 +742,7 @@ BOOST_FIXTURE_TEST_CASE(graphene_set_outside_limits_bans_sender, TestingSetup)
         CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
         ss << grapheneBlock;
         BOOST_CHECK_NO_THROW(CGrapheneBlock::HandleMessage(ss, &node, 0, NetMsgType::GRAPHENEBLOCK, 0));
-        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 100);
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
     }
 
     // A recovery response whose revised IBLT has too many hash functions
@@ -756,7 +756,7 @@ BOOST_FIXTURE_TEST_CASE(graphene_set_outside_limits_bans_sender, TestingSetup)
         CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
         ss << response;
         BOOST_CHECK_NO_THROW(HandleGrapheneBlockRecoveryResponse(ss, &node, Params()));
-        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 100);
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
     }
 
     // A mempool sync whose IBLT has too many hash functions
@@ -768,14 +768,14 @@ BOOST_FIXTURE_TEST_CASE(graphene_set_outside_limits_bans_sender, TestingSetup)
         CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
         ss << mempoolSync;
         BOOST_CHECK_NO_THROW(CMempoolSync::ReceiveMempoolSync(ss, &node, NetMsgType::MEMPOOLSYNC));
-        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 100);
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
     }
 
     grapheneFastFilterCompatibility.Set(UniValue(prevFilterCompatibility));
     dosMan.ClearBanned();
 }
 
-BOOST_FIXTURE_TEST_CASE(fast_filter_outside_limits_bans_sender, TestingSetup)
+BOOST_FIXTURE_TEST_CASE(fast_filter_outside_limits_penalises_sender, TestingSetup)
 {
     const CBlock block = TestBlock1();
 
@@ -790,7 +790,7 @@ BOOST_FIXTURE_TEST_CASE(fast_filter_outside_limits_bans_sender, TestingSetup)
         CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
         ss << grapheneBlock;
         BOOST_CHECK_NO_THROW(CGrapheneBlock::HandleMessage(ss, &node, 0, NetMsgType::GRAPHENEBLOCK, 0));
-        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 100);
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
     }
 
     // A recovery request whose fast filter has too many hash functions
@@ -805,7 +805,7 @@ BOOST_FIXTURE_TEST_CASE(fast_filter_outside_limits_bans_sender, TestingSetup)
         CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
         ss << request;
         BOOST_CHECK_NO_THROW(HandleGrapheneBlockRecoveryRequest(ss, &node, 0, Params()));
-        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 100);
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
     }
 
     // A mempool sync whose fast filter claims more bits than its data holds
@@ -818,7 +818,20 @@ BOOST_FIXTURE_TEST_CASE(fast_filter_outside_limits_bans_sender, TestingSetup)
         CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
         ss << mempoolSync;
         BOOST_CHECK_NO_THROW(CMempoolSync::ReceiveMempoolSync(ss, &node, NetMsgType::MEMPOOLSYNC));
-        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 100);
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
+    }
+
+    // A Graphene block cut short, like any other message that fails to deserialize
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c009, 10000)), "", true);
+        SetConnected(node);
+        node.negotiatedGrapheneVersion = 4;
+        CGrapheneBlock grapheneBlock(MakeBlockRef(CBlock(block)), 1, 1, 4, true);
+        CDataStream full(SER_NETWORK, PROTOCOL_VERSION);
+        full << grapheneBlock;
+        CDataStream ss(full.begin(), full.begin() + full.size() / 2, SER_NETWORK, PROTOCOL_VERSION);
+        BOOST_CHECK_NO_THROW(CGrapheneBlock::HandleMessage(ss, &node, 0, NetMsgType::GRAPHENEBLOCK, 0));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
     }
 
     dosMan.ClearBanned();
