@@ -22,6 +22,7 @@ SOFTWARE.
 #ifndef CIblt_H
 #define CIblt_H
 
+#include "reconciliation_error.h"
 #include "serialize.h"
 
 #include <inttypes.h>
@@ -42,14 +43,6 @@ SOFTWARE.
 
 const uint64_t IBLT_MAX_VERSION_SUPPORTED = 2;
 const uint32_t MAX_CHECKSUM_MASK = 0xffffffff;
-
-// Thrown for set reconciliation data that no honest node builds, so the receiver can ban the sender.
-// Raising these limits needs a new Graphene version, or older nodes would ban upgraded ones.
-class reconciliation_limit_error : public std::ios_base::failure
-{
-public:
-    explicit reconciliation_limit_error(const std::string &msg) : std::ios_base::failure(msg) {}
-};
 
 class BaseHashTableEntry
 {

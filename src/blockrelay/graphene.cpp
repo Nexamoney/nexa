@@ -1441,7 +1441,15 @@ bool HandleGrapheneBlockRecoveryRequest(CDataStream &vRecv,
     const CChainParams &chainparams)
 {
     CRequestGrapheneReceiverRecover recoveryRequest;
-    vRecv >> recoveryRequest;
+    try
+    {
+        vRecv >> recoveryRequest;
+    }
+    catch (const reconciliation_limit_error &e)
+    {
+        dosMan.Misbehaving(pfrom, 100, BanReasonBadBlockData);
+        return error("Graphene recovery request from peer %s: %s\n", pfrom->GetLogName(), e.what());
+    }
     recoveryRequest.nSenderFilterPositives =
         std::min<uint64_t>(recoveryRequest.nSenderFilterPositives, LARGE_MEM_POOL_SIZE);
 

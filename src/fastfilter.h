@@ -6,6 +6,7 @@
 #define NEXA_FAST_FILTER_H
 
 #include "random.h"
+#include "reconciliation_error.h"
 #include "serialize.h"
 #include "util.h"
 #include <cmath>
@@ -166,13 +167,13 @@ public:
         READWRITE(vData);
         READWRITE(nHashFuncs);
         if (ser_action.ForRead() && (nHashFuncs < 1 || nHashFuncs > 32))
-            throw std::ios_base::failure("nHashFuncs must be in the range [1,32], inclusive");
+            throw reconciliation_limit_error("nHashFuncs must be in the range [1,32], inclusive");
         READWRITE(nFilterBits);
         if (ser_action.ForRead())
         {
             // Bit indexes are taken modulo nFilterBits - 1 and must fall inside vData
             if (nFilterBits < 2 || nFilterBits > 8 * (uint64_t)vData.size())
-                throw std::ios_base::failure("nFilterBits is inconsistent with the filter data");
+                throw reconciliation_limit_error("nFilterBits is inconsistent with the filter data");
             nFilterBytes = vData.size();
         }
     }

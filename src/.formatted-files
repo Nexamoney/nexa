@@ -146,6 +146,7 @@ pubkey.cpp
 pubkey.h
 random.cpp
 random.h
+reconciliation_error.h
 requestManager.cpp
 requestManager.h
 rest.cpp
