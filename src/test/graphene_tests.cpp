@@ -775,4 +775,53 @@ BOOST_FIXTURE_TEST_CASE(graphene_set_outside_limits_bans_sender, TestingSetup)
     dosMan.ClearBanned();
 }
 
+BOOST_FIXTURE_TEST_CASE(fast_filter_outside_limits_bans_sender, TestingSetup)
+{
+    const CBlock block = TestBlock1();
+
+    // A Graphene block whose fast filter claims more bits than its data holds
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c006, 10000)), "", true);
+        SetConnected(node);
+        node.negotiatedGrapheneVersion = 4;
+        CGrapheneBlock grapheneBlock(MakeBlockRef(CBlock(block)), 1, 1, 4, true);
+        auto filter = grapheneBlock.pGrapheneSet->GetFastFilter();
+        filter->nFilterBits = 8 * filter->nFilterBytes + 8;
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << grapheneBlock;
+        BOOST_CHECK_NO_THROW(CGrapheneBlock::HandleMessage(ss, &node, 0, NetMsgType::GRAPHENEBLOCK, 0));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 100);
+    }
+
+    // A recovery request whose fast filter has too many hash functions
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c007, 10000)), "", true);
+        SetConnected(node);
+        CRequestGrapheneReceiverRecover request;
+        request.pReceiverFilter = std::make_shared<CVariableFastFilter>(1, 0.1);
+        request.pReceiverFilter->nHashFuncs = MAX_N_HASH_FUNC + 1;
+        request.nSenderFilterPositives = 1;
+        request.blockhash = block.GetHash();
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << request;
+        BOOST_CHECK_NO_THROW(HandleGrapheneBlockRecoveryRequest(ss, &node, 0, Params()));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 100);
+    }
+
+    // A mempool sync whose fast filter claims more bits than its data holds
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c008, 10000)), "", true);
+        SetConnected(node);
+        CMempoolSync mempoolSync({SerializeHash(3)}, 1, 1, 0, 0, 0);
+        auto filter = mempoolSync.pGrapheneSet->GetFastFilter();
+        filter->nFilterBits = 8 * filter->nFilterBytes + 8;
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << mempoolSync;
+        BOOST_CHECK_NO_THROW(CMempoolSync::ReceiveMempoolSync(ss, &node, NetMsgType::MEMPOOLSYNC));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 100);
+    }
+
+    dosMan.ClearBanned();
+}
+
 BOOST_AUTO_TEST_SUITE_END()
