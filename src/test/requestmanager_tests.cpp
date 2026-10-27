@@ -1676,7 +1676,6 @@ BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_valid_header, RegtestRequ
     // 255 proofs whose declared count matches, and K-1 proofs declared as 0, both pass the header
     // checks. Neither is an honest summary, so neither is fetched.
     {
-        LOCK(cs_main);
         CBlockRef oversized = MakeRequestTestSummary(parent, 255, true);
         CValidationState state;
         BOOST_REQUIRE(CheckBlockHeader(Params().GetConsensus(), *oversized, state, true));
@@ -1699,7 +1698,6 @@ BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_valid_header, RegtestRequ
 
 BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_parent_context, RegtestRequestSetup)
 {
-    LOCK(cs_main);
     CRequestManagerTest rman(&requester);
     CBlockIndex *genesis = chainActive.Tip();
     nMiningForkTime = genesis->GetMedianTimePast();
@@ -1733,7 +1731,11 @@ BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_parent_context, RegtestRe
         BOOST_CHECK_EQUAL(RequestedSubblocks(rman, unknown), 0);
     }
 
-    CBlockIndex *parent = AddToBlockIndex(Params(), parentHeader);
+    CBlockIndex *parent = nullptr;
+    {
+        LOCK(cs_main);
+        parent = AddToBlockIndex(Params(), parentHeader);
+    }
     BOOST_REQUIRE(parent != nullptr);
     nMiningForkTime = parent->GetMedianTimePast();
     BOOST_REQUIRE(!IsUpgrade2Pending(genesis) && !IsUpgrade2Activated(genesis));

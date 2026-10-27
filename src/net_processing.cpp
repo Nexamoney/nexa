@@ -289,16 +289,13 @@ void BlockReceivedPostProcessing(CNode *pfrom, ConstCBlockRef pblock)
         CValidationState state;
         if (!CheckBlockHeader(Params().GetConsensus(), *pblock, state, true))
             return;
-        {
-            LOCK(cs_main);
-            CBlockIndex *pindexPrev = LookupBlockIndex(pblock->hashPrevBlock);
-            if (!pindexPrev)
-                return;
-            if (!IsUpgrade2Pending(pindexPrev) && !IsUpgrade2Activated(pindexPrev))
-                return;
-            if (!ContextualCheckBlockHeader(Params(), *pblock, state, pindexPrev))
-                return;
-        }
+        CBlockIndex *pindexPrev = LookupBlockIndex(pblock->hashPrevBlock);
+        if (!pindexPrev)
+            return;
+        if (!IsUpgrade2Pending(pindexPrev) && !IsUpgrade2Activated(pindexPrev))
+            return;
+        if (!ContextualCheckBlockHeader(Params(), *pblock, state, pindexPrev))
+            return;
         requester.RequestMissingSubblocks(pblock, pfrom);
     }
 }
