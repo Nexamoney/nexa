@@ -111,7 +111,6 @@ class CUnknownObj
 public:
     typedef std::list<CNodeRequestData> ObjectSourceList;
     CInv obj;
-    bool rateLimited;
     int64_t nDownloadingSince; // last time we started downloading the object
     bool fProcessing; // object was received but is still being processed
     int64_t lastRequestTime; // In stopwatch time microseconds, 0 means no request
@@ -123,7 +122,6 @@ public:
 
     CUnknownObj()
     {
-        rateLimited = false;
         nDownloadingSince = 0;
         fProcessing = false;
         outstandingReqs = 0;

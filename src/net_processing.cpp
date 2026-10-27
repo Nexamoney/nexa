@@ -1326,6 +1326,12 @@ bool ProcessMessage(CNode *pfrom,
     {
         // set expected to false, we got the message
         pfrom->extversionExpected = false;
+        if (pfrom->fExtversionReceived.exchange(true))
+        {
+            dosMan.Misbehaving(pfrom, 1, BanReasonBadConnectionHandshake);
+            pfrom->CloseSocketDisconnect("Duplicate EXTVERSION messages");
+            return error("duplicate extversion messages");
+        }
         if (pfrom->fSuccessfullyConnected == true)
         {
             dosMan.Misbehaving(pfrom, 1, BanReasonBadConnectionHandshake);

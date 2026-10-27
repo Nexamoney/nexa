@@ -43,6 +43,8 @@ public:
     void Unserialize(Stream &s)
     {
         size_t n = ReadCompactSizeWithLimit<Stream>(s, std::numeric_limits<uint64_t>::max());
+        // Replace rather than merge, so repeated messages cannot grow the map
+        map.clear();
         for (size_t i = 0; i < n; i++)
         {
             uint64_t k;

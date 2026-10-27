@@ -33,6 +33,7 @@
 #include <string>
 
 extern CTweak<uint64_t> grapheneMaxVersionSupported;
+extern CTweak<unsigned int> txRetryInterval;
 
 class CRequestManagerTest
 {
@@ -50,6 +51,11 @@ public:
     std::map<NodeId, CRequestManagerNodeState> GetNodeState() { return _rman->mapRequestManagerNodeState; }
 
     void ClearNodeState(int id) { _rman->mapRequestManagerNodeState[id].vBlocksInFlight.clear(); }
+    void SendTxnReRequests()
+    {
+        LOCK(_rman->cs_objDownloader);
+        _rman->SendTxnRequests(_rman->mapTxnInfo);
+    }
 };
 
 // Used for accessing private data for a node
@@ -1483,6 +1489,40 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(mapBlkInfo.size(), 1);
     BOOST_CHECK_EQUAL(setBlockDeleter.count(inv_block.hash), 0);
     BOOST_CHECK_EQUAL(mapBlkInfo[inv_block.hash].availableFrom.size(), 8); // there should be another source
+}
+
+BOOST_AUTO_TEST_CASE(reject_does_not_pin_txn_requests)
+{
+    // Not freed: the request manager keeps references to them
+    CNode *nodeA = new CNode(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode *nodeB = new CNode(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10000)), "", true);
+    CRequestManager rman;
+    CRequestManagerTest rman_access(&rman);
+    IsChainNearlySyncdSet(true);
+    const unsigned int nRetryInterval = txRetryInterval.Value();
+    txRetryInterval.Set(1000); // 1 ms
+
+    // Announced by A and requested from A
+    CInv inv(MSG_TX, GetRandHash());
+    rman.AskFor(inv, nodeA, objType::TXN);
+    rman.SendRequests();
+    BOOST_REQUIRE(rman_access.GetMapTxnInfo().count(inv.hash));
+
+    BOOST_CHECK_EQUAL(rman_access.GetMapTxnInfo()[inv.hash].outstandingReqs, 1);
+
+    // A reject from B, which was never asked, is ignored
+    rman.Rejected(inv, nodeB, REJECT_INSUFFICIENTFEE);
+    BOOST_CHECK_EQUAL(rman_access.GetMapTxnInfo()[inv.hash].outstandingReqs, 1);
+
+    // A reject from A is counted, and the request is then retried and, with no sources left, dropped
+    rman.Rejected(inv, nodeA, REJECT_INSUFFICIENTFEE);
+    BOOST_CHECK_EQUAL(rman_access.GetMapTxnInfo()[inv.hash].outstandingReqs, 0);
+    MilliSleep(50);
+    rman_access.SendTxnReRequests();
+    BOOST_CHECK_EQUAL(rman_access.GetSetDeleter().count(inv.hash), 1);
+
+    txRetryInterval.Set(nRetryInterval);
+    IsChainNearlySyncdSet(false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
