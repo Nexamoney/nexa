@@ -76,21 +76,22 @@ void getSignature(const CScript &script, bool isTemplate, std::vector<uint8_t> &
     script.GetOp(scriptIter, type, vchRet);
 }
 
-// The sighash type is encoded in the bytes that follow the 64 byte Schnorr signature
-std::vector<uint8_t> sigHashTypeBytes(const std::vector<uint8_t> &sig)
+// The sighash a spender's signature commits to. Both spenders spend the same output, so they sign with the same
+// script code, and an empty one does for comparing them.
+uint256 spenderSigHash(const DoubleSpendProof::Spender &spender)
 {
-    if (sig.size() <= 64)
-        return std::vector<uint8_t>();
-    return std::vector<uint8_t>(sig.begin() + 64, sig.end());
+    uint256 result;
+    SignatureHashNexa(CScript(), spender.txVersion, spender.lockTime, SigHashType(spender.pushData.front()),
+        spender.hashPrevOutputs, spender.hashSequence, spender.hashInAmounts, spender.hashOutputs, result, nullptr);
+    return result;
 }
 
 // Returns true if both spenders' signatures commit to the same data, meaning they are the same spend.
-// outSequence is not covered by the signature, so spenders that differ only there are not a double spend.
+// Compares sighashes, not encodings: ALL/ALL may carry an explicit 0x00 byte, ranged output types are not
+// hashed, and outSequence is not signed.
 bool signSameData(const DoubleSpendProof::Spender &a, const DoubleSpendProof::Spender &b)
 {
-    return a.txVersion == b.txVersion && a.lockTime == b.lockTime && a.hashPrevOutputs == b.hashPrevOutputs &&
-           a.hashSequence == b.hashSequence && a.hashInAmounts == b.hashInAmounts && a.hashOutputs == b.hashOutputs &&
-           sigHashTypeBytes(a.pushData.front()) == sigHashTypeBytes(b.pushData.front());
+    return spenderSigHash(a) == spenderSigHash(b);
 }
 
 void hashTx(DoubleSpendProof::Spender &spender, const CTransaction &tx, int inputIndex)
