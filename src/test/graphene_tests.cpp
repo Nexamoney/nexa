@@ -4,7 +4,9 @@
 
 #include "blockrelay/graphene.h"
 #include "blockrelay/graphene_set.h"
+#include "blockrelay/mempool_sync.h"
 #include "bloom.h"
+#include "dosman.h"
 #include "fastfilter.h"
 #include "hashwrapper.h"
 #include "primitives/block.h"
@@ -12,6 +14,7 @@
 #include "serialize.h"
 #include "streams.h"
 #include "test/test_nexa.h"
+#include "tweak.h"
 
 #include <boost/test/unit_test.hpp>
 #include <cassert>
@@ -21,6 +24,8 @@
 #include <iomanip>
 
 #define MAX_GRAPHENE_SET_VERSION 4
+
+extern CTweak<uint64_t> grapheneFastFilterCompatibility;
 
 size_t ProjectedGrapheneSizeBytes(uint64_t version, uint64_t nBlockTxs, uint64_t nExcessTxs, uint64_t nSymDiff, bool computeOptimized=false)
 {
@@ -688,6 +693,148 @@ BOOST_FIXTURE_TEST_CASE(graphene_recovery_response_must_be_requested, TestingSet
     BOOST_CHECK(!pblock->grapheneblock->fRecoveryRequested);
 
     thinrelay.ClearAllBlockData(&node, hash);
+}
+
+// Exposes n_hash so a test can build an IBLT no honest sender would
+class CIbltWithNHash : public CIblt
+{
+public:
+    CIbltWithNHash(const CIblt &iblt) : CIblt(iblt) {}
+    void SetNHash(uint8_t n) { n_hash = n; }
+};
+
+static void SetTooManyIbltHashes(CIblt &iblt)
+{
+    CIbltWithNHash bad(iblt);
+    bad.SetNHash(CIblt::MaxNHash() + 1);
+    iblt = bad;
+}
+
+BOOST_FIXTURE_TEST_CASE(graphene_set_outside_limits_penalises_sender, TestingSetup)
+{
+    const CBlock block = TestBlock1();
+    const uint64_t prevFilterCompatibility = grapheneFastFilterCompatibility.Value();
+    grapheneFastFilterCompatibility.Set(UniValue((uint64_t)REGULAR));
+
+    // A Graphene block whose regular Bloom filter has too many hash functions
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10000)), "", true);
+        SetConnected(node);
+        node.negotiatedGrapheneVersion = 4;
+        CGrapheneBlock grapheneBlock(MakeBlockRef(CBlock(block)), 1, 1, 4, false);
+        CDataStream filter(SER_NETWORK, PROTOCOL_VERSION);
+        filter << std::vector<unsigned char>(8, 0x55) << (unsigned int)(MAX_HASH_FUNCS + 1) << (unsigned int)0
+               << (unsigned char)0;
+        filter >> *grapheneBlock.pGrapheneSet->GetRegularFilter();
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << grapheneBlock;
+        BOOST_CHECK_NO_THROW(CGrapheneBlock::HandleMessage(ss, &node, 0, NetMsgType::GRAPHENEBLOCK, 0));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
+    }
+
+    // A Graphene block whose IBLT has too many hash functions
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c003, 10000)), "", true);
+        SetConnected(node);
+        node.negotiatedGrapheneVersion = 4;
+        CGrapheneBlock grapheneBlock(MakeBlockRef(CBlock(block)), 1, 1, 4, false);
+        SetTooManyIbltHashes(*grapheneBlock.pGrapheneSet->GetIblt());
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << grapheneBlock;
+        BOOST_CHECK_NO_THROW(CGrapheneBlock::HandleMessage(ss, &node, 0, NetMsgType::GRAPHENEBLOCK, 0));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
+    }
+
+    // A recovery response whose revised IBLT has too many hash functions
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c004, 10000)), "", true);
+        SetConnected(node);
+        CGrapheneReceiverRecover response;
+        response.blockhash = block.GetHash();
+        response.pRevisedIblt = std::make_shared<CIblt>(1, CGrapheneSet::GetCIbltVersion(4));
+        SetTooManyIbltHashes(*response.pRevisedIblt);
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << response;
+        BOOST_CHECK_NO_THROW(HandleGrapheneBlockRecoveryResponse(ss, &node, Params()));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
+    }
+
+    // A mempool sync whose IBLT has too many hash functions
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c005, 10000)), "", true);
+        SetConnected(node);
+        CMempoolSync mempoolSync({SerializeHash(3)}, 1, 1, 0, 0, 0);
+        SetTooManyIbltHashes(*mempoolSync.pGrapheneSet->GetIblt());
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << mempoolSync;
+        BOOST_CHECK_NO_THROW(CMempoolSync::ReceiveMempoolSync(ss, &node, NetMsgType::MEMPOOLSYNC));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
+    }
+
+    grapheneFastFilterCompatibility.Set(UniValue(prevFilterCompatibility));
+    dosMan.ClearBanned();
+}
+
+BOOST_FIXTURE_TEST_CASE(fast_filter_outside_limits_penalises_sender, TestingSetup)
+{
+    const CBlock block = TestBlock1();
+
+    // A Graphene block whose fast filter claims more bits than its data holds
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c006, 10000)), "", true);
+        SetConnected(node);
+        node.negotiatedGrapheneVersion = 4;
+        CGrapheneBlock grapheneBlock(MakeBlockRef(CBlock(block)), 1, 1, 4, true);
+        auto filter = grapheneBlock.pGrapheneSet->GetFastFilter();
+        filter->nFilterBits = 8 * filter->nFilterBytes + 8;
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << grapheneBlock;
+        BOOST_CHECK_NO_THROW(CGrapheneBlock::HandleMessage(ss, &node, 0, NetMsgType::GRAPHENEBLOCK, 0));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
+    }
+
+    // A recovery request whose fast filter has too many hash functions
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c007, 10000)), "", true);
+        SetConnected(node);
+        CRequestGrapheneReceiverRecover request;
+        request.pReceiverFilter = std::make_shared<CVariableFastFilter>(1, 0.1);
+        request.pReceiverFilter->nHashFuncs = MAX_N_HASH_FUNC + 1;
+        request.nSenderFilterPositives = 1;
+        request.blockhash = block.GetHash();
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << request;
+        BOOST_CHECK_NO_THROW(HandleGrapheneBlockRecoveryRequest(ss, &node, 0, Params()));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
+    }
+
+    // A mempool sync whose fast filter claims more bits than its data holds
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c008, 10000)), "", true);
+        SetConnected(node);
+        CMempoolSync mempoolSync({SerializeHash(3)}, 1, 1, 0, 0, 0);
+        auto filter = mempoolSync.pGrapheneSet->GetFastFilter();
+        filter->nFilterBits = 8 * filter->nFilterBytes + 8;
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << mempoolSync;
+        BOOST_CHECK_NO_THROW(CMempoolSync::ReceiveMempoolSync(ss, &node, NetMsgType::MEMPOOLSYNC));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
+    }
+
+    // A Graphene block cut short, like any other message that fails to deserialize
+    {
+        CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c009, 10000)), "", true);
+        SetConnected(node);
+        node.negotiatedGrapheneVersion = 4;
+        CGrapheneBlock grapheneBlock(MakeBlockRef(CBlock(block)), 1, 1, 4, true);
+        CDataStream full(SER_NETWORK, PROTOCOL_VERSION);
+        full << grapheneBlock;
+        CDataStream ss(full.begin(), full.begin() + full.size() / 2, SER_NETWORK, PROTOCOL_VERSION);
+        BOOST_CHECK_NO_THROW(CGrapheneBlock::HandleMessage(ss, &node, 0, NetMsgType::GRAPHENEBLOCK, 0));
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 20);
+    }
+
+    dosMan.ClearBanned();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

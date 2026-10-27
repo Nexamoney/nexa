@@ -140,7 +140,15 @@ bool CMempoolSync::ReceiveMempoolSync(CDataStream &vRecv, CNode *pfrom, std::str
 {
     // Deserialize mempool sync payload
     CMempoolSync mempoolSync;
-    vRecv >> mempoolSync;
+    try
+    {
+        vRecv >> mempoolSync;
+    }
+    catch (const std::exception &e)
+    {
+        dosMan.Misbehaving(pfrom, 20, BanReasonInvalidObject);
+        return error("%s from peer %s: %s\n", strCommand, pfrom->GetLogName(), e.what());
+    }
     NodeId nodeId = pfrom->GetId();
 
     LOG(MPOOLSYNC, "Received mempool sync from peer %s\n", pfrom->GetLogName());
