@@ -441,11 +441,10 @@ BOOST_AUTO_TEST_CASE(readonly_input_is_stable_during_parallel_validation)
                 CAmount nFees = 0;
                 CBlockUndo blockundo;
                 std::vector<std::pair<uint256, CDiskTxPos> > vPos;
-                std::map<CGroupTokenID, CAmount> mintages;
-                std::map<CGroupTokenID, CAuth> authorities;
+                CTokenIndexUpdates tokenUpdates;
                 fConnected = ConnectBlockCanonicalOrdering(block, state, &index, view, *pcoinsTip, Params(),
-                    true /* fJustCheck */, IN_PARALLEL, true /* fScriptChecks */, nFees, blockundo, vPos, mintages,
-                    authorities, nullptr, nullptr);
+                    true /* fJustCheck */, IN_PARALLEL, true /* fScriptChecks */, nFees, blockundo, vPos, tokenUpdates,
+                    nullptr, nullptr);
             }
             PV->Erase(this_id);
         });
