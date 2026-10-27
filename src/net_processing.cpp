@@ -275,7 +275,28 @@ void BlockReceivedPostProcessing(CNode *pfrom, ConstCBlockRef pblock)
     // we do not hold from the peer that sent the summary, whether or not it
     // extends the current tip (a competing-tip summary still needs them to reorg).
     if (IsChainNearlySyncd() && IsTailstormSummaryBlock(pblock))
+    {
+        // Only a summary with K-1 proofs and matching declared counts may request sub-blocks.
+        const CSummaryBlockMinerData minerData = ParseSummaryBlockMinerData(pblock->minerData);
+        const uint32_t nExpectedProofs = Params().GetConsensus().tailstorm_k - 1;
+        if ((minerData.vSubblockProofs.size() != nExpectedProofs) ||
+            (uint32_t(minerData.nUncles) + minerData.nSubblocks != nExpectedProofs))
+            return;
+
+        // This runs before block validation. Require a known parent and its required difficulty
+        // before a summary can fill the sub-block request tables.
+        CValidationState state;
+        if (!CheckBlockHeader(Params().GetConsensus(), *pblock, state, true))
+            return;
+        CBlockIndex *pindexPrev = LookupBlockIndex(pblock->hashPrevBlock);
+        if (!pindexPrev)
+            return;
+        if (!IsUpgrade2Pending(pindexPrev) && !IsUpgrade2Activated(pindexPrev))
+            return;
+        if (!ContextualCheckBlockHeader(Params(), *pblock, state, pindexPrev))
+            return;
         requester.RequestMissingSubblocks(pblock, pfrom);
+    }
 }
 
 bool CanDirectFetch(const Consensus::Params &consensusParams)
