@@ -668,6 +668,12 @@ BOOST_AUTO_TEST_CASE(grouptoken_covenantfunctions)
     BOOST_CHECK(!ok);
 }
 
+// Defined below; unlike findGroupId it does not need the wallet
+static CGroupTokenID FindTestGroupId(const COutPoint &input,
+    CScript opRetTokDesc,
+    GroupTokenIdFlags flags,
+    GroupAuthorityFlags authorityFlags,
+    uint64_t &nonce);
 
 BOOST_AUTO_TEST_CASE(grouptoken_genesis_must_spend_first_input)
 {
@@ -680,7 +686,7 @@ BOOST_AUTO_TEST_CASE(grouptoken_genesis_must_spend_first_input)
     COutPoint otherInput = AddUtxo(p2pkt(u1), 1000, coins);
     uint64_t nonce = 0;
     CGroupTokenID gid =
-        findGroupId(genesisInput, CScript(), GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+        FindTestGroupId(genesisInput, CScript(), GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
 
     // The honest creation spends the input its id commits to
     CMutableTransaction honest;
