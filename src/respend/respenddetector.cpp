@@ -68,6 +68,52 @@ RespendDetector::~RespendDetector()
     }
 }
 
+int ClaimOrphanProof(DoubleSpendProofStorage &storage,
+    const COutPoint &outpoint,
+    uint256 &proofHash,
+    const std::function<DoubleSpendProof::Validity(const DoubleSpendProof &)> &validate)
+{
+    auto orphans = storage.findOrphans(outpoint);
+    if (!orphans.empty())
+    {
+        for (auto iter = orphans.begin(); iter != orphans.end(); iter++)
+        {
+            const int proofId = iter->first;
+            auto dsp = storage.proof(proofId);
+            // the orphan may have been evicted or expired after findOrphans(), don't penalize peer
+            if (dsp.isEmpty())
+                continue;
+            LOG(DSPROOF, "Rescued a DoubleSpendProof orphan %d", proofId);
+            auto rc = validate(dsp);
+            DbgAssert(rc == DoubleSpendProof::Valid || rc == DoubleSpendProof::Invalid, );
+
+            if (rc == DoubleSpendProof::Valid)
+            {
+                LOG(DSPROOF, "DoubleSpendProof for orphan validated correctly %d", proofId);
+                // the orphan may also have been evicted or expired while it was validated
+                if (!storage.claimOrphan(proofId))
+                    continue;
+
+                // remove all other orphans since we only need one
+                while (++iter != orphans.end())
+                {
+                    storage.remove(iter->first);
+                    LOG(DSPROOF, "Removing DoubleSpendProof orphan, we only need one %d", proofId);
+                }
+                proofHash = dsp.GetHash();
+                return proofId;
+            }
+            else
+            {
+                LOG(DSPROOF, "DoubleSpendProof did not validate %s", dsp.GetHash().ToString());
+                storage.remove(proofId);
+                dosMan.Misbehaving(iter->second, 5, BanReasonInvalidDSProof);
+            }
+        }
+    }
+    return -1;
+}
+
 void RespendDetector::CheckForRespend(const CTxMemPool &pool, const CTransactionRef ptx)
 {
     std::vector<uint256> dspToBroadcast;
@@ -86,44 +132,18 @@ void RespendDetector::CheckForRespend(const CTxMemPool &pool, const CTransaction
                 // Check first if there are already double spend orphans. If there are
                 // then we can broadcast them here and continue without needing to check
                 // further for conflicts for this outpoint.
-                auto orphans = pool.doubleSpendProofStorage()->findOrphans(outpoint);
-                if (!orphans.empty())
+                uint256 proofHash;
+                const int proofId = ClaimOrphanProof(*pool.doubleSpendProofStorage(), outpoint, proofHash,
+                    [&pool, &ptx](const DoubleSpendProof &dsp) { return dsp.validate(pool, ptx); });
+                if (proofId != -1)
                 {
-                    for (auto iter = orphans.begin(); iter != orphans.end(); iter++)
                     {
-                        const int proofId = iter->first;
-                        auto dsp = pool.doubleSpendProofStorage()->proof(proofId);
-                        LOG(DSPROOF, "Rescued a DoubleSpendProof orphan %d", proofId);
-                        auto rc = dsp.validate(pool, ptx);
-                        DbgAssert(rc == DoubleSpendProof::Valid || rc == DoubleSpendProof::Invalid, );
-
-                        if (rc == DoubleSpendProof::Valid)
-                        {
-                            LOG(DSPROOF, "DoubleSpendProof for orphan validated correctly %d", proofId);
-                            pool.doubleSpendProofStorage()->claimOrphan(proofId);
-                            {
-                                std::lock_guard<std::mutex> lock(respentBeforeMutex);
-                                dsproof = proofId;
-                            }
-
-                            // remove all other orphans since we only need one
-                            while (++iter != orphans.end())
-                            {
-                                pool.doubleSpendProofStorage()->remove(iter->first);
-                                LOG(DSPROOF, "Removing DoubleSpendProof orphan, we only need one %d", proofId);
-                            }
-
-                            // Broadcast after releasing cs_txmempool (takes cs_wallet, cs_vNodes)
-                            dspToBroadcast.push_back(dsp.GetHash());
-                            break;
-                        }
-                        else
-                        {
-                            LOG(DSPROOF, "DoubleSpendProof did not validate %s", dsp.GetHash().ToString());
-                            pool.doubleSpendProofStorage()->remove(proofId);
-                            dosMan.Misbehaving(iter->second, 5, BanReasonInvalidDSProof);
-                        }
+                        std::lock_guard<std::mutex> lock(respentBeforeMutex);
+                        dsproof = proofId;
                     }
+
+                    // Broadcast after releasing cs_txmempool (takes cs_wallet, cs_vNodes)
+                    dspToBroadcast.push_back(proofHash);
                 }
             }
 
