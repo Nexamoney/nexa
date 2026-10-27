@@ -351,6 +351,9 @@ public:
     // Returns a bool if successful in indicating we received this block.
     bool MarkBlockAsReceived(const uint256 &hash, CNode *pnode);
 
+    // Returns true if we have a request for this block in flight from this node.
+    bool IsBlockInFlightFrom(const uint256 &hash, NodeId nodeid);
+
     // Somebody else gave me this block so stop tracking it.
     void MarkBlockAsReceivedByAnother(const uint256 &hash);
 

@@ -173,6 +173,9 @@ std::map<uint256, std::pair<CBlockHeader, int64_t> > mapUnConnectedHeaders GUARD
     Retained and re-evaluated when that summary is accepted. **/
 CSubblockHeaderCache subblockHeaders;
 
+/** Blocks whose stored body may have been altered in transit, and the peers that sent such bodies. **/
+CSuspectBlockBodies suspectBlockBodies;
+
 CCriticalSection cs_main;
 /**
  * Every received block is assigned a unique and increasing identifier, so we
@@ -564,6 +567,10 @@ CTweak<unsigned int> numMsgHandlerThreads("net.msgHandlerThreads",
 CTweak<unsigned int> numTxAdmissionThreads("net.txAdmissionThreads",
     "Max transaction mempool admission threads Auto detection is zero (default: 0).",
     0);
+
+CTweak<bool> banLocalPeers("test.banLocalPeers",
+    "Ban local peers that exceed the ban threshold (default: false).",
+    false);
 
 CTweak<bool> enforceMinTxSize("test.enforceMinTxSize",
     "Whether we will enforce the min tx size limit of 100 bytes or not (default: true)",

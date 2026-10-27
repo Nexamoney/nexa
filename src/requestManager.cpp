@@ -185,6 +185,13 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
     }
     else if (IsBlockType(obj) && (objType == objType::BLOCK || objType == objType::SUBBLOCK))
     {
+        // A peer that sent a bad body would most likely send the same one again
+        if (from && suspectBlockBodies.IsBadSource(obj.hash, from->GetId()))
+        {
+            LOG(REQ, "Not asking peer=%d again for suspect block %s\n", from->GetId(), obj.hash.ToString());
+            return;
+        }
+
         // Don't allow the in flight requests to grow unbounded.
         if (mapBlkInfo.size() > DEFAULT_BLOCK_DOWNLOAD_WINDOW * 2)
         {
@@ -1551,9 +1558,11 @@ void CRequestManager::FindNextBlocksToDownload(CNode *node, size_t count, std::v
                 // We consider the chain that this peer is on invalid.
                 return;
             }
-            if (pindex->nStatus & BLOCK_HAVE_DATA || chainActive.Contains(pindex))
+            // Linked descendants must not move the cursor past a suspect ancestor.
+            if ((pindex->nStatus & BLOCK_HAVE_DATA && !suspectBlockBodies.IsSuspect(blockHash)) ||
+                chainActive.Contains(pindex))
             {
-                if (pindex->IsLinked())
+                if (pindex->IsLinked() && pindex->pprev == state->pindexLastCommonBlock)
                     state->pindexLastCommonBlock = pindex;
             }
             else
@@ -1657,6 +1666,13 @@ void CRequestManager::MarkBlockAsReceivedByAnother(const uint256 &hash)
         }
         state.nBlocksInFlight = state.vBlocksInFlight.size();
     }
+}
+
+bool CRequestManager::IsBlockInFlightFrom(const uint256 &hash, NodeId nodeid)
+{
+    LOCK(cs_objDownloader);
+    auto itHash = mapBlocksInFlight.find(hash);
+    return itHash != mapBlocksInFlight.end() && itHash->second.count(nodeid);
 }
 
 // Returns a bool if successful in indicating we originally asked for this block.

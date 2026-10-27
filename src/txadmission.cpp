@@ -741,7 +741,10 @@ void ThreadTxAdmission()
                         }
                         else
                         {
-                            recentRejects.insert(tx->GetId());
+                            // An altered copy that still parses needs an OP_RETURN in a satisfier, and shares the
+                            // honest tx id, so do not remember that id as rejected
+                            if (!tx->ContainsSatisfierOpReturn())
+                                recentRejects.insert(tx->GetId());
 
                             if (txd.whitelisted && fWhiteListForceRelay)
                             {

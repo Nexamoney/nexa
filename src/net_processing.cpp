@@ -3512,6 +3512,12 @@ bool ProcessMessages(CNode *pfrom)
                 LOG(NET, "%s(%s, %u bytes): Exception '%s' caught\n", __func__, SanitizeString(strCommand),
                     nMessageSize, e.what());
             }
+            else if (strstr(e.what(), "malformed scriptSig"))
+            {
+                // A peer sent a transaction whose scriptSig does not parse
+                LOG(NET, "%s(%s, %u bytes): Exception '%s' caught\n", __func__, SanitizeString(strCommand),
+                    nMessageSize, e.what());
+            }
             else
             {
                 PrintExceptionContinue(&e, "ProcessMessages()");

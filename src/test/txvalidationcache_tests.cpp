@@ -4,16 +4,24 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "blockstorage/blockstorage.h"
+#include "consensus/merkle.h"
 #include "consensus/validation.h"
+#include "daa.h"
+#include "dosman.h"
 #include "key.h"
 #include "keystore.h"
 #include "main.h"
 #include "miner.h"
+#include "net.h"
+#include "nodestate.h"
 #include "pubkey.h"
 #include "random.h"
+#include "requestManager.h"
 #include "script/sighashtype.h"
 #include "script/standard.h"
+#include "streams.h"
 #include "test/test_nexa.h"
+#include "threadgroup.h"
 #include "txadmission.h"
 #include "txdebugger.h"
 #include "txmempool.h"
@@ -21,13 +29,16 @@
 #include "utiltime.h"
 #include "validation/forks.h"
 #include "validation/parallel.h"
+#include "validation/validation.h"
 
+#include <boost/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
 
 extern CTweak<uint32_t> minRelayFee;
 extern void LimitMempoolSize(CTxMemPool &pool, size_t limit, unsigned long age);
+extern CRollingFastFilter<32 * 1024 * 1024> filterTransactionKnown;
 
 BOOST_AUTO_TEST_SUITE(txvalidationcache_tests) // BU harmonize suite name with filename
 
@@ -597,6 +608,398 @@ BOOST_FIXTURE_TEST_CASE(limitfreerelay, TestChain100Setup)
     bool fFreeTxnsAllowed = true;
     ret = AcceptToMemoryPool(mempool, state, MakeTransactionRef(spends[2]), fFreeTxnsAllowed, &fMissingInputs, false);
     BOOST_CHECK(ret == true);
+}
+
+// The tx id hashes the satisfier scripts joined by 0xFF without length prefixes, so the bytes after a 0xFF in one
+// scriptSig can be moved to the start of the next one without changing the id. A block body altered this way has
+// the same merkle root and header as the honest one but fails its script checks.
+struct RecutBlockSetup : public TestChain100Setup
+{
+    CBlockRef honest;
+    CBlockRef altered;
+
+    // With fBadScripts the honest body fails its script checks too
+    void MakeBlocks(bool fBadScripts = false)
+    {
+        const CChainParams &chainparams = Params();
+        const uint8_t SEPARATOR = 0xff;
+        // One more block so the second coinbase is mature too
+        CreateAndProcessBlock({}, coinbaseLockingScript);
+
+        CMutableTransaction tx;
+        tx.vin.resize(2);
+        tx.vin[0] = coinbaseTxns[0].SpendOutput(0);
+        tx.vin[1] = coinbaseTxns[1].SpendOutput(0);
+        tx.vout.resize(1);
+        tx.vout[0].scriptPubKey = coinbaseLockingScript;
+        // Vary the output until the first satisfier contains the separator byte.
+        // size_type matches the iterator operator+. Win64 size_t does not.
+        CScript::size_type cut = 0;
+        for (CAmount extra = 0; cut == 0; extra++)
+        {
+            tx.vout[0].nValue = 1000 * COIN + extra;
+            tx.vin[0].scriptSig = SignCoinbaseSpend(tx, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
+            tx.vin[1].scriptSig = SignCoinbaseSpend(tx, 1, defaultSigHashType, coinbaseTxns[1].vout[0].nValue);
+            const CScript &sig0 = tx.vin[0].scriptSig;
+            for (size_t i = 1; i + 1 < sig0.size() && cut == 0; i++)
+                if (sig0[i] == SEPARATOR)
+                    cut = i;
+        }
+        if (fBadScripts)
+            tx.vout[0].nValue += 1; // invalidates both signatures
+
+        // Move the bytes after the separator from vin[0] to the start of vin[1]
+        CMutableTransaction recut(tx);
+        const CScript sig0 = tx.vin[0].scriptSig;
+        recut.vin[0].scriptSig = CScript(sig0.begin(), sig0.begin() + cut);
+        recut.vin[1].scriptSig = CScript(sig0.begin() + cut + 1, sig0.end());
+        recut.vin[1].scriptSig.push_back(SEPARATOR);
+        recut.vin[1].scriptSig.insert(
+            recut.vin[1].scriptSig.end(), tx.vin[1].scriptSig.begin(), tx.vin[1].scriptSig.end());
+        const CTransaction honestTx(tx);
+        const CTransaction recutTx(recut);
+        BOOST_REQUIRE(honestTx.vin[0].scriptSig != recutTx.vin[0].scriptSig);
+        BOOST_REQUIRE(honestTx.GetId() == recutTx.GetId());
+        BOOST_REQUIRE(honestTx.GetIdem() == recutTx.GetIdem());
+
+        std::unique_ptr<CBlockTemplate> pblocktemplate =
+            BlockAssembler(chainparams).CreateNewBlock(coinbaseLockingScript);
+        honest = pblocktemplate->block;
+        honest->vtx.resize(1);
+        honest->vtx.push_back(MakeTransactionRef(honestTx));
+        honest->UpdateHeader();
+        honest->nonce.resize(3);
+        BOOST_REQUIRE(MineBlock(*honest, 1 << 23, chainparams.GetConsensus()));
+        altered = MakeBlockRef(*honest);
+        altered->vtx[1] = MakeTransactionRef(recutTx);
+        BOOST_REQUIRE(altered->GetHash() == honest->GetHash());
+        BOOST_REQUIRE(BlockMerkleRoot(*altered) == honest->hashMerkleRoot);
+        BOOST_REQUIRE_EQUAL(::GetSerializeSize(*altered, SER_NETWORK, PROTOCOL_VERSION),
+            ::GetSerializeSize(*honest, SER_NETWORK, PROTOCOL_VERSION));
+    }
+
+    bool BlockFailed(const uint256 &hash)
+    {
+        CBlockIndex *pindex = LookupBlockIndex(hash);
+        return pindex == nullptr || (pindex->nStatus & BLOCK_FAILED_MASK);
+    }
+};
+
+BOOST_FIXTURE_TEST_CASE(block_body_with_recut_satisfiers, RecutBlockSetup)
+{
+    // Receiving the altered body first must not stop the honest body from being accepted
+    MakeBlocks();
+    const uint256 hash = honest->GetHash();
+    CValidationState state;
+    ProcessSummaryBlock(state, Params(), nullptr, altered, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() != hash);
+    BOOST_CHECK_MESSAGE(!BlockFailed(hash), "altered body marked the honest block invalid");
+    BOOST_CHECK(suspectBlockBodies.IsSuspect(hash));
+
+    CValidationState state2;
+    ProcessSummaryBlock(state2, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK_MESSAGE(chainActive.Tip()->GetBlockHash() == hash, "honest body was not accepted");
+    BOOST_CHECK(!suspectBlockBodies.IsSuspect(hash));
+}
+
+BOOST_FIXTURE_TEST_CASE(pushdata_recut_does_not_deserialize, RecutBlockSetup)
+{
+    // The recut splits a data push, so the body is rejected before it is stored
+    MakeBlocks();
+    CBlock decoded;
+    CDataStream alteredStream(SER_NETWORK, PROTOCOL_VERSION);
+    alteredStream << *altered;
+    BOOST_CHECK_THROW(alteredStream >> decoded, std::ios_base::failure);
+    CDataStream honestStream(SER_NETWORK, PROTOCOL_VERSION);
+    honestStream << *honest;
+    BOOST_CHECK_NO_THROW(honestStream >> decoded);
+
+    auto raw = [](const std::vector<uint8_t> &bytes) { return CScript(bytes.begin(), bytes.end()); };
+    BOOST_CHECK(CScript().IsWellFormed());
+    BOOST_CHECK(!raw({0x02, 0x01}).IsWellFormed()); // push runs past the end
+    BOOST_CHECK(!raw({OP_INVALIDOPCODE, OP_1}).IsWellFormed());
+    BOOST_CHECK(raw({OP_1, OP_INVALIDOPCODE}).IsWellFormed());
+    BOOST_CHECK(raw({OP_1, OP_RETURN, 0x02}).IsWellFormed()); // not parsed after OP_RETURN
+}
+
+BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
+{
+    // The peer that sent the altered body is penalized, not the one that then sends the honest body
+    MakeBlocks();
+    CNode nodeA(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode nodeB(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10000)), "", true);
+    {
+        LOCK(cs_vNodes);
+        vNodes.push_back(&nodeA);
+        vNodes.push_back(&nodeB);
+    }
+    // B's honest body arrives after A's altered body is stored but before it is validated
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = nullptr;
+        CValidationState stateA;
+        ProcessAcceptBlock(&nodeA, altered, stateA, Params(), &pindex, nullptr);
+        CValidationState stateB;
+        ProcessAcceptBlock(&nodeB, honest, stateB, Params(), &pindex, nullptr);
+    }
+    CValidationState state;
+    ActivateBestChain(state, Params());
+    BOOST_CHECK(nodeA.nMisbehavior.load() > 0);
+    BOOST_CHECK_EQUAL(nodeB.nMisbehavior.load(), 0);
+
+    // The body is requested again from B, not from A
+    {
+        const CInv inv(MSG_BLOCK, honest->GetHash());
+        std::map<uint256, CUnknownObj> pending;
+        requester.GetBlockRequests(pending);
+        pending.clear();
+        requester.AskFor(inv, &nodeA, objType::BLOCK);
+        requester.GetBlockRequests(pending);
+        BOOST_CHECK_EQUAL(pending.count(inv.hash), 0U);
+        pending.clear();
+        requester.AskFor(inv, &nodeB, objType::BLOCK);
+        requester.GetBlockRequests(pending);
+        BOOST_CHECK_EQUAL(pending.count(inv.hash), 1U);
+    }
+
+    // A body pushed again by A is ignored, so the stored body stays suspect
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = nullptr;
+        CValidationState stateA;
+        BOOST_CHECK(ProcessAcceptBlock(&nodeA, altered, stateA, Params(), &pindex, nullptr));
+        BOOST_CHECK(suspectBlockBodies.IsSuspect(honest->GetHash()));
+    }
+
+    // B's body is then fetched again and connects
+    requester.InitializeNodeState(nodeB.GetId());
+    requester.MarkBlockAsInFlight(nodeB.GetId(), honest->GetHash(), objType::BLOCK);
+    CValidationState state2;
+    ProcessSummaryBlock(state2, Params(), &nodeB, honest, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() == honest->GetHash());
+    BOOST_CHECK_EQUAL(nodeB.nMisbehavior.load(), 0);
+    {
+        LOCK(cs_vNodes);
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &nodeA), vNodes.end());
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &nodeB), vNodes.end());
+    }
+    requester.RemoveNodeState(nodeB.GetId());
+    dosMan.ClearBanned();
+}
+
+BOOST_FIXTURE_TEST_CASE(suspect_body_is_stored_only_from_requested_peer, RecutBlockSetup)
+{
+    // While a body is suspect, a body pushed by a peer that was not asked for it must not be written to disk
+    MakeBlocks();
+    const uint256 hash = honest->GetHash();
+    // On the heap: earlier tests leave vPrioritySendQ references to dead stack nodes that these would overwrite
+    auto pnodeA = std::make_unique<CNode>(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c021, 10000)), "", true);
+    auto pnodeB = std::make_unique<CNode>(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c022, 10000)), "", true);
+    auto pnodeC = std::make_unique<CNode>(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c023, 10000)), "", true);
+    CNode &nodeA = *pnodeA;
+    CNode &nodeB = *pnodeB;
+    CNode &nodeC = *pnodeC;
+    for (CNode *node : {&nodeA, &nodeB, &nodeC})
+    {
+        LOCK(cs_vNodes);
+        vNodes.push_back(node);
+        requester.InitializeNodeState(node->GetId());
+    }
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = nullptr;
+        CValidationState stateA;
+        ProcessAcceptBlock(&nodeA, altered, stateA, Params(), &pindex, nullptr);
+    }
+    CValidationState state;
+    ActivateBestChain(state, Params());
+    BOOST_REQUIRE(suspectBlockBodies.IsSuspect(hash));
+    const CDiskBlockPos storedPos = LookupBlockIndex(hash)->GetBlockPos();
+
+    // C was not asked for the block, so its copy is dropped without being written or validated
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = nullptr;
+        CValidationState stateC;
+        BOOST_CHECK(ProcessAcceptBlock(&nodeC, altered, stateC, Params(), &pindex, nullptr));
+    }
+    CValidationState stateC;
+    ActivateBestChain(stateC, Params());
+    BOOST_CHECK(LookupBlockIndex(hash)->GetBlockPos() == storedPos);
+    BOOST_CHECK_EQUAL(nodeC.nMisbehavior.load(), 0);
+    BOOST_CHECK(suspectBlockBodies.IsSuspect(hash));
+
+    // B was asked, so its body is stored and connects
+    requester.MarkBlockAsInFlight(nodeB.GetId(), hash, objType::BLOCK);
+    CValidationState stateB;
+    ProcessSummaryBlock(stateB, Params(), &nodeB, honest, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() == hash);
+    BOOST_CHECK_EQUAL(nodeB.nMisbehavior.load(), 0);
+    for (CNode *node : {&nodeA, &nodeB, &nodeC})
+    {
+        LOCK(cs_vNodes);
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), node), vNodes.end());
+        requester.RemoveNodeState(node->GetId());
+    }
+    dosMan.ClearBanned();
+}
+
+BOOST_FIXTURE_TEST_CASE(block_body_with_bad_scripts_is_not_connected, RecutBlockSetup)
+{
+    // Invalid scripts must never connect, even though the body does not prove header invalidity.
+    MakeBlocks(true);
+    const uint256 hash = honest->GetHash();
+    for (int i = 0; i < 12; i++)
+    {
+        CValidationState state;
+        ProcessSummaryBlock(state, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
+        BOOST_CHECK(chainActive.Tip()->GetBlockHash() != hash);
+        BOOST_CHECK(suspectBlockBodies.IsSuspect(hash));
+        BOOST_CHECK(!BlockFailed(hash));
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(block_body_with_repeated_recut_satisfiers, RecutBlockSetup)
+{
+    MakeBlocks();
+    const uint256 hash = honest->GetHash();
+    for (int i = 0; i < 12; i++)
+    {
+        CValidationState state;
+        ProcessSummaryBlock(state, Params(), nullptr, altered, true, nullptr, SINGLE_THREADED);
+        BOOST_CHECK(chainActive.Tip()->GetBlockHash() != hash);
+        BOOST_CHECK(!BlockFailed(hash));
+        BOOST_CHECK(suspectBlockBodies.IsSuspect(hash));
+    }
+    CValidationState state;
+    ProcessSummaryBlock(state, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() == hash);
+    BOOST_CHECK(!suspectBlockBodies.IsSuspect(hash));
+}
+
+BOOST_FIXTURE_TEST_CASE(block_body_recut_rewinds_download_cursors, RecutBlockSetup)
+{
+    MakeBlocks();
+    const uint256 hash = honest->GetHash();
+    CBlockRef descendant = MakeBlockRef(*honest);
+    descendant->hashPrevBlock = hash;
+    descendant->height++;
+    descendant->hashAncestor = chainActive[GetConsensusAncestorHeight(descendant->height)]->GetBlockHash();
+    descendant->SetChainWork(honest->aChainWork() + GetWorkForDifficultyBits(descendant->nBits));
+    descendant->nTime++;
+    descendant->vtx.resize(1);
+    CMutableTransaction coinbase(*descendant->vtx[0]);
+    coinbase.vout.back().scriptPubKey = CScript()
+                                        << OP_RETURN << descendant->height << std::vector<uint8_t>(MIN_TX_SIZE, 0);
+    descendant->vtx[0] = MakeTransactionRef(coinbase);
+    descendant->fChecked = false;
+    descendant->UpdateHeader();
+    BOOST_REQUIRE(MineBlock(*descendant, 1 << 23, Params().GetConsensus()));
+    CNode peerA(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c010, 10000)), "", true);
+    CNode peerB(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c011, 10000)), "", true);
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = nullptr;
+        CValidationState state;
+        BOOST_REQUIRE(ProcessAcceptBlock(nullptr, altered, state, Params(), &pindex, nullptr));
+        CBlockIndex *pindexDescendant = nullptr;
+        CValidationState descendantState;
+        const bool accepted =
+            ProcessAcceptBlock(nullptr, descendant, descendantState, Params(), &pindexDescendant, nullptr);
+        BOOST_REQUIRE_MESSAGE(accepted, descendantState.GetLogString());
+        for (CNode *peer : {&peerA, &peerB})
+        {
+            const uint256 peerTip = peer == &peerA ? descendant->GetHash() : hash;
+            requester.UpdateBlockAvailability(peer->GetId(), peerTip);
+            std::vector<CBlockIndex *> next;
+            requester.FindNextBlocksToDownload(peer, 128, next);
+            BOOST_CHECK(next.empty());
+            CNodeStateAccessor nodeState(nodestate, peer->GetId());
+            BOOST_CHECK(nodeState->pindexLastCommonBlock->GetBlockHash() == peerTip);
+        }
+    }
+    CValidationState state;
+    ActivateBestChain(state, Params());
+    BOOST_REQUIRE(suspectBlockBodies.IsSuspect(hash));
+    BOOST_CHECK(!AlreadyHaveBlock(CInv(MSG_BLOCK, hash)));
+    {
+        LOCK(cs_main);
+        for (CNode *peer : {&peerA, &peerB})
+        {
+            std::vector<CBlockIndex *> next;
+            requester.FindNextBlocksToDownload(peer, 128, next);
+            BOOST_REQUIRE_EQUAL(next.size(), 1U);
+            BOOST_CHECK(next[0]->GetBlockHash() == hash);
+            CNodeStateAccessor nodeState(nodestate, peer->GetId());
+            BOOST_CHECK(nodeState->pindexLastCommonBlock == chainActive.Tip());
+        }
+    }
+    CValidationState honestState;
+    ProcessSummaryBlock(honestState, Params(), nullptr, honest, true, nullptr, SINGLE_THREADED);
+    BOOST_CHECK(chainActive.Contains(LookupBlockIndex(hash)));
+}
+
+// Runs tx through the admission thread, as a tx received from a peer is
+static void AdmitFromPeer(const CTransactionRef &tx)
+{
+    const CChainParams savedParams = Params();
+    const auto admissionThreads = numTxAdmissionThreads.Value();
+    const bool previousShutdown = shutdown_threads.load();
+    boost::thread worker;
+    BOOST_SCOPE_EXIT(&worker, &savedParams, admissionThreads, previousShutdown)
+    {
+        shutdown_threads.store(true);
+        StopTxAdmission();
+        if (worker.joinable())
+            worker.join();
+        shutdown_threads.store(previousShutdown);
+        numTxAdmissionThreads.Set(admissionThreads);
+        ModifiableParams() = savedParams;
+    }
+    BOOST_SCOPE_EXIT_END
+
+    BOOST_REQUIRE(ModifiableParams().SetRequireStandard(false));
+    BOOST_REQUIRE(Params().RequireStandard());
+    numTxAdmissionThreads.Set(1);
+    shutdown_threads.store(false);
+    BOOST_REQUIRE_EQUAL(TxAlreadyHave(MSG_TX, tx->GetId()), 0U);
+    CTxInputData incoming;
+    incoming.tx = tx;
+    incoming.msgCookie = 0;
+    EnqueueTxForAdmission(incoming);
+    worker = boost::thread(&ThreadTxAdmission);
+    for (int i = 0; i < 500 && !filterTransactionKnown.contains(tx->GetId()); i++)
+        MilliSleep(10);
+    BOOST_REQUIRE(filterTransactionKnown.contains(tx->GetId()));
+}
+
+BOOST_FIXTURE_TEST_CASE(op_return_satisfier_rejects_are_not_cached, RecutBlockSetup)
+{
+    // An altered copy that still parses needs an OP_RETURN in a satisfier and shares the honest tx id, so a
+    // rejected tx with one must not be remembered as rejected
+    MakeBlocks();
+    CMutableTransaction withOpReturn(*honest->vtx[1]);
+    withOpReturn.vin[0].scriptSig << OP_RETURN; // a legacy scriptSig fails when it runs OP_RETURN
+    const CTransactionRef tx = MakeTransactionRef(withOpReturn);
+    BOOST_REQUIRE(tx->ContainsSatisfierOpReturn());
+
+    AdmitFromPeer(tx);
+    BOOST_CHECK(!mempool.exists(tx->GetId()));
+    BOOST_CHECK(!recentRejects.contains(tx->GetId()));
+    BOOST_CHECK_EQUAL(TxMayAlreadyHave(MSG_TX, tx->GetId()), 0U);
+}
+
+BOOST_FIXTURE_TEST_CASE(other_rejects_are_cached, RecutBlockSetup)
+{
+    MakeBlocks();
+    CMutableTransaction dust(*honest->vtx[1]);
+    dust.vout[0].nValue = 1;
+    const CTransactionRef tx = MakeTransactionRef(dust);
+    BOOST_REQUIRE(!tx->ContainsSatisfierOpReturn());
+
+    AdmitFromPeer(tx);
+    BOOST_CHECK(!mempool.exists(tx->GetId()));
+    BOOST_CHECK(recentRejects.contains(tx->GetId()));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -937,6 +937,45 @@ public:
     bool IsPushOnly(const_iterator pc) const;
     bool IsPushOnly() const;
 
+    /** Returns true if every opcode in this script decodes (i.e. no push runs past the end of the script).
+        Bytes following an OP_RETURN are not executed, so they are not required to decode.
+        Scripts that begin with OP_INVALIDOPCODE are also considered bad because they cannot ever succeed.
+    */
+    bool IsWellFormed() const
+    {
+        const_iterator pc = begin();
+        bool first = true;
+        while (pc < end())
+        {
+            opcodetype opcode;
+            if (!GetOp(pc, opcode))
+                return false;
+            if (first && (opcode == OP_INVALIDOPCODE))
+                return false;
+            if (opcode == OP_RETURN) // Anything beyond the op return is not executed
+                return true;
+            first = false;
+        }
+        return true;
+    }
+
+    /**
+     * Returns true if the well-formed script contains an OP_RETURN opcode.
+     */
+    bool ContainsOpReturn() const
+    {
+        const_iterator pc = begin();
+        while (pc < end())
+        {
+            opcodetype opcode;
+            if (!GetOp(pc, opcode))
+                return false;
+            if (opcode == OP_RETURN)
+                return true;
+        }
+        return false;
+    }
+
     /**
      * Returns whether the script is guaranteed to fail at execution,
      * regardless of the initial stack. This allows outputs to be pruned

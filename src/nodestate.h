@@ -77,6 +77,9 @@ public:
     /** Clear the entire nodestate map */
     void Clear();
 
+    /** Rewind peer download cursors that include this block. */
+    void RewindBlockDownloadState(const CBlockIndex *pindex);
+
     /** Is mapNodestate empty */
     bool Empty()
     {
