@@ -222,6 +222,9 @@ void CParallelValidation::Cleanup(const ConstCBlockRef pblock, CBlockIndex *pind
         std::sort(vSequenceId.begin(), vSequenceId.end());
 
         WRITELOCK(cs_mapBlockIndex);
+        // nSequenceId is part of the setBlockIndexCandidates sort key, so take a block out of the set while
+        // its nSequenceId changes and put it back afterwards
+        const bool fWinnerCandidate = setBlockIndexCandidates.erase(pindex) > 0;
         std::vector<std::pair<uint32_t, uint256> >::reverse_iterator riter = vSequenceId.rbegin();
         while (riter != vSequenceId.rend())
         {
@@ -240,10 +243,17 @@ void CParallelValidation::Cleanup(const ConstCBlockRef pblock, CBlockIndex *pind
 
                 BlockMap::iterator it = mapBlockIndex.find((*riter).second);
                 if (it != mapBlockIndex.end())
+                {
+                    const bool fCandidate = setBlockIndexCandidates.erase(it->second) > 0;
                     it->second->nSequenceId = nId;
+                    if (fCandidate)
+                        setBlockIndexCandidates.insert(it->second);
+                }
             }
             riter++;
         }
+        if (fWinnerCandidate)
+            setBlockIndexCandidates.insert(pindex);
     }
 }
 
