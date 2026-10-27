@@ -22,6 +22,24 @@ class uint256;
 
 typedef std::pair<uint64_t, std::string> mint_entry;
 
+/** Part of a token mint total that does not fit in mint_entry's uint64. A missing record means zero. */
+struct CTokenMintRemainder
+{
+    uint8_t negative = 0;
+    uint64_t hi = 0;
+    uint64_t lo = 0;
+
+    ADD_SERIALIZE_METHODS;
+
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream &s, Operation ser_action)
+    {
+        READWRITE(negative);
+        READWRITE(hi);
+        READWRITE(lo);
+    }
+};
+
 extern CTweak<uint64_t> dbcacheTweak;
 
 static const bool DEFAULT_TXINDEX = false;
@@ -247,6 +265,12 @@ public:
 
     bool ReadMint(const CGroupTokenID &grpID, mint_entry &entry) const;
     bool WriteMint(const CGroupTokenID &grpID, const mint_entry entry);
+    bool ReadMintRemainder(const CGroupTokenID &grpID, CTokenMintRemainder &remainder) const;
+    /** Write the mint entry and its remainder in one batch. No remainder erases a stored one. */
+    bool UpdateMint(const CGroupTokenID &grpID,
+        const mint_entry &entry,
+        bool hasRemainder,
+        const CTokenMintRemainder &remainder);
     bool ReadSyncFlag(bool &fSyncFlag) const;
     bool WriteSyncFlag(const bool fSyncFlag);
 };

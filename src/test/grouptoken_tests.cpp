@@ -1708,4 +1708,312 @@ BOOST_AUTO_TEST_CASE(grouptoken_descriptions)
 }
 #endif
 
+static CGroupTokenID FindTestGroupId(const COutPoint &input,
+    CScript opRetTokDesc,
+    GroupTokenIdFlags flags,
+    GroupAuthorityFlags authorityFlags,
+    uint64_t &nonce)
+{
+    CGroupTokenID ret;
+    uint32_t foundGrpFlags = 0;
+    do
+    {
+        nonce += 1;
+        CHashWriter hasher(SER_GETHASH, PROTOCOL_VERSION);
+        // mask off any nonce leak into flags and then or in the flags
+        nonce = (nonce & ~((uint64_t)GroupAuthorityFlags::ALL_FLAG_BITS)) | ((uint64_t)authorityFlags); // REQ3.2.1.5
+        hasher << input;
+
+        if (!opRetTokDesc.empty())
+        {
+            std::vector<unsigned char> data(opRetTokDesc.begin(), opRetTokDesc.end());
+            hasher << data;
+        }
+        hasher << nonce;
+        ret = hasher.GetHash();
+        foundGrpFlags = (ret.bytes()[30] << 8) | ret.bytes()[31];
+    } while (foundGrpFlags != (uint16_t)flags);
+    return ret;
+}
+
+BOOST_AUTO_TEST_CASE(grouptoken_descriptions_malformed)
+{
+    uint32_t OpRetGroupId = DEFAULT_OP_RETURN_GROUP_ID;
+    std::vector<unsigned char> label{'A'};
+    std::vector<std::string> vLabels;
+
+    // A decimals push too long for a script number is read as 0
+    CScript ret1;
+    ret1 << OP_RETURN << OpRetGroupId << label << label << label << std::vector<unsigned char>(32, 0xab)
+         << std::vector<unsigned char>(9, 0x01);
+    BOOST_CHECK(GetTokenDescription(ret1, vLabels));
+    BOOST_CHECK_EQUAL(vLabels.size(), 5);
+    BOOST_CHECK_EQUAL(vLabels[0], "A");
+    BOOST_CHECK_EQUAL(vLabels[3], uint256(std::vector<unsigned char>(32, 0xab)).ToString());
+    BOOST_CHECK_EQUAL(vLabels[4], "0");
+
+    // An 8 byte decimals push is still a number
+    std::vector<unsigned char> decimals8(8, 0x00);
+    decimals8[0] = 5;
+    CScript ret2;
+    ret2 << OP_RETURN << OpRetGroupId << label << label << label << OP_0 << decimals8;
+    BOOST_CHECK(GetTokenDescription(ret2, vLabels));
+    BOOST_CHECK_EQUAL(vLabels[4], "5");
+
+    // A hash field that is not exactly 32 bytes is dropped
+    for (size_t len : {1, 31, 33, 100})
+    {
+        CScript ret3;
+        ret3 << OP_RETURN << OpRetGroupId << label << label << label << std::vector<unsigned char>(len, 0xab);
+        BOOST_CHECK(GetTokenDescription(ret3, vLabels));
+        BOOST_CHECK_EQUAL(vLabels[3], "");
+    }
+    CScript ret4;
+    ret4 << OP_RETURN << OpRetGroupId << label << label << label << OP_1;
+    BOOST_CHECK(GetTokenDescription(ret4, vLabels));
+    BOOST_CHECK_EQUAL(vLabels[3], "");
+}
+
+BOOST_AUTO_TEST_CASE(grouptoken_index_mintage_exact)
+{
+    CCoinsView coinsDummy;
+    CCoinsViewCache coins(&coinsDummy);
+    QuickAddress a1;
+    uint64_t nonce = 0;
+    CGroupTokenID gid =
+        FindTestGroupId(COutPoint(), CScript(), GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+    const CAmount maxAmt = std::numeric_limits<CAmount>::max();
+
+    const CTokenMintage blockAmount = CTokenMintage(maxAmt) * 2;
+
+    // Two mints of the maximum amount in one block
+    CTokenIndexUpdates updates;
+    std::map<CGroupTokenID, CTokenMintage> &mintages = updates.mintages;
+    for (int i = 0; i < 2; i++)
+    {
+        CTransaction tx = tx1x1(AddUtxo(p2pkt(a1), 1000, coins), gp2pkh(gid, a1, maxAmt), 1000);
+        BOOST_CHECK(AccumulateTokenData(MakeTransactionRef(tx), coins, updates));
+    }
+    BOOST_CHECK_EQUAL(mintages[gid], blockAmount);
+
+    // Two melts of the maximum amount in one block
+    mintages.clear();
+    for (int i = 0; i < 2; i++)
+    {
+        CTransaction tx = tx1x1(AddUtxo(gp2pkh(gid, a1, maxAmt), 1000, coins), p2pkt(a1), 1000);
+        BOOST_CHECK(AccumulateTokenData(MakeTransactionRef(tx), coins, updates));
+    }
+    BOOST_CHECK_EQUAL(mintages[gid], -blockAmount);
+}
+
+BOOST_FIXTURE_TEST_CASE(grouptoken_descriptions_malformed_block, TestChain100Setup)
+{
+    QuickAddress grpAuth(5);
+    QuickAddress a1(2);
+    CValidationState state;
+    CBlockRef blk;
+
+    // Group creation tx whose description has a bad decimals field and a short hash
+    uint32_t OpRetGroupId = DEFAULT_OP_RETURN_GROUP_ID;
+    CScript opret;
+    opret << OP_RETURN << OpRetGroupId << std::vector<unsigned char>{'T'} << std::vector<unsigned char>{'N'}
+          << std::vector<unsigned char>{'U'} << std::vector<unsigned char>{0x42} << std::vector<unsigned char>(9, 0x01);
+
+    COutPoint outpt(coinbaseTxns[0].GetIdem(), 0);
+    uint64_t nonce = 0;
+    CGroupTokenID gid =
+        FindTestGroupId(outpt, opret, GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+    std::vector<CMutableTransaction> txns;
+    txns.push_back(
+        tx1x2(coinbaseTxns[0], 0, gp2pkh(gid, grpAuth, nonce), coinbaseTxns[0].vout[0].nValue, opret, 0, coinbaseKey));
+
+    BOOST_CHECK(tryBlock(txns, p2pkt(a1), blk, state));
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() == blk->GetHash());
+
+    std::vector<std::string> vDesc = tokencache.GetTokenDesc(gid);
+    BOOST_REQUIRE_EQUAL(vDesc.size(), DESC_ENTRY_SIZE);
+    BOOST_CHECK_EQUAL(vDesc[0], "T");
+    BOOST_CHECK_EQUAL(vDesc[3], "");
+    BOOST_CHECK_EQUAL(vDesc[4], "0");
+
+    // Disconnecting the block runs the same parser
+    {
+        LOCK(cs_main);
+        CBlockIndex *pindex = chainActive.Tip();
+        BOOST_CHECK(InvalidateBlock(state, Params().GetConsensus(), pindex));
+        BOOST_CHECK(chainActive.Tip() == pindex->pprev);
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(grouptoken_descriptions_invalid_block, TestChain100Setup)
+{
+    QuickAddress grpAuth(5);
+    QuickAddress a1(2);
+    QuickAddress wrongKey(3);
+    CValidationState state;
+    CBlockRef blk;
+
+    uint32_t OpRetGroupId = DEFAULT_OP_RETURN_GROUP_ID;
+    CScript opret;
+    opret << OP_RETURN << OpRetGroupId << std::vector<unsigned char>{'B', 'A', 'D'};
+
+    COutPoint outpt(coinbaseTxns[0].GetIdem(), 0);
+    uint64_t nonce = 0;
+    CGroupTokenID gid =
+        FindTestGroupId(outpt, opret, GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+    std::vector<CMutableTransaction> txns;
+    // Signed with the wrong key, so the block fails script checks
+    txns.push_back(tx1x2(
+        coinbaseTxns[0], 0, gp2pkh(gid, grpAuth, nonce), coinbaseTxns[0].vout[0].nValue, opret, 0, wrongKey.secret));
+
+    BOOST_CHECK(!tryBlock(txns, p2pkt(a1), blk, state));
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() != blk->GetHash());
+    BOOST_CHECK(tokencache.GetTokenDesc(gid).empty());
+    BOOST_CHECK(tokenmint.GetTokenGenesis(gid).empty());
+}
+
+BOOST_AUTO_TEST_CASE(grouptoken_index_mintage_cancellations)
+{
+    CCoinsView coinsDummy;
+    CCoinsViewCache coins(&coinsDummy);
+    QuickAddress owner;
+    CGroupTokenID gid(InsecureRand256());
+    const CAmount maxAmt = std::numeric_limits<CAmount>::max();
+
+    for (int net : {-1, 0, 1})
+    {
+        std::vector<CAmount> changes(2 + (net < 0), -maxAmt);
+        changes.insert(changes.end(), 2 + (net > 0), maxAmt);
+        do
+        {
+            CTokenIndexUpdates updates;
+            for (CAmount change : changes)
+            {
+                CScript input = change > 0 ? p2pkt(owner) : gp2pkh(gid, owner, maxAmt);
+                CScript output = change > 0 ? gp2pkh(gid, owner, maxAmt) : p2pkt(owner);
+                CTransaction txn = tx1x1(AddUtxo(input, 1000, coins), output, 1000);
+                BOOST_REQUIRE(AccumulateTokenData(MakeTransactionRef(txn), coins, updates));
+            }
+            BOOST_CHECK_EQUAL(updates.mintages[gid], net * maxAmt);
+        } while (std::next_permutation(changes.begin(), changes.end()));
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(grouptoken_mintage_index_range, TestingSetup)
+{
+    CGroupTokenID gid(InsecureRand256());
+    const CTokenMintage doubleMax = CTokenMintage(std::numeric_limits<CAmount>::max()) * 2;
+    const uint64_t storedMax = std::numeric_limits<uint64_t>::max();
+    std::map<CGroupTokenID, CTokenMintage> mintages{{gid, doubleMax}};
+
+    tokenmint.ApplyTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, storedMax - 1);
+    tokenmint.RemoveTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, 0U);
+    tokenmint.ApplyTokenMintages(mintages);
+    mintages[gid] = -doubleMax;
+    tokenmint.ApplyTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, 0U);
+    tokenmint.RemoveTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, storedMax - 1);
+
+    // One more satoshi fits. The next one does not, and undoing it stays at uint64 max.
+    mintages[gid] = 1;
+    tokenmint.ApplyTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, storedMax);
+    tokenmint.ApplyTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, storedMax);
+    tokenmint.RemoveTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, storedMax);
+    tokenmint.RemoveTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, storedMax - 1);
+
+    // A third int64-max mint does not fit on top of the two already stored.
+    const CAmount maxAmt = std::numeric_limits<CAmount>::max();
+    mintages[gid] = maxAmt;
+    tokenmint.ApplyTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, storedMax);
+    tokenmint.RemoveTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, storedMax - 1);
+
+    // A melt larger than the stored total is kept, then restored on disconnect.
+    mintages[gid] = -CTokenMintage(storedMax) - 1;
+    tokenmint.ApplyTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, 0U);
+    tokenmint.RemoveTokenMintages(mintages);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, storedMax - 1);
+}
+
+BOOST_FIXTURE_TEST_CASE(grouptoken_mintage_block_disconnect, TestChain100Setup)
+{
+    QuickAddress auth(5);
+    QuickAddress owner(2);
+    CValidationState state;
+    CBlockRef block;
+    const CAmount maxAmt = std::numeric_limits<CAmount>::max();
+    const CAmount value = coinbaseTxns[0].vout[0].nValue;
+    uint64_t nonce = 0;
+    CGroupTokenID gid = FindTestGroupId(COutPoint(coinbaseTxns[0].GetIdem(), 0), CScript(), GroupTokenIdFlags::NONE,
+        GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+    CTransaction creation = tx({InputData(coinbaseTxns[0], 0, coinbaseKey)}, {{gp2pkh(gid, auth, nonce), value}});
+    BOOST_REQUIRE(tryBlock({CMutableTransaction(creation)}, p2pkt(owner), block, state));
+    BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == block->GetHash());
+    CBlockIndex *creationTip = chainActive.Tip();
+    const CAmount authFlags = toAmount(GroupAuthorityFlags::ACTIVE_FLAG_BITS);
+    const uint256 split = uint256S("8000000000000000000000000000000000000000000000000000000000000000");
+
+    // Put both mints before the melt in the canonical transaction order.
+    auto mint = [&](const CTransaction &input) -> CTransactionRef
+    {
+        const CAmount inputValue = input.vout[0].nValue;
+        for (int i = 1; i <= 1000; ++i)
+        {
+            auto candidate = MakeTransactionRef(tx({InputData(input, 0, auth.secret)},
+                {{gp2pkh(gid, auth, authFlags), inputValue / 2 - i},
+                    {gp2pkh(gid, owner, maxAmt), inputValue - inputValue / 2 + i}}));
+            if (candidate->GetId() < split)
+                return candidate;
+        }
+        BOOST_FAIL("Could not order mint transaction");
+        return CTransactionRef();
+    };
+    CTransactionRef first = mint(creation);
+    CTransactionRef second = mint(*first);
+    CTransactionRef melt;
+    const CAmount meltValue = second->vout[0].nValue + first->vout[1].nValue;
+    for (int i = 1; i <= 1000; ++i)
+    {
+        auto candidate = MakeTransactionRef(tx({InputData(*second, 0, auth.secret), InputData(*first, 1, owner.secret)},
+            {{gp2pkh(gid, auth, authFlags), meltValue - i}, {p2pkt(owner), i}}));
+        if (candidate->GetId() > split)
+        {
+            melt = candidate;
+            break;
+        }
+    }
+    BOOST_REQUIRE(melt);
+    BOOST_REQUIRE(tryBlock({CMutableTransaction(*first), CMutableTransaction(*second), CMutableTransaction(*melt)},
+        p2pkt(owner), block, state));
+    BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == block->GetHash());
+    CBlockIndex *mixedTip = chainActive.Tip();
+    Coin remaining;
+    BOOST_REQUIRE(pcoinsTip->GetCoin(COutPoint(second->GetIdem(), 1), remaining));
+    BOOST_CHECK_EQUAL(CGroupTokenInfo(remaining.out).quantity, maxAmt);
+    BOOST_REQUIRE_EQUAL(tokenmint.GetTokenMint(gid).first, uint64_t(maxAmt));
+
+    CTransaction finalMelt = tx({InputData(*melt, 0, auth.secret), InputData(*second, 1, owner.secret)},
+        {{p2pkt(owner), melt->vout[0].nValue + second->vout[1].nValue}});
+    BOOST_REQUIRE(tryBlock({CMutableTransaction(finalMelt)}, p2pkt(owner), block, state));
+    BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == block->GetHash());
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, 0U);
+
+    LOCK(cs_main);
+    BOOST_REQUIRE(InvalidateBlock(state, Params().GetConsensus(), chainActive.Tip()));
+    BOOST_CHECK(chainActive.Tip() == mixedTip);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, uint64_t(maxAmt));
+    BOOST_REQUIRE(InvalidateBlock(state, Params().GetConsensus(), chainActive.Tip()));
+    BOOST_CHECK(chainActive.Tip() == creationTip);
+    BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, 0U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

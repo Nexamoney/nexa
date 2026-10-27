@@ -131,7 +131,8 @@ bool CheckGroupTokens(const CTransaction &tx,
     {
         const CScript &scriptPubKey = outp.scriptPubKey;
         CGroupTokenInfo tokenGrp(scriptPubKey);
-        if ((outp.nValue == 0) && (firstOpReturn.size() == 0) && (outp.scriptPubKey[0] == OP_RETURN))
+        if ((outp.nValue == 0) && (firstOpReturn.size() == 0) && !outp.scriptPubKey.empty() &&
+            (outp.scriptPubKey[0] == OP_RETURN))
         {
             firstOpReturn = outp.scriptPubKey; // Used later if this is a group creation transaction
         }

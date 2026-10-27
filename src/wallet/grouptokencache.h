@@ -10,19 +10,34 @@
 #include "sync.h"
 #include "utilgrouptoken.h"
 
+#include <boost/multiprecision/cpp_int.hpp>
+
 
 // Empty description vector
 static const unsigned int DESC_ENTRY_SIZE = 10;
 static const std::vector<std::string> vDefaultDesc{"", "", "", "", "0", "0", "0", "0", "0", "0"};
 
+// Intermediate block totals can exceed int64 before mints and melts cancel.
+typedef boost::multiprecision::int128_t CTokenMintage;
+
+// Token index changes collected from a block. They are written to the index only once the
+// block is connected, so a block that fails validation leaves the index untouched.
+struct CTokenIndexUpdates
+{
+    std::map<CGroupTokenID, CTokenMintage> mintages;
+    std::map<CGroupTokenID, CAuth> authorities;
+    std::map<CGroupTokenID, std::vector<std::string> > descriptions;
+    std::map<CGroupTokenID, std::string> genesis;
+};
+
 // Accumulate token authorities and mintages which can then be apply to their respective caches
-// Returns false if the view did not contain the correct coins.  False should never be returned
-// if the transaction is valid -- it implies that the tx is a doublespend or spends nonexistent
-// inputs.
-bool AccumulateTokenData(CTransactionRef ptx,
-    CCoinsViewCache &view,
-    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages);
+// Returns false if the view did not contain the correct coins or the token amounts overflow.
+// False should never be returned if the transaction is valid -- it implies that the tx is a
+// doublespend, spends nonexistent inputs or is not a valid token transaction.
+bool AccumulateTokenData(CTransactionRef ptx, CCoinsViewCache &view, CTokenIndexUpdates &updates);
+
+// Write the updates collected from a connected block to the token caches and databases
+void ApplyTokenIndexUpdates(CTokenIndexUpdates &updates);
 
 // A cache class for storing token descriptions with a finite sized cached.
 class CTokenDescCache
@@ -56,10 +71,10 @@ public:
     /** Get the sync flag. */
     bool GetSyncFlag();
 
-    /** Find token descriptions from new transactions, that have arrived either
-     *  through txadmission or from new blocks, and store them to cache
+    /** Find the token description in a group creation transaction. Returns the created group, or
+     *  NoGroup if there is no description, and the description with null authorities in vDesc.
      */
-    CGroupTokenInfo ProcessTokenDescriptions(CTransactionRef ptx);
+    CGroupTokenInfo ProcessTokenDescriptions(CTransactionRef ptx, std::vector<std::string> &vDesc);
 
     /** Apply the accumulated token authories and add them to the cache and database */
     void ApplyTokenAuthorities(std::map<CGroupTokenID, CAuth> &accumulatedAuthoriies);
@@ -85,11 +100,8 @@ private:
     /** Add to the in memory cache */
     void AddToCache(const CGroupTokenID &_grpID, const mint_entry &entry);
 
-    /** Add a token mintage to the database and cache */
-    void AddTokenMint(const CGroupTokenID &_grpID, const CAmount _mint);
-
-    /** Delete a token mintage (melt) from the database and cache */
-    void RemoveTokenMint(const CGroupTokenID &_grpID, const CAmount _melt);
+    /** Apply a mintage delta. A total outside uint64 is retained for a later delta. */
+    void UpdateTokenMint(const CGroupTokenID &_grpID, const CTokenMintage &delta);
 
 public:
     CTokenMintCache(){};
@@ -104,9 +116,9 @@ public:
     std::string GetTokenGenesis(const CGroupTokenID &_grpID);
 
     /** Add the saved token mints and melts, and apply them to the cache and the mintage database */
-    void ApplyTokenMintages(std::map<CGroupTokenID, CAmount> &accumulatedMintages);
+    void ApplyTokenMintages(const std::map<CGroupTokenID, CTokenMintage> &accumulatedMintages);
     /** Remove the saved token mints and melts, and apply them to the cache and the mintage database */
-    void RemoveTokenMintages(std::map<CGroupTokenID, CAmount> &accumulatedMintages);
+    void RemoveTokenMintages(const std::map<CGroupTokenID, CTokenMintage> &accumulatedMintages);
 
     /** Set the sync flag.
      * This sync flag indicates whether we created the tokendesc db from the genesis block or not.

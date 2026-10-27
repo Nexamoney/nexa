@@ -1267,10 +1267,8 @@ public:
         CBlockIndex index(*summary);
         index.pprev = &coin.chain.previousSummary;
         CCoinsViewCache view(&parent);
-        std::map<CGroupTokenID, CAmount> mintages;
-        std::map<CGroupTokenID, CAuth> authorities;
-        const bool connected =
-            ConnectBlock(summary, state, &index, view, parent, Params(), mintages, authorities, true);
+        CTokenIndexUpdates tokenUpdates;
+        const bool connected = ConnectBlock(summary, state, &index, view, parent, Params(), tokenUpdates, true);
         BOOST_TEST_MESSAGE("summary result: " << connected << " " << state.GetLogString());
         BOOST_CHECK_EQUAL(chainActive.Tip()->GetBlockHash(), coin.chain.previousHash);
         BOOST_CHECK(parent.HaveCoin(coin.parentTx->OutpointAt(0)));

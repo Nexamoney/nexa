@@ -7,13 +7,13 @@
 #include "consensus/grouptokens.h"
 #include "main.h"
 
-bool AccumulateTokenData(CTransactionRef ptx,
-    CCoinsViewCache &view,
-    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages)
+bool AccumulateTokenData(CTransactionRef ptx, CCoinsViewCache &view, CTokenIndexUpdates &updates)
 {
     if (ptx->IsCoinBase())
         return true;
+
+    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities = updates.authorities;
+    std::map<CGroupTokenID, CTokenMintage> &accumulatedMintages = updates.mintages;
 
     struct Amounts
     {
@@ -38,7 +38,11 @@ bool AccumulateTokenData(CTransactionRef ptx,
             // Get the mintages in the inputs (no amounts count if read only)
             if ((!txin.IsReadOnly()) && (tg.associatedGroup != NoGroup) && (!tg.isAuthority()))
             {
-                mintages[tg.associatedGroup].nTokenInputs += tg.quantity;
+                // Runs before consensus checks, so the sums are not bounded yet
+                CAmount &nTokenInputs = mintages[tg.associatedGroup].nTokenInputs;
+                if (tg.quantity > 0 && std::numeric_limits<CAmount>::max() - nTokenInputs < tg.quantity)
+                    return false;
+                nTokenInputs += tg.quantity;
             }
 
             // Get the authorities in the inputs
@@ -79,7 +83,10 @@ bool AccumulateTokenData(CTransactionRef ptx,
         // Get mintages from the outputs
         if ((tg.associatedGroup != NoGroup) && !tg.isAuthority())
         {
-            mintages[tg.associatedGroup].nTokenOutputs += tg.quantity;
+            CAmount &nTokenOutputs = mintages[tg.associatedGroup].nTokenOutputs;
+            if (tg.quantity > 0 && std::numeric_limits<CAmount>::max() - nTokenOutputs < tg.quantity)
+                return false;
+            nTokenOutputs += tg.quantity;
 
             // Save the first output address for any subgroup mintage which we'll need later when apply
             // the genesis address to the database.
@@ -93,7 +100,7 @@ bool AccumulateTokenData(CTransactionRef ptx,
         }
 
         // Get authorities from the outputs
-        if (out.scriptPubKey[0] == OP_RETURN)
+        if (!out.scriptPubKey.empty() && out.scriptPubKey[0] == OP_RETURN)
         {
             fHaveOpReturn = true;
             continue;
@@ -134,25 +141,15 @@ bool AccumulateTokenData(CTransactionRef ptx,
         // Check for Mint
         if (nTokenInputs == 0 && nTokenOutputs > 0)
         {
-            if (!accumulatedMintages.count(grpID))
-            {
-                accumulatedMintages[grpID] = nTokenOutputs;
-            }
-            else
-            {
-                accumulatedMintages[grpID] += nTokenOutputs;
-            }
+            accumulatedMintages[grpID] += nTokenOutputs;
 
             // Update the genesis address if this is a mint, and MUST be a subgroup.
             // NOTE: only the very first mintage of a subgroup will actually get updated to the database, thus
             // preserving the first mint as the genesis address for that subgroup.
             if (grpID.isSubgroup())
             {
-                mint_entry entry;
-                entry.first = 0;
                 DbgAssert(mintageGenesis.count(grpID) > 0, );
-                entry.second = mintageGenesis[grpID];
-                tokenmint.AddTokenGenesis(grpID, entry);
+                updates.genesis.emplace(grpID, mintageGenesis[grpID]);
             }
         }
 
@@ -160,10 +157,7 @@ bool AccumulateTokenData(CTransactionRef ptx,
         if (nTokenInputs > nTokenOutputs)
         {
             CAmount nMeltAmount = nTokenInputs - nTokenOutputs;
-            if (!accumulatedMintages.count(grpID))
-                accumulatedMintages[grpID] = -nMeltAmount;
-            else
-                accumulatedMintages[grpID] -= nMeltAmount;
+            accumulatedMintages[grpID] -= nMeltAmount;
         }
     }
 
@@ -171,22 +165,32 @@ bool AccumulateTokenData(CTransactionRef ptx,
     // the token description information
     if (!fHaveInputAuthority && fHaveOutputAuthority && fHaveOpReturn)
     {
-        // Process the descriptions and add to the token desc database
-        CGroupTokenInfo tg = tokencache.ProcessTokenDescriptions(ptx);
+        // Process the descriptions to add to the token desc database
+        std::vector<std::string> vDesc;
+        CGroupTokenInfo tg = tokencache.ProcessTokenDescriptions(ptx, vDesc);
         if (tg.associatedGroup != NoGroup)
         {
+            updates.descriptions[tg.associatedGroup] = vDesc;
+
             // get the genesis address and pass it to the token desc database along
             // with the transaction.
             CTxDestination dest;
             ExtractDestination(genesisScript, dest);
-
-            mint_entry entry;
-            entry.first = 0;
-            entry.second = EncodeDestination(dest, Params(), GetConfig());
-            tokenmint.AddTokenGenesis(tg.associatedGroup, entry);
+            updates.genesis[tg.associatedGroup] = EncodeDestination(dest, Params(), GetConfig());
         }
     }
     return true;
+}
+
+void ApplyTokenIndexUpdates(CTokenIndexUpdates &updates)
+{
+    // The mintages and authorities update these entries, so write them first
+    for (const auto &it : updates.descriptions)
+        tokencache.AddTokenDesc(it.first, it.second);
+    for (const auto &it : updates.genesis)
+        tokenmint.AddTokenGenesis(it.first, mint_entry(0, it.second));
+    tokenmint.ApplyTokenMintages(updates.mintages);
+    tokencache.ApplyTokenAuthorities(updates.authorities);
 }
 
 // Token Description Cache methods
@@ -249,7 +253,7 @@ bool CTokenDescCache::GetSyncFlag()
     return fSet;
 }
 
-CGroupTokenInfo CTokenDescCache::ProcessTokenDescriptions(CTransactionRef ptx)
+CGroupTokenInfo CTokenDescCache::ProcessTokenDescriptions(CTransactionRef ptx, std::vector<std::string> &vDesc)
 {
     for (size_t i = 0; i < ptx->vout.size(); i++)
     {
@@ -265,11 +269,19 @@ CGroupTokenInfo CTokenDescCache::ProcessTokenDescriptions(CTransactionRef ptx)
 
                 // find op_return associated with the tx if there is one
                 const CTxOut &out2 = ptx->vout[j];
-                if (out2.scriptPubKey[0] == OP_RETURN)
+                if (!out2.scriptPubKey.empty() && out2.scriptPubKey[0] == OP_RETURN)
                 {
-                    std::vector<std::string> vDesc;
-                    if (!GetTokenDescription(out2.scriptPubKey, vDesc))
+                    // Token indexing is not consensus, so a parse error must not abort block connection
+                    try
                     {
+                        if (!GetTokenDescription(out2.scriptPubKey, vDesc))
+                        {
+                            return CGroupTokenInfo{};
+                        }
+                    }
+                    catch (const std::exception &e)
+                    {
+                        LOG(TOKEN, "Ignoring token description in tx %s: %s\n", ptx->GetId().ToString(), e.what());
                         return CGroupTokenInfo{};
                     }
 
@@ -280,8 +292,6 @@ CGroupTokenInfo CTokenDescCache::ProcessTokenDescriptions(CTransactionRef ptx)
                     vDesc.push_back("0");
                     vDesc.push_back("0");
                     DbgAssert(vDesc.size() == DESC_ENTRY_SIZE, );
-
-                    AddTokenDesc(tg.associatedGroup, vDesc);
 
                     return tg;
                 }
@@ -404,18 +414,6 @@ void CTokenMintCache::AddToCache(const CGroupTokenID &_grpID, const mint_entry &
     cache[_grpID] = entry;
 }
 
-void CTokenMintCache::AddTokenMint(const CGroupTokenID &_grpID, const CAmount _mint)
-{
-    LOCK(cs_tokenmint);
-    mint_entry entry = GetTokenMint(_grpID);
-    entry.first += _mint;
-
-    if (entry.first > 0)
-    {
-        AddToCache(_grpID, entry);
-        ptokenMint->WriteMint(_grpID, entry);
-    }
-}
 void CTokenMintCache::AddTokenGenesis(const CGroupTokenID &_grpID, const mint_entry &entry)
 {
     LOCK(cs_tokenmint);
@@ -433,22 +431,66 @@ void CTokenMintCache::AddTokenGenesis(const CGroupTokenID &_grpID, const mint_en
     ptokenMint->WriteMint(_grpID, entry);
 }
 
-void CTokenMintCache::RemoveTokenMint(const CGroupTokenID &_grpID, const CAmount _melt)
+namespace
+{
+CTokenMintage MintIndexBase()
+{
+    static const CTokenMintage base = CTokenMintage(1) << 64;
+    return base;
+}
+
+CTokenMintage LoadMintRemainder(const CGroupTokenID &grpID)
+{
+    CTokenMintRemainder stored;
+    if (!ptokenMint->ReadMintRemainder(grpID, stored))
+        return 0;
+    const CTokenMintage value = (CTokenMintage(stored.hi) << 64) + stored.lo;
+    return stored.negative ? -value : value;
+}
+
+CTokenMintRemainder DiskRemainder(const CTokenMintage &value)
+{
+    CTokenMintRemainder stored;
+    stored.negative = value < 0 ? 1 : 0;
+    const CTokenMintage mag = stored.negative ? -value : value;
+    stored.lo = (mag % MintIndexBase()).convert_to<uint64_t>();
+    stored.hi = (mag / MintIndexBase()).convert_to<uint64_t>();
+    return stored;
+}
+} // namespace
+
+void CTokenMintCache::UpdateTokenMint(const CGroupTokenID &_grpID, const CTokenMintage &delta)
 {
     LOCK(cs_tokenmint);
     mint_entry entry = GetTokenMint(_grpID);
-    if (entry.first >= (uint64_t)_melt)
+    // The stored total is uint64. Keep the rest so a later melt or disconnect uses the same total.
+    const CTokenMintage previous = LoadMintRemainder(_grpID);
+    const CTokenMintage amount = CTokenMintage(entry.first) + previous + delta;
+    const CTokenMintage maxRepresentable(std::numeric_limits<uint64_t>::max());
+
+    CTokenMintage represented = amount;
+    CTokenMintage remainder = 0;
+    if (amount < 0)
     {
-        entry.first -= _melt;
+        represented = 0;
+        remainder = amount;
     }
-    else
+    else if (amount > maxRepresentable)
     {
-        DbgAssert(entry.first >= (uint64_t)_melt, );
-        return;
+        represented = maxRepresentable;
+        remainder = amount - maxRepresentable;
     }
 
+    const uint64_t stored = represented.convert_to<uint64_t>();
+    if (stored == entry.first && remainder == previous)
+        return;
+
+    if (remainder != 0 && previous == 0)
+        LOG(TOKEN, "Token mintage for group %s does not fit in the index\n", EncodeGroupToken(_grpID));
+
+    entry.first = stored;
     AddToCache(_grpID, entry);
-    ptokenMint->WriteMint(_grpID, entry);
+    ptokenMint->UpdateMint(_grpID, entry, remainder != 0, DiskRemainder(remainder));
 }
 
 mint_entry CTokenMintCache::GetTokenMint(const CGroupTokenID &_grpID)
@@ -488,26 +530,16 @@ std::string CTokenMintCache::GetTokenGenesis(const CGroupTokenID &_grpID)
     }
 }
 
-void CTokenMintCache::ApplyTokenMintages(std::map<CGroupTokenID, CAmount> &accumulatedMintages)
+void CTokenMintCache::ApplyTokenMintages(const std::map<CGroupTokenID, CTokenMintage> &accumulatedMintages)
 {
-    for (auto &it : accumulatedMintages)
-    {
-        if (it.second > 0)
-            AddTokenMint(it.first, it.second);
-        else
-            RemoveTokenMint(it.first, abs(it.second));
-    }
+    for (const auto &it : accumulatedMintages)
+        UpdateTokenMint(it.first, it.second);
 }
 
-void CTokenMintCache::RemoveTokenMintages(std::map<CGroupTokenID, CAmount> &accumulatedMintages)
+void CTokenMintCache::RemoveTokenMintages(const std::map<CGroupTokenID, CTokenMintage> &accumulatedMintages)
 {
-    for (auto &it : accumulatedMintages)
-    {
-        if (it.second > 0)
-            RemoveTokenMint(it.first, it.second);
-        else
-            AddTokenMint(it.first, abs(it.second));
-    }
+    for (const auto &it : accumulatedMintages)
+        UpdateTokenMint(it.first, -it.second);
 }
 
 void CTokenMintCache::SetSyncFlag(const bool fSet)

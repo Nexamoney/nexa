@@ -37,6 +37,7 @@ static const char DB_TOKEN_DESC = 'D';
 static const char DB_TOKEN_DESC_SYNC_FLAG = 'd';
 static const char DB_TOKEN_MINT = 'M';
 static const char DB_TOKEN_MINT_SYNC_FLAG = 'm';
+static const char DB_TOKEN_MINT_REMAINDER = 'r';
 
 // BlockTreeDB
 static const char DB_BLOCK_INDEX = 'b';
@@ -867,6 +868,26 @@ bool CTokenMintageDB::ReadMint(const CGroupTokenID &grpID, mint_entry &entry) co
 bool CTokenMintageDB::WriteMint(const CGroupTokenID &grpID, const mint_entry entry)
 {
     return Write(std::make_pair(DB_TOKEN_MINT, SerializeHash(grpID)), entry);
+}
+
+bool CTokenMintageDB::ReadMintRemainder(const CGroupTokenID &grpID, CTokenMintRemainder &remainder) const
+{
+    return Read(std::make_pair(DB_TOKEN_MINT_REMAINDER, SerializeHash(grpID)), remainder);
+}
+
+bool CTokenMintageDB::UpdateMint(const CGroupTokenID &grpID,
+    const mint_entry &entry,
+    bool hasRemainder,
+    const CTokenMintRemainder &remainder)
+{
+    const uint256 key = SerializeHash(grpID);
+    CDBBatch batch(*this);
+    batch.Write(std::make_pair(DB_TOKEN_MINT, key), entry);
+    if (hasRemainder)
+        batch.Write(std::make_pair(DB_TOKEN_MINT_REMAINDER, key), remainder);
+    else
+        batch.Erase(std::make_pair(DB_TOKEN_MINT_REMAINDER, key));
+    return WriteBatch(batch);
 }
 
 bool CTokenMintageDB::ReadSyncFlag(bool &fSyncFlag) const { return Read(DB_TOKEN_MINT_SYNC_FLAG, fSyncFlag); }

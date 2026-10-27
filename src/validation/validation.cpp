@@ -1884,10 +1884,8 @@ bool TestBlockValidity(CValidationState &state,
     if (!ContextualCheckBlock(pblock, state, pindexPrev))
         return false;
 
-    std::map<CGroupTokenID, CAmount> dummyMintages;
-    std::map<CGroupTokenID, CAuth> dummyAuthorities;
-    if (!ConnectBlock(
-            pblock, state, &indexDummy, viewNew, *pcoinsTip, chainparams, dummyMintages, dummyAuthorities, true))
+    CTokenIndexUpdates dummyTokenUpdates;
+    if (!ConnectBlock(pblock, state, &indexDummy, viewNew, *pcoinsTip, chainparams, dummyTokenUpdates, true))
         return false;
     assert(state.IsValid());
 
@@ -2773,15 +2771,15 @@ DisconnectResult DisconnectBlock(const ConstCBlockRef pblock, const CBlockIndex 
     {
         // Before removing the outputs check through the block again for
         // any token mint/melt transactions and undo them
-        std::map<CGroupTokenID, CAmount> accumulatedMintages;
-        std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
+        CTokenIndexUpdates tokenUpdates;
         for (unsigned int i = 1; i < pblock->vtx.size(); i++)
         {
-            AccumulateTokenData(pblock->vtx[i], view, accumulatedAuthorities, accumulatedMintages);
+            AccumulateTokenData(pblock->vtx[i], view, tokenUpdates);
         }
-        // Remove token mintages and authorities if there are any
-        tokenmint.RemoveTokenMintages(accumulatedMintages);
-        tokencache.RemoveTokenAuthorities(accumulatedAuthorities);
+        // Remove token mintages and authorities if there are any. Descriptions and genesis
+        // entries are left in place.
+        tokenmint.RemoveTokenMintages(tokenUpdates.mintages);
+        tokencache.RemoveTokenAuthorities(tokenUpdates.authorities);
     }
 
     // remove outputs
@@ -3086,8 +3084,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     CAmount &nFees,
     CBlockUndo &blockundo,
     std::vector<std::pair<uint256, CDiskTxPos> > &vPos,
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages,
-    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
+    CTokenIndexUpdates &tokenUpdates,
     const std::map<uint256, CTransactionRef> *mapDagTxns,
     const std::set<uint256> *setTxnExclusions)
 {
@@ -3298,7 +3295,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
             {
                 if (!fJustCheck && !fVerifyDB.load())
                 {
-                    if (!AccumulateTokenData(txref, view, accumulatedAuthorities, accumulatedMintages))
+                    if (!AccumulateTokenData(txref, view, tokenUpdates))
                     {
                         // We could abort here; but we don't want AccumulateTokenData to be part of consensus
                         // and the double spend will be caught below during the explicit doublespend checking when
@@ -3513,8 +3510,7 @@ bool ConnectBlock(ConstCBlockRef pblock,
     CCoinsViewCache &view,
     const CCoinsViewCache &beginningTipView,
     const CChainParams &chainparams,
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages,
-    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
+    CTokenIndexUpdates &tokenUpdates,
     bool fJustCheck,
     bool fParallel)
 {
@@ -3571,7 +3567,7 @@ bool ConnectBlock(ConstCBlockRef pblock,
 
     // When connecting a summary block, the read-only inputs come directly from the tip we are building on.
     if (!ConnectBlockCanonicalOrdering(pblock, state, pindex, view, beginningTipView, chainparams, fJustCheck,
-            fParallel, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages, accumulatedAuthorities))
+            fParallel, fScriptChecks, nFees, blockundo, vPos, tokenUpdates))
     {
         return false;
     }
@@ -4114,10 +4110,8 @@ bool ConnectTip(CValidationState &state,
     LOG(BENCH, "  - Load block from disk: %.2fms [%.2fs]\n", (nTime2 - nTime1) * 0.001, nTimeReadFromDisk * 0.000001);
 
     CCoinsViewCache view(pcoinsTip);
-    std::map<CGroupTokenID, CAmount> accumulatedMintages;
-    std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
-    bool rv = ConnectBlock(pblock, state, pindexNew, view, *pcoinsTip, chainparams, accumulatedMintages,
-        accumulatedAuthorities, false, fParallel);
+    CTokenIndexUpdates tokenUpdates;
+    bool rv = ConnectBlock(pblock, state, pindexNew, view, *pcoinsTip, chainparams, tokenUpdates, false, fParallel);
     GetMainSignals().BlockChecked(*pblock, state);
     if (!rv)
     {
@@ -4198,11 +4192,10 @@ bool ConnectTip(CValidationState &state,
         GetMainSignals().UpdatedBlockTip(pindexNew);
     }
 
-    // Apply token mintages if there are any
+    // Apply token index updates if there are any
     if (!fVerifyDB.load())
     {
-        tokenmint.ApplyTokenMintages(accumulatedMintages);
-        tokencache.ApplyTokenAuthorities(accumulatedAuthorities);
+        ApplyTokenIndexUpdates(tokenUpdates);
     }
 
     // Write the blockchain state to disk. This should be done after UpdateTip to make sure the tip
