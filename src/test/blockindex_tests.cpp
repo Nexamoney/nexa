@@ -16,6 +16,9 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <atomic>
+#include <thread>
+
 BOOST_FIXTURE_TEST_SUITE(blockindex_tests, TestingSetup)
 
 // Test that the trimming of headers from the block index,
@@ -285,6 +288,31 @@ BOOST_AUTO_TEST_CASE(header_handling)
 
     // Must reset this to "true" or you'll cause a thread to hang in the main test loop.
     fCheckpointsEnabled = true;
+}
+
+// GetBlockHeader() copies the header without cs_mapBlockIndex while a flush replaces or trims it. Only a
+// ThreadSanitizer build reports the race reliably (NX-44).
+BOOST_AUTO_TEST_CASE(header_read_while_replaced)
+{
+    CBlockHeader header;
+    header.nBits = 0x207fffff;
+    header.nTime = 1234;
+    header.size = 1;
+    CBlockIndex index(header);
+
+    std::atomic<bool> fDone{false};
+    std::thread writer(
+        [&]
+        {
+            for (int i = 0; i < 20000; i++)
+                index.SetBlockHeader(std::make_shared<CBlockHeader>(header));
+            fDone = true;
+        });
+    bool fSame = true;
+    while (!fDone)
+        fSame &= index.GetBlockHeader().nTime == header.nTime;
+    writer.join();
+    BOOST_CHECK(fSame);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
