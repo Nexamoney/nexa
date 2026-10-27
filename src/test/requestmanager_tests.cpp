@@ -1673,20 +1673,19 @@ BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_valid_header, RegtestRequ
     BlockReceivedPostProcessing(&node, noWork);
     BOOST_CHECK_EQUAL(RequestedSubblocks(rman, noWork), 0);
 
-    // 255 proofs whose declared count matches, and K-1 proofs declared as 0, both pass the header
-    // checks. Neither is an honest summary, so neither is fetched.
+    // Invalid proof counts must not populate the request tables.
     {
         CBlockRef oversized = MakeRequestTestSummary(parent, 255, true);
         CValidationState state;
-        BOOST_REQUIRE(CheckBlockHeader(Params().GetConsensus(), *oversized, state, true));
-        BOOST_REQUIRE(ContextualCheckBlockHeader(Params(), *oversized, state, chainActive.Tip()));
+        BOOST_REQUIRE(!CheckBlockHeader(Params().GetConsensus(), *oversized, state, true));
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-blk-wrong-number-of-subblocks");
         BlockReceivedPostProcessing(&node, oversized);
         BOOST_CHECK_EQUAL(RequestedSubblocks(rman, oversized), 0);
 
         CBlockRef undeclared = MakeRequestTestSummary(parent, nProofs, true, 0, 0);
         state = CValidationState();
-        BOOST_REQUIRE(CheckBlockHeader(Params().GetConsensus(), *undeclared, state, true));
-        BOOST_REQUIRE(ContextualCheckBlockHeader(Params(), *undeclared, state, chainActive.Tip()));
+        BOOST_REQUIRE(!CheckBlockHeader(Params().GetConsensus(), *undeclared, state, true));
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-blk-wrong-number-of-subblocks");
         BlockReceivedPostProcessing(&node, undeclared);
         BOOST_CHECK_EQUAL(RequestedSubblocks(rman, undeclared), 0);
     }
@@ -1721,12 +1720,13 @@ BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_parent_context, RegtestRe
     unknownParent.phashBlock = &parentHash;
     unknownParent.pprev = genesis;
     BOOST_REQUIRE(LookupBlockIndex(parentHash) == nullptr);
-    for (size_t count : {size_t(3), size_t(510)})
+    const size_t nProofs = Params().GetConsensus().tailstorm_k - 1;
+    for (size_t count : {nProofs, size_t(510)})
     {
-        // 255 uncles and 255 sub-blocks pass the non-contextual proof-count check.
+        // The 255+255 proof list is invalid even before parent lookup.
         CBlockRef unknown = MakeRequestTestSummary(&unknownParent, count, true, count == 510 ? 255 : 0);
         CValidationState state;
-        BOOST_REQUIRE(CheckBlockHeader(Params().GetConsensus(), *unknown, state, true));
+        BOOST_REQUIRE_EQUAL(CheckBlockHeader(Params().GetConsensus(), *unknown, state, true), count == nProofs);
         BlockReceivedPostProcessing(&node, unknown);
         BOOST_CHECK_EQUAL(RequestedSubblocks(rman, unknown), 0);
     }
@@ -1741,7 +1741,6 @@ BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_parent_context, RegtestRe
     BOOST_REQUIRE(!IsUpgrade2Pending(genesis) && !IsUpgrade2Activated(genesis));
     BOOST_REQUIRE(IsUpgrade2Pending(parent));
     BOOST_REQUIRE(chainActive.Tip() == genesis);
-    const size_t nProofs = Params().GetConsensus().tailstorm_k - 1;
     CBlockRef good = MakeRequestTestSummary(parent, nProofs, true);
     CValidationState state;
     BOOST_REQUIRE(ContextualCheckBlockHeader(Params(), *good, state, parent));

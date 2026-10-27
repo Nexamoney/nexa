@@ -276,8 +276,7 @@ void BlockReceivedPostProcessing(CNode *pfrom, ConstCBlockRef pblock)
     // extends the current tip (a competing-tip summary still needs them to reorg).
     if (IsChainNearlySyncd() && IsTailstormSummaryBlock(pblock))
     {
-        // Header checks still accept nUncles + nSubblocks proofs (both uint8_t, so up to 510) at the
-        // targets written in the miner data. Request only the K-1 proofs an honest summary carries.
+        // Only a summary with K-1 proofs and matching declared counts may request sub-blocks.
         const CSummaryBlockMinerData minerData = ParseSummaryBlockMinerData(pblock->minerData);
         const uint32_t nExpectedProofs = Params().GetConsensus().tailstorm_k - 1;
         if ((minerData.vSubblockProofs.size() != nExpectedProofs) ||
