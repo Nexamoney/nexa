@@ -507,6 +507,47 @@ BOOST_AUTO_TEST_CASE(capd_pool_order_is_time_invariant)
 }
 
 
+// As messages age, the pool's local priority must still be the lowest current priority, and a full pool must
+// evict that message. An older message with more work stays above a newer one with less.
+BOOST_AUTO_TEST_CASE(capd_pool_thresholds_follow_time)
+{
+    int64_t now = GetTime();
+    SetMockTime(now);
+
+    CapdMsgPool mp;
+    mp.SetMaxSize(4000);
+
+    // A: 40 times the minimum work, created now
+    CapdMsg msgA("A message 12345");
+    msgA.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(40));
+    msgA.Solve();
+    mp.add(MsgRefCopy(msgA));
+
+    // B: 4 times the minimum work, created later
+    SetMockTime(now + 500);
+    CapdMsg msgB("B message 12345");
+    msgB.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(4));
+    msgB.Solve();
+    mp.add(MsgRefCopy(msgB));
+
+    // Both have decayed by the elapsed time since their creation; B still has the lowest priority
+    SetMockTime(now + 580);
+    BOOST_CHECK(msgB.Priority() < msgA.Priority());
+    mp.SetMaxSize(mp.Size());
+    BOOST_CHECK_EQUAL(mp.GetLocalPriority(), msgB.Priority());
+
+    // With the pool full, a new message evicts the lowest priority one
+    CapdMsg msgC("C message 12345");
+    msgC.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(8));
+    msgC.Solve();
+    mp.add(MsgRefCopy(msgC));
+    BOOST_CHECK(mp.find(msgA.GetHash()) != nullmsgref);
+    BOOST_CHECK(mp.find(msgB.GetHash()) == nullmsgref);
+    BOOST_CHECK(mp.find(msgC.GetHash()) != nullmsgref);
+
+    SetMockTime(0);
+}
+
 BOOST_AUTO_TEST_CASE(capd_http) { BOOST_CHECK(1 == 1); }
 class CMsgMaker
 {
