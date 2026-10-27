@@ -280,8 +280,8 @@ void BlockReceivedPostProcessing(CNode *pfrom, ConstCBlockRef pblock)
         // targets written in the miner data. Request only the K-1 proofs an honest summary carries.
         const CSummaryBlockMinerData minerData = ParseSummaryBlockMinerData(pblock->minerData);
         const uint32_t nExpectedProofs = Params().GetConsensus().tailstorm_k - 1;
-        if (minerData.vSubblockProofs.size() != nExpectedProofs ||
-            uint32_t(minerData.nUncles) + minerData.nSubblocks != nExpectedProofs)
+        if ((minerData.vSubblockProofs.size() != nExpectedProofs) ||
+            (uint32_t(minerData.nUncles) + minerData.nSubblocks != nExpectedProofs))
             return;
 
         // This runs before block validation. Require a known parent and its required difficulty
@@ -292,7 +292,9 @@ void BlockReceivedPostProcessing(CNode *pfrom, ConstCBlockRef pblock)
         {
             LOCK(cs_main);
             CBlockIndex *pindexPrev = LookupBlockIndex(pblock->hashPrevBlock);
-            if (!pindexPrev || (!IsUpgrade2Pending(pindexPrev) && !IsUpgrade2Activated(pindexPrev)))
+            if (!pindexPrev)
+                return;
+            if (!IsUpgrade2Pending(pindexPrev) && !IsUpgrade2Activated(pindexPrev))
                 return;
             if (!ContextualCheckBlockHeader(Params(), *pblock, state, pindexPrev))
                 return;
