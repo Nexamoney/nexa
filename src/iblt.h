@@ -22,7 +22,6 @@ SOFTWARE.
 #ifndef CIblt_H
 #define CIblt_H
 
-#include "reconciliation_error.h"
 #include "serialize.h"
 
 #include <inttypes.h>
@@ -180,7 +179,7 @@ public:
         }
         // Each peel costs n_hash cell updates, and no IBLT we build uses more than MaxNHash()
         if (ser_action.ForRead() && n_hash > MaxNHash())
-            throw reconciliation_limit_error("Too many IBLT hash functions");
+            throw std::ios_base::failure("Too many IBLT hash functions");
         READWRITE(is_modified);
 
         if (version >= 2)

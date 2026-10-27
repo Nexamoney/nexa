@@ -144,9 +144,9 @@ bool CMempoolSync::ReceiveMempoolSync(CDataStream &vRecv, CNode *pfrom, std::str
     {
         vRecv >> mempoolSync;
     }
-    catch (const reconciliation_limit_error &e)
+    catch (const std::exception &e)
     {
-        dosMan.Misbehaving(pfrom, 100, BanReasonInvalidObject);
+        dosMan.Misbehaving(pfrom, 20, BanReasonInvalidObject);
         return error("%s from peer %s: %s\n", strCommand, pfrom->GetLogName(), e.what());
     }
     NodeId nodeId = pfrom->GetId();

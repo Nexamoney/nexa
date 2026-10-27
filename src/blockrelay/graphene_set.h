@@ -304,7 +304,7 @@ public:
             READWRITE(*pSetFilter);
             // Every lookup costs one hash per function, and no filter we build uses more than MAX_HASH_FUNCS
             if (ser_action.ForRead() && pSetFilter->NumHashFuncs() > MAX_HASH_FUNCS)
-                throw reconciliation_limit_error("Graphene Bloom filter has too many hash functions");
+                throw std::runtime_error("Graphene Bloom filter has too many hash functions");
         }
         if (!pSetIblt)
             pSetIblt = std::make_shared<CIblt>(CIblt(CGrapheneSet::GetCIbltVersion(version)));

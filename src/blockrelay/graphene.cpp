@@ -358,9 +358,9 @@ bool CGrapheneBlock::HandleMessage(CDataStream &vRecv,
     {
         vRecv >> tmp;
     }
-    catch (const reconciliation_limit_error &e)
+    catch (const std::exception &e)
     {
-        dosMan.Misbehaving(pfrom, 100, BanReasonBadBlockData);
+        dosMan.Misbehaving(pfrom, 20, BanReasonBadBlockData);
         return error("%s from peer %s: %s\n", strCommand, pfrom->GetLogName(), e.what());
     }
     std::shared_ptr<CBlockThinRelay> pblock;
@@ -1445,9 +1445,9 @@ bool HandleGrapheneBlockRecoveryRequest(CDataStream &vRecv,
     {
         vRecv >> recoveryRequest;
     }
-    catch (const reconciliation_limit_error &e)
+    catch (const std::exception &e)
     {
-        dosMan.Misbehaving(pfrom, 100, BanReasonBadBlockData);
+        dosMan.Misbehaving(pfrom, 20, BanReasonBadBlockData);
         return error("Graphene recovery request from peer %s: %s\n", pfrom->GetLogName(), e.what());
     }
     recoveryRequest.nSenderFilterPositives =
@@ -1475,9 +1475,9 @@ bool HandleGrapheneBlockRecoveryResponse(CDataStream &vRecv, CNode *pfrom, const
     {
         vRecv >> recoveryResponse;
     }
-    catch (const reconciliation_limit_error &e)
+    catch (const std::exception &e)
     {
-        dosMan.Misbehaving(pfrom, 100, BanReasonBadBlockData);
+        dosMan.Misbehaving(pfrom, 20, BanReasonBadBlockData);
         return error("Graphene recovery response from peer %s: %s\n", pfrom->GetLogName(), e.what());
     }
 
