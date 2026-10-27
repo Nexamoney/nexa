@@ -119,7 +119,8 @@ CGroupTokenInfo::CGroupTokenInfo(const CTxOut &output)
 bool CheckGroupTokens(const CTransaction &tx,
     CValidationState &state,
     const CCoinsViewCache &view,
-    const CCoinsViewCache &readonlyCoins)
+    const CCoinsViewCache &readonlyCoins,
+    bool fGenesisSpendsInput)
 {
     GroupBalanceMapRef gBalanceState = MakeGroupBalanceMapRef();
     // For simple syntax grab a c++ style reference to the shared entity
@@ -307,6 +308,10 @@ bool CheckGroupTokens(const CTransaction &tx,
 
             if (newGrpId == grp.first) // This IS new group because id matches hash, so allow all authority.
             {
+                // A read-only first input is not spent, so the same genesis could be claimed again
+                if (fGenesisSpendsInput && tx.vin[0].IsReadOnly())
+                    return state.Invalid(false, REJECT_GROUP_IMBALANCE, "grp-invalid-create",
+                        "Group creation must spend its first input");
                 uint32_t groupFlags = (newGrpId.bytes()[30] << 8) | newGrpId.bytes()[31];
                 if ((groupFlags & (uint32_t)GroupTokenIdFlags::GROUP_RESERVED_BITS) != 0) // REQ3.2.1.4
                     return state.Invalid(

@@ -2,12 +2,14 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include "consensus/consensus.h"
 #include "consensus/grouptokens.h"
 #include "consensus/merkle.h"
 #include "daa.h"
 #include "main.h"
 #include "miner.h"
 #include "net_processing.h"
+#include "policy/policy.h"
 #include "protocol.h"
 #include "script/sighashtype.h"
 #include "test/test_nexa.h"
@@ -666,6 +668,58 @@ BOOST_AUTO_TEST_CASE(grouptoken_covenantfunctions)
     BOOST_CHECK(!ok);
 }
 
+// Defined below; unlike findGroupId it does not need the wallet
+static CGroupTokenID FindTestGroupId(const COutPoint &input,
+    CScript opRetTokDesc,
+    GroupTokenIdFlags flags,
+    GroupAuthorityFlags authorityFlags,
+    uint64_t &nonce);
+
+BOOST_AUTO_TEST_CASE(grouptoken_genesis_must_spend_first_input)
+{
+    // The group id commits to the first input's outpoint, so a creation that only reads it could be copied to
+    // claim the same group again
+    CCoinsView coinsDummy;
+    CCoinsViewCache coins(&coinsDummy);
+    QuickAddress u1;
+    COutPoint genesisInput = AddUtxo(p2pkt(u1), 1000, coins);
+    COutPoint otherInput = AddUtxo(p2pkt(u1), 1000, coins);
+    uint64_t nonce = 0;
+    CGroupTokenID gid =
+        FindTestGroupId(genesisInput, CScript(), GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+
+    // The honest creation spends the input its id commits to
+    CMutableTransaction honest;
+    honest.vin.resize(1);
+    honest.vin[0].prevout = genesisInput;
+    honest.vin[0].amount = 1000;
+    honest.vout.resize(1);
+    honest.vout[0].SetScript(gp2pkh(gid, u1, nonce));
+    honest.vout[0].nValue = 1000;
+
+    // The copy only reads it, and spends another input
+    CMutableTransaction copy(honest);
+    copy.vin[0].SetReadOnly();
+    copy.vin[0].amount = 0;
+    copy.vin[0].nSequence = 0;
+    copy.vin.resize(2);
+    copy.vin[1].prevout = otherInput;
+    copy.vin[1].amount = 1000;
+
+    CValidationState state;
+    BOOST_CHECK(CheckGroupTokens(CTransaction(honest), state, coins, coins, true));
+    BOOST_CHECK(!CheckGroupTokens(CTransaction(copy), state, coins, coins, true));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "grp-invalid-create");
+
+    // Without the flag, as for blocks before Upgrade2, the copy is still valid
+    CValidationState state2;
+    BOOST_CHECK(CheckGroupTokens(CTransaction(copy), state2, coins, coins, false));
+
+    // Policy now, consensus from Upgrade2
+    BOOST_CHECK(STANDARD_SCRIPT_VERIFY_FLAGS & SCRIPT_GROUP_GENESIS_SPENDS_INPUT);
+    BOOST_CHECK(!(MANDATORY_SCRIPT_VERIFY_FLAGS & SCRIPT_GROUP_GENESIS_SPENDS_INPUT));
+    BOOST_CHECK(POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS & SCRIPT_GROUP_GENESIS_SPENDS_INPUT);
+}
 
 BOOST_AUTO_TEST_CASE(grouptoken_fencefunctions)
 {
@@ -2014,6 +2068,39 @@ BOOST_FIXTURE_TEST_CASE(grouptoken_mintage_block_disconnect, TestChain100Setup)
     BOOST_REQUIRE(InvalidateBlock(state, Params().GetConsensus(), chainActive.Tip()));
     BOOST_CHECK(chainActive.Tip() == creationTip);
     BOOST_CHECK_EQUAL(tokenmint.GetTokenMint(gid).first, 0U);
+}
+
+BOOST_FIXTURE_TEST_CASE(grouptoken_genesis_read_only_policy, TestChain100Setup)
+{
+    // A copy of a group creation that only reads the genesis input is refused by policy but, before
+    // Upgrade2, still valid in a block
+    CreateAndProcessBlock({}, coinbaseLockingScript); // so the second coinbase is mature too
+    QuickAddress u1;
+    COutPoint genesisInput(coinbaseTxns[0].GetIdem(), 0);
+    uint64_t nonce = 0;
+    CGroupTokenID gid =
+        FindTestGroupId(genesisInput, CScript(), GroupTokenIdFlags::NONE, GroupAuthorityFlags::ACTIVE_FLAG_BITS, nonce);
+
+    CMutableTransaction copy;
+    copy.vin.resize(2);
+    copy.vin[0] = coinbaseTxns[0].SpendOutput(0);
+    copy.vin[0].SetReadOnly();
+    copy.vin[0].amount = 0;
+    copy.vin[0].nSequence = 0;
+    copy.vin[1] = coinbaseTxns[1].SpendOutput(0);
+    copy.vout.resize(1);
+    copy.vout[0].SetScript(gp2pkh(gid, u1, nonce));
+    copy.vout[0].nValue = coinbaseTxns[1].vout[0].nValue;
+    copy.vin[1].scriptSig = SignCoinbaseSpend(copy, 1, defaultSigHashType, coinbaseTxns[1].vout[0].nValue);
+
+    CValidationState state;
+    BOOST_CHECK(!tryMempool(CTransaction(copy), state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "group-token-imbalance");
+
+    CBlockRef blk;
+    CValidationState state2;
+    BOOST_CHECK(tryBlock({copy}, p2pkt(u1), blk, state2));
+    BOOST_CHECK(chainActive.Tip()->GetBlockHash() == blk->GetHash());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
