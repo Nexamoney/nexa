@@ -9,6 +9,8 @@
 #include "daa.h"
 #include "main.h"
 #include "miner.h"
+#include "net.h"
+#include "validation/parallel.h"
 #include "validation/validation.h"
 
 #include "test/test_nexa.h"
@@ -16,8 +18,11 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <atomic>
+#include <future>
 #include <thread>
+#include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(blockindex_tests, TestingSetup)
 
@@ -313,6 +318,166 @@ BOOST_AUTO_TEST_CASE(header_read_while_replaced)
         fSame &= index.GetBlockHeader().nTime == header.nTime;
     writer.join();
     BOOST_CHECK(fSame);
+}
+
+// A block on top of pindexPrev with one more unit of work, so that siblings made by this have equal work
+static CBlockRef MakeSiblingBlock(const CBlockIndex *pindexPrev, uint32_t nTime)
+{
+    CBlockRef block = std::make_shared<CBlock>();
+    block->hashPrevBlock = pindexPrev->GetBlockHash();
+    block->height = pindexPrev->height() + 1;
+    block->nTime = nTime;
+    block->SetChainWork(pindexPrev->chainWork() + 1);
+    // the hash includes the size, so calculate it before the hash is used
+    block->GetBlockSize();
+    return block;
+}
+
+// Parallel validation swaps the sequence ids of competing blocks so that the winner sorts first. The candidate
+// set orders blocks by sequence id, so the swap must keep it sorted, or later erases of those blocks can miss
+BOOST_AUTO_TEST_CASE(pv_cleanup_keeps_candidates_sorted)
+{
+    CBlockIndex *pindexPrev = nullptr;
+    {
+        LOCK(cs_main);
+        pindexPrev = chainActive.Tip();
+    }
+
+    // two sibling blocks with equal work: L arrived first, W arrived later but won the validation race
+    CBlockRef blockL = MakeSiblingBlock(pindexPrev, 1);
+    CBlockRef blockW = MakeSiblingBlock(pindexPrev, 2);
+    BOOST_REQUIRE(blockW->IsSummaryBlock());
+    CBlockIndex indexL(*blockL);
+    CBlockIndex indexW(*blockW);
+    indexL.nSequenceId = 5;
+    indexW.nSequenceId = 9;
+    {
+        WRITELOCK(cs_mapBlockIndex);
+        indexL.phashBlock = &mapBlockIndex.emplace(blockL->GetHash(), &indexL).first->first;
+        indexW.phashBlock = &mapBlockIndex.emplace(blockW->GetHash(), &indexW).first->first;
+        setBlockIndexCandidates.insert(&indexL);
+        setBlockIndexCandidates.insert(&indexW);
+    }
+
+    // register L as a competing validation thread; BeginValidation records its sequence id
+    const boost::thread::id otherId; // not any thread, so never this one
+    CNode node(INVALID_SOCKET, CAddress(), "", true);
+    PV->InitThread(otherId, &node, blockL);
+    {
+        LOCK(cs_main);
+        BOOST_REQUIRE(PV->BeginValidation(otherId, &indexL, true));
+        // W won the race
+        PV->Cleanup(blockW, &indexW);
+    }
+    PV->Erase(otherId);
+
+    {
+        WRITELOCK(cs_mapBlockIndex);
+        // the winner now has the lower sequence id
+        BOOST_CHECK_EQUAL(indexW.nSequenceId, 5);
+        BOOST_CHECK_EQUAL(indexL.nSequenceId, 9);
+        // the set is still ordered, and both blocks can still be found
+        BOOST_CHECK(std::is_sorted(
+            setBlockIndexCandidates.begin(), setBlockIndexCandidates.end(), setBlockIndexCandidates.value_comp()));
+        BOOST_CHECK_EQUAL(setBlockIndexCandidates.count(&indexL), 1);
+        BOOST_CHECK_EQUAL(setBlockIndexCandidates.count(&indexW), 1);
+
+        // remove the test blocks by position, which works even if the set is out of order
+        for (auto it = setBlockIndexCandidates.begin(); it != setBlockIndexCandidates.end();)
+        {
+            if (*it == &indexL || *it == &indexW)
+                it = setBlockIndexCandidates.erase(it);
+            else
+                ++it;
+        }
+        mapBlockIndex.erase(blockL->GetHash());
+        mapBlockIndex.erase(blockW->GetHash());
+    }
+}
+
+// Same as above, but with several competing blocks, so the winner's sequence id changes more than once, and with
+// one competing block that is not a candidate, which must stay out of the set
+BOOST_AUTO_TEST_CASE(pv_cleanup_keeps_candidates_sorted_many)
+{
+    CBlockIndex *pindexPrev = nullptr;
+    {
+        LOCK(cs_main);
+        pindexPrev = chainActive.Tip();
+    }
+
+    // W won the validation race against three blocks that arrived before it. C5 is not a candidate.
+    CBlockRef blockW = MakeSiblingBlock(pindexPrev, 1);
+    std::vector<CBlockRef> blocks = {
+        MakeSiblingBlock(pindexPrev, 2), MakeSiblingBlock(pindexPrev, 3), MakeSiblingBlock(pindexPrev, 4)};
+    CBlockIndex indexW(*blockW);
+    CBlockIndex indexC3(*blocks[0]);
+    CBlockIndex indexC5(*blocks[1]);
+    CBlockIndex indexC7(*blocks[2]);
+    std::vector<CBlockIndex *> competitors = {&indexC3, &indexC5, &indexC7};
+    indexW.nSequenceId = 9;
+    indexC3.nSequenceId = 3;
+    indexC5.nSequenceId = 5;
+    indexC7.nSequenceId = 7;
+    {
+        WRITELOCK(cs_mapBlockIndex);
+        indexW.phashBlock = &mapBlockIndex.emplace(blockW->GetHash(), &indexW).first->first;
+        for (size_t i = 0; i < competitors.size(); i++)
+            competitors[i]->phashBlock = &mapBlockIndex.emplace(blocks[i]->GetHash(), competitors[i]).first->first;
+        setBlockIndexCandidates.insert(&indexW);
+        setBlockIndexCandidates.insert(&indexC3);
+        setBlockIndexCandidates.insert(&indexC7);
+    }
+
+    // each competing validation needs its own thread id, so start threads that wait until the test is done
+    std::promise<void> done;
+    std::shared_future<void> fDone = done.get_future().share();
+    std::vector<boost::thread> threads;
+    for (size_t i = 0; i < competitors.size(); i++)
+        threads.emplace_back([fDone] { fDone.wait(); });
+
+    CNode node(INVALID_SOCKET, CAddress(), "", true);
+    for (size_t i = 0; i < competitors.size(); i++)
+        PV->InitThread(threads[i].get_id(), &node, blocks[i]);
+    {
+        LOCK(cs_main);
+        for (size_t i = 0; i < competitors.size(); i++)
+            BOOST_REQUIRE(PV->BeginValidation(threads[i].get_id(), competitors[i], true));
+        PV->Cleanup(blockW, &indexW);
+    }
+    for (auto &t : threads)
+        PV->Erase(t.get_id());
+    done.set_value();
+    for (auto &t : threads)
+        t.join();
+
+    {
+        WRITELOCK(cs_mapBlockIndex);
+        // the winner takes the lowest sequence id and the others keep their order
+        BOOST_CHECK_EQUAL(indexW.nSequenceId, 3);
+        BOOST_CHECK_EQUAL(indexC3.nSequenceId, 5);
+        BOOST_CHECK_EQUAL(indexC5.nSequenceId, 7);
+        BOOST_CHECK_EQUAL(indexC7.nSequenceId, 9);
+        // the set is still ordered, the candidates can still be found, and C5 was not added
+        BOOST_CHECK(std::is_sorted(
+            setBlockIndexCandidates.begin(), setBlockIndexCandidates.end(), setBlockIndexCandidates.value_comp()));
+        BOOST_CHECK_EQUAL(setBlockIndexCandidates.count(&indexW), 1);
+        BOOST_CHECK_EQUAL(setBlockIndexCandidates.count(&indexC3), 1);
+        BOOST_CHECK_EQUAL(setBlockIndexCandidates.count(&indexC7), 1);
+        BOOST_CHECK(std::find(setBlockIndexCandidates.begin(), setBlockIndexCandidates.end(), &indexC5) ==
+                    setBlockIndexCandidates.end());
+
+        // remove the test blocks by position, which works even if the set is out of order
+        for (auto it = setBlockIndexCandidates.begin(); it != setBlockIndexCandidates.end();)
+        {
+            if (*it == &indexW || std::count(competitors.begin(), competitors.end(), *it))
+                it = setBlockIndexCandidates.erase(it);
+            else
+                ++it;
+        }
+        mapBlockIndex.erase(blockW->GetHash());
+        for (auto &block : blocks)
+            mapBlockIndex.erase(block->GetHash());
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
