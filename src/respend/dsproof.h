@@ -83,7 +83,7 @@ public:
         READWRITE(m_spender2.lockTime);
         READWRITE(m_spender2.hashPrevOutputs);
         READWRITE(m_spender2.hashSequence);
-        READWRITE(m_spender1.hashInAmounts);
+        READWRITE(m_spender2.hashInAmounts);
         READWRITE(m_spender2.hashOutputs);
         READWRITE(m_spender2.pushData);
 

@@ -51,6 +51,7 @@ NEXA_TEST_SUITE = \
 NEXA_TESTS =\
   respend/test/respendrelayer_tests.cpp \
   respend/test/respenddetector_tests.cpp \
+  respend/test/dsproof_tests.cpp \
   test/grouptoken_tests.cpp \
   test/uahf_test.cpp \
   test/stat_tests.cpp \
