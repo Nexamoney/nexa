@@ -43,6 +43,14 @@ SOFTWARE.
 const uint64_t IBLT_MAX_VERSION_SUPPORTED = 2;
 const uint32_t MAX_CHECKSUM_MASK = 0xffffffff;
 
+// Thrown for set reconciliation data that no honest node builds, so the receiver can ban the sender.
+// Raising these limits needs a new Graphene version, or older nodes would ban upgraded ones.
+class reconciliation_limit_error : public std::ios_base::failure
+{
+public:
+    explicit reconciliation_limit_error(const std::string &msg) : std::ios_base::failure(msg) {}
+};
+
 class BaseHashTableEntry
 {
 public:
@@ -179,7 +187,7 @@ public:
         }
         // Each peel costs n_hash cell updates, and no IBLT we build uses more than MaxNHash()
         if (ser_action.ForRead() && n_hash > MaxNHash())
-            throw std::ios_base::failure("Too many IBLT hash functions");
+            throw reconciliation_limit_error("Too many IBLT hash functions");
         READWRITE(is_modified);
 
         if (version >= 2)

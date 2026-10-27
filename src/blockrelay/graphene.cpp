@@ -354,7 +354,15 @@ bool CGrapheneBlock::HandleMessage(CDataStream &vRecv,
 {
     // Deserialize grapheneblock and store a block to reconstruct
     CGrapheneBlock tmp(NegotiateGrapheneVersion(pfrom), NegotiateFastFilterSupport(pfrom));
-    vRecv >> tmp;
+    try
+    {
+        vRecv >> tmp;
+    }
+    catch (const reconciliation_limit_error &e)
+    {
+        dosMan.Misbehaving(pfrom, 100, BanReasonBadBlockData);
+        return error("%s from peer %s: %s\n", strCommand, pfrom->GetLogName(), e.what());
+    }
     std::shared_ptr<CBlockThinRelay> pblock;
     {
         // Keep admission and allocation atomic with timeout cleanup.
@@ -1455,7 +1463,15 @@ bool HandleGrapheneBlockRecoveryRequest(CDataStream &vRecv,
 bool HandleGrapheneBlockRecoveryResponse(CDataStream &vRecv, CNode *pfrom, const CChainParams &chainparams)
 {
     CGrapheneReceiverRecover recoveryResponse;
-    vRecv >> recoveryResponse;
+    try
+    {
+        vRecv >> recoveryResponse;
+    }
+    catch (const reconciliation_limit_error &e)
+    {
+        dosMan.Misbehaving(pfrom, 100, BanReasonBadBlockData);
+        return error("Graphene recovery response from peer %s: %s\n", pfrom->GetLogName(), e.what());
+    }
 
     auto pblock = thinrelay.GetBlockToReconstruct(pfrom, recoveryResponse.blockhash);
     if (pblock == nullptr)
