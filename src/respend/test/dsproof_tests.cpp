@@ -134,6 +134,55 @@ BOOST_FIXTURE_TEST_CASE(dsproof_rejects_unsigned_difference, TestChain100Setup)
     mempool.clear();
 }
 
+// A signature's sighash type can be re-encoded without breaking it: ALL/ALL verifies with or without an explicit
+// 0x00 byte, and ranged output types are not hashed, so their range bytes can be changed.  A proof pairing a spend
+// with such a re-encoding of itself could be made by anyone from a single transaction, so it must not validate.
+BOOST_FIXTURE_TEST_CASE(dsproof_rejects_reencoded_sighash, TestChain100Setup)
+{
+    CMutableTransaction tx1, tx2;
+    MakeP2pkhDoubleSpends(*this, tx1, tx2);
+    // Sign tx2's double spend with ranged outputs: output 0 is covered, output 1 is not
+    tx2.vout.resize(2);
+    tx2.vout[1].nValue = 1 * CENT;
+    tx2.vout[1].scriptPubKey = coinbaseLockingScript;
+    const SigHashType ranged = SigHashType().withRangedOutputs(0, 1);
+    std::vector<uint8_t> rangedSig;
+    uint256 sighash =
+        SignatureHash(coinbaseLockingScript, CTransaction(tx2), 0, ranged, coinbaseTxns[0].vout[0].nValue);
+    BOOST_REQUIRE(coinbaseKey.SignSchnorr(sighash, rangedSig));
+    ranged.appendToSig(rangedSig);
+    tx2.vin[0].scriptSig = CScript() << rangedSig << ToByteVector(coinbaseKey.GetPubKey());
+    tx2.vin[1].scriptSig = SignCoinbaseSpend(tx2, 1, defaultSigHashType, coinbaseTxns[1].vout[0].nValue);
+
+    CValidationState state;
+    bool fMissingInputs = false;
+    bool accepted = AcceptToMemoryPool(mempool, state, MakeTransactionRef(tx1), false, &fMissingInputs, false);
+    BOOST_REQUIRE_MESSAGE(accepted, "tx1 rejected: " << state.GetRejectReason());
+
+    {
+        WRITELOCK(mempool.cs_txmempool);
+        DoubleSpendProof dsp = DoubleSpendProof::create(CTransaction(tx1), CTransaction(tx2), mempool);
+        BOOST_CHECK_EQUAL(MakeProof(dsp.Outpoint(), dsp.spender1(), dsp.spender2()).validate(mempool),
+            DoubleSpendProof::Valid);
+
+        for (const auto &spender : {dsp.spender1(), dsp.spender2()})
+        {
+            DoubleSpendProof::Spender forged = spender;
+            std::vector<uint8_t> &sig = forged.pushData.front();
+            if (SigHashType(sig).hasRangedOutputs())
+                sig.back() ^= 1; // a different range count
+            else
+            {
+                BOOST_REQUIRE_EQUAL(sig.size(), 64U);
+                sig.push_back(0x00); // explicit ALL/ALL
+            }
+            BOOST_REQUIRE(SigHashType(sig).isDefined());
+            BOOST_CHECK_EQUAL(MakeProof(dsp.Outpoint(), spender, forged).validate(mempool), DoubleSpendProof::Invalid);
+        }
+    }
+    mempool.clear();
+}
+
 // A proof received from a peer can name any outpoint.  An output that isn't P2PKH or P2PKT must be rejected even
 // if the proof's data satisfies its script.
 BOOST_FIXTURE_TEST_CASE(dsproof_rejects_unsupported_script_type, TestChain100Setup)
