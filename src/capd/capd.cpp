@@ -293,6 +293,7 @@ bool CapdMsgPool::LoadMsgPool(void)
             file >> msg;
             CapdMsgRef ref = std::make_shared<CapdMsg>(msg);
             {
+                ref->InitialPriority(); // fill the cache under the lock, a lone message is never compared on insert
                 msgs.insert(ref);
                 size += ref->RamSize();
                 ++count;
