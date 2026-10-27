@@ -3020,8 +3020,11 @@ BOOST_AUTO_TEST_CASE(script_op_parse)
     ExpectedScriptTemplateFailure(SCRIPT_ERR_INVALID_NUMBER_RANGE, st, CScript(), satisfy);
 
     // REQ1.0: Invalid parse operation
-    st = CScript() << OP_0 << OP_1 << OP_4 << OP_PARSE;
-    ExpectedScriptTemplateFailure(SCRIPT_ERR_BAD_OPCODE, st, CScript(), satisfy);
+    for (int option : {-127, -1, 4, 127})
+    {
+        st = CScript() << OP_0 << OP_1 << option << OP_PARSE;
+        ExpectedScriptTemplateFailure(SCRIPT_ERR_BAD_OPCODE, st, CScript(), satisfy);
+    }
 
     // REQ1.6: The data to be parsed **MUST** be valid for that parse operation
     // give a number, not a script to OP_PARSE

@@ -2444,7 +2444,7 @@ bool ScriptMachine::Step()
 
                     if (stack.size() < 1)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                    ParseOption parseOption = (ParseOption)CScriptNum(stackItemAt(-1), true, 1).getint64();
+                    const int64_t parseOption = CScriptNum(stackItemAt(-1), true, 1).getint64();
                     PopStack();
 
                     if (parseOption == ParseOption::OUTPUT_DATA)
