@@ -24,8 +24,8 @@
 
 /** Default for -blockchain.maxReorgDepth. A value less than zero disables the feature */
 static const int DEFAULT_MAX_REORG_DEPTH = 200;
-/** Headers with less chain work than the active chain had this many blocks (about a day) below its tip are not
-    stored */
+/** Headers with less chain work than the active chain had this many blocks (about a day) below its tip, or
+    test.maxReorgDepth blocks if that is deeper, are not stored */
 static const unsigned int LOW_WORK_HEADER_DEPTH = 720;
 
 /** Is express validation turned on/off */
