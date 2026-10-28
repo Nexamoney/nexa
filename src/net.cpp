@@ -27,6 +27,7 @@
 #include "extversionkeys.h"
 #include "hashwrapper.h"
 #include "iblt.h"
+#include "main.h"
 #include "policy/policy.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
@@ -714,7 +715,9 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes)
             if (strCommand != NetMsgType::PONG && strCommand != NetMsgType::PING && strCommand != NetMsgType::ADDR &&
                 strCommand != NetMsgType::VERSION && strCommand != NetMsgType::VERACK)
             {
-                nActivityBytes.fetch_add(msg.hdr.nMessageSize);
+                // Messages sent before the handshake completes wait unprocessed, so they do not count.
+                if (fSuccessfullyConnected)
+                    nActivityBytes.fetch_add(msg.hdr.nMessageSize);
 
                 // If the message is a priority message then move it into the priority queue.
                 if (IsPriorityMsg(strCommand))
@@ -1721,6 +1724,14 @@ void ThreadSocketHandler()
                 {
                     progress += SocketSendData(pnode);
                 }
+            }
+
+            // The handshake must complete in time even if the peer sends nothing we process.
+            if (!pnode->fSuccessfullyConnected && !pnode->IsDisconnecting() && ignoreNetTimeouts.Value() == false &&
+                GetTime() - pnode->nTimeConnected > VERACK_TIMEOUT)
+            {
+                LOG(NET, "Node %s: handshake not completed within %d seconds\n", pnode->GetLogName(), VERACK_TIMEOUT);
+                pnode->CloseSocketDisconnect("Handshake timeout");
             }
 
             //
