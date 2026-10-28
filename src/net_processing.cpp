@@ -471,6 +471,7 @@ void static ProcessGetData(CNode *pfrom,
             // I am in the middle of communicating with this node, so I want to make sure it gets an explicit close
             // rather than timing out since I am breaking the request/reply protocol by quitting.
             pfrom->CloseSocketDisconnect("all threads shutdown");
+            vInv.clear(); // I can do this because I am immediately returning without using the iterator.
             return;
         }
 
@@ -781,6 +782,7 @@ void static ProcessExtGetData(CNode *pfrom,
             // I am in the middle of communicating with this node, so I want to make sure it gets an explicit close
             // rather than timing out since I am breaking the request/reply protocol by quitting.
             pfrom->CloseSocketDisconnect("all threads shutdown");
+            vInv.clear(); // I can do this because I am immediately returning without using the iterator.
             return;
         }
 
@@ -1774,7 +1776,7 @@ bool ProcessMessage(CNode *pfrom,
             LOG(NET, "received getdata for: %s peer=%s\n", invDeque[0].first.ToString(), pfrom->GetLogName());
 
         // Run process getdata and process as much of the getdata's as we can before taking the lock
-        // and appending the remainder to the vRecvGetData queue.
+        // and appending the remainder to the vRecvGetData2 queue.
         ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
         if (!invDeque.empty())
         {
@@ -3328,7 +3330,7 @@ bool ProcessMessages(CNode *pfrom)
             if (!invDeque.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                pfrom->vRecvGetData.insert(pfrom->vRecvGetData.end(), invDeque.begin(), invDeque.end());
+                pfrom->vRecvGetData.insert(pfrom->vRecvGetData.begin(), invDeque.begin(), invDeque.end());
             }
         }
         if (!pfrom->vRecvGetData2.empty())
@@ -3346,7 +3348,25 @@ bool ProcessMessages(CNode *pfrom)
             if (!invDeque.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.end(), invDeque.begin(), invDeque.end());
+                pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.begin(), invDeque.begin(), invDeque.end());
+            }
+        }
+        if (!pfrom->vRecvExtGetData.empty())
+        {
+            std::deque<std::pair<CExtInv, uint32_t> > invDeque;
+            {
+                // Quickly lock and swap
+                LOCK(pfrom->csRecvGetData);
+                if (!pfrom->vRecvExtGetData.empty())
+                {
+                    pfrom->vRecvExtGetData.swap(invDeque);
+                }
+            }
+            ProcessExtGetData(pfrom, chainparams.GetConsensus(), invDeque);
+            if (!invDeque.empty())
+            {
+                LOCK(pfrom->csRecvGetData);
+                pfrom->vRecvExtGetData.insert(pfrom->vRecvExtGetData.begin(), invDeque.begin(), invDeque.end());
             }
         }
     }
@@ -3590,7 +3610,7 @@ bool ProcessMessages(CNode *pfrom)
     {
         // re-add the priority messages we delayed back to the queue so that we can try them again later
         LOCK(cs_priorityRecvQ);
-        vPriorityRecvQ.insert(vPriorityRecvQ.end(), vPriorityRecvQ_delay.begin(), vPriorityRecvQ_delay.end());
+        vPriorityRecvQ.insert(vPriorityRecvQ.begin(), vPriorityRecvQ_delay.begin(), vPriorityRecvQ_delay.end());
         if (!vPriorityRecvQ.empty())
             fPriorityRecvMsg.store(true);
     }
