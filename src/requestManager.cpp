@@ -156,7 +156,7 @@ size_t CountTxnRequestPeers(CNode *from)
     size_t nPeers = 0;
     LOCK(cs_vNodes);
     for (CNode *node : vNodes)
-        if (!node->IsDisconnecting() && (node == from || node->fSuccessfullyConnected))
+        if (!node->IsDisconnecting() && !node->fClient && (node == from || node->fSuccessfullyConnected))
             ++nPeers;
     return nPeers;
 }
@@ -171,7 +171,9 @@ void CRequestManager::UpdateTxnRequestLimits(size_t nPeers, CNode *from)
     const uint64_t maxReqs = std::max(MAX_IN_FLIGHT_REQS, nApproximateTxnPerSec.load() * 10);
     const unsigned int share = std::min(std::max(txRequestPeerShare.Value(), 1U), 100U);
     nPeers = std::max(size_t(1), nPeers);
-    const uint64_t peerLimit = std::max(maxReqs * share / 100, maxReqs / nPeers);
+    // A peer only claims to be a light client, so it never gets more than the baseline share.
+    const uint64_t clientLimit = maxReqs * share / 100;
+    const uint64_t peerLimit = std::max(clientLimit, maxReqs / nPeers);
 
     LOCK(cs_objDownloader);
     LOCK(cs_addTxn);
@@ -185,7 +187,8 @@ void CRequestManager::UpdateTxnRequestLimits(size_t nPeers, CNode *from)
             state->second.fTxnAnnouncementsSeen = true;
         }
     }
-    if (fNewAnnouncer || nPeers != nTxnRequestPeers || peerLimit < nTxnRequestPeerLimit || maxReqs < nTxnRequestLimit)
+    if (fNewAnnouncer || nPeers != nTxnRequestPeers || peerLimit < nTxnRequestPeerLimit ||
+        clientLimit < nTxnRequestClientLimit || maxReqs < nTxnRequestLimit)
     {
         // Reclaim old allocations when peers join, before their announcements can be dropped by a full map.
         for (OdMap *map : {&mapTxnInfo, &mapTxnToAdd})
@@ -194,7 +197,8 @@ void CRequestManager::UpdateTxnRequestLimits(size_t nPeers, CNode *from)
             {
                 CUnknownObj &item = it->second;
                 if (item.announcer && !item.fProcessing &&
-                    (item.announcer->IsDisconnecting() || item.announcer->nTxnRequests > peerLimit ||
+                    (item.announcer->IsDisconnecting() ||
+                        item.announcer->nTxnRequests > (item.announcer->fClient ? clientLimit : peerLimit) ||
                         nTxnRequestCount > maxReqs))
                 {
                     pendingTxns -= 1;
@@ -208,6 +212,7 @@ void CRequestManager::UpdateTxnRequestLimits(size_t nPeers, CNode *from)
     }
     nTxnRequestLimit = maxReqs;
     nTxnRequestPeerLimit = peerLimit;
+    nTxnRequestClientLimit = clientLimit;
     nTxnRequestPeers = nPeers;
 }
 
@@ -229,7 +234,7 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
                 LOG(REQ, "Tx request buffer full: Dropping request for %s", obj.hash.ToString());
                 return;
             }
-            if (from->nTxnRequests >= nTxnRequestPeerLimit)
+            if (from->nTxnRequests >= (from->fClient ? nTxnRequestClientLimit : nTxnRequestPeerLimit))
             {
                 LOG(REQ, "Tx request share of peer %d full: Dropping request for %s", from->GetId(),
                     obj.hash.ToString());

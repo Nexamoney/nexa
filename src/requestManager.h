@@ -45,7 +45,7 @@ static const uint32_t DEFAULT_BLOCK_DOWNLOAD_WINDOW = 1024;
 // while the measured rate lags a sudden burst.
 static const uint64_t MAX_IN_FLIGHT_REQS = 100000;
 
-// Baseline peer share; fewer connected peers may each use a larger fraction.
+// Baseline peer share; with fewer full nodes connected each may use a larger fraction, light clients never.
 static const unsigned int DEFAULT_TX_REQUEST_PEER_SHARE = 25;
 
 // How many object sources can we add to the new request.  This will prevent
@@ -223,6 +223,7 @@ protected:
     OdMap mapTxnToAdd GUARDED_BY(cs_addTxn);
     uint64_t nTxnRequestLimit GUARDED_BY(cs_addTxn) = MAX_IN_FLIGHT_REQS;
     uint64_t nTxnRequestPeerLimit GUARDED_BY(cs_addTxn) = MAX_IN_FLIGHT_REQS;
+    uint64_t nTxnRequestClientLimit GUARDED_BY(cs_addTxn) = MAX_IN_FLIGHT_REQS * DEFAULT_TX_REQUEST_PEER_SHARE / 100;
     size_t nTxnRequestPeers GUARDED_BY(cs_addTxn) = 1;
 
     // The set of transaction requests to delete
@@ -405,7 +406,7 @@ public:
 
 extern CRequestManager requester; // Singleton class
 
-// Connected peers that share the transaction request limit, counting the announcing peer.
+// Connected full nodes that share the transaction request limit, counting the announcing peer if it is one.
 size_t CountTxnRequestPeers(CNode *from);
 
 #endif
