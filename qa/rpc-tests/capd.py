@@ -534,8 +534,8 @@ class MyTest (BitcoinTestFramework):
         assert_equal(s3["relayPriority"], CAPD_MIN_RELAY_PRIORITY)
         assert s3["minPriority"] < 0.5, "min priority should be relaxing slowly"
 
-        # After 2 hours the message has fallen by 12+ (its linear priority is nearly 0, but never actually gets to 0)
-        assert(m3["priority"] <= -4)
+        # After 130 minutes the priority (log2 based) has fallen by about 13, so the linear priority is nearly 0 but never 0
+        assert m0["priority"] - m3["priority"] > 12.5, "long term priority reduction issue"
 
         logging.info("CAPD test finished")
 
