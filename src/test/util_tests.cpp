@@ -207,6 +207,14 @@ BOOST_AUTO_TEST_CASE(util_HexStr)
     BOOST_CHECK_EQUAL(HexStr(ParseHex_vec, true), "04 67 8a fd b0");
 }
 
+BOOST_AUTO_TEST_CASE(util_GetHex)
+{
+    std::vector<unsigned char> vec(ParseHex_expected, ParseHex_expected + 5);
+    BOOST_CHECK_EQUAL(GetHex(vec), "04678AFDB0");
+    // A script template without args has an empty args hash, which RPCs print with GetHex.
+    BOOST_CHECK_EQUAL(GetHex(std::vector<unsigned char>()), "");
+}
+
 
 BOOST_AUTO_TEST_CASE(util_DateTimeStrFormat)
 {
