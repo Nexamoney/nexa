@@ -1916,4 +1916,64 @@ BOOST_AUTO_TEST_CASE(askfor_peer_share_scales_with_throughput)
     BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), 0);
 }
 
+BOOST_AUTO_TEST_CASE(askfor_light_clients_do_not_shrink_full_peer_share)
+{
+    CNode full(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode client1(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+    CNode client2(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c003, 10002)), "", true);
+    CNode client3(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c004, 10003)), "", true);
+    const std::vector<CNode *> peers = {&full, &client1, &client2, &client3};
+    for (CNode *peer : peers)
+    {
+        peer->fSuccessfullyConnected = true;
+        peer->fClient = (peer != &full);
+    }
+    {
+        LOCK(cs_vNodes);
+        vNodes.insert(vNodes.end(), peers.begin(), peers.end());
+    }
+
+    // Light clients do not relay transactions, so the only full node keeps the whole limit.
+    const size_t nPeers = CountTxnRequestPeers(&full);
+    BOOST_CHECK_EQUAL(nPeers, 1);
+    CRequestManager rman;
+    CRequestManagerTest access(&rman);
+    rman.UpdateTxnRequestLimits(nPeers, &full);
+    for (uint64_t i = 0; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &full, objType::TXN);
+    BOOST_CHECK_EQUAL(full.nTxnRequests.load(), MAX_IN_FLIGHT_REQS);
+
+    access.CleanupTxnRequests();
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), 0);
+    LOCK(cs_vNodes);
+    for (CNode *peer : peers)
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), peer), vNodes.end());
+}
+
+BOOST_AUTO_TEST_CASE(askfor_light_client_gets_baseline_share)
+{
+    CNode full(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode client(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+    client.fClient = true;
+    CRequestManager rman;
+    CRequestManagerTest access(&rman);
+    const uint64_t baseline = MAX_IN_FLIGHT_REQS * DEFAULT_TX_REQUEST_PEER_SHARE / 100;
+
+    // A peer claims to be a client in its VERSION, so a client never gets more than the baseline share,
+    // even next to a single full node, and the full node can use the rest.
+    rman.UpdateTxnRequestLimits(1, &client);
+    for (uint64_t i = 0; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &client, objType::TXN);
+    BOOST_CHECK_EQUAL(client.nTxnRequests.load(), baseline);
+
+    rman.UpdateTxnRequestLimits(1, &full);
+    for (uint64_t i = 0; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &full, objType::TXN);
+    BOOST_CHECK_EQUAL(full.nTxnRequests.load(), MAX_IN_FLIGHT_REQS - baseline);
+    BOOST_CHECK_EQUAL(client.nTxnRequests.load(), baseline);
+
+    access.CleanupTxnRequests();
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

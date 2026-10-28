@@ -18,6 +18,7 @@ from test_framework.mininode import *
 from test_framework.nodemessages import *
 
 MAX_IN_FLIGHT_REQS = 100000  # requestManager.h
+CLIENT_SHARE = MAX_IN_FLIGHT_REQS * 25 // 100  # DEFAULT_TX_REQUEST_PEER_SHARE
 NUM_FAKE = MAX_IN_FLIGHT_REQS + 2000
 
 
@@ -34,18 +35,18 @@ class TxRequestCounter(SingleNodeConnCB):
 
 class TxnRequestCapTest(BitcoinTestFramework):
     def setup_chain(self):
-        initialize_chain_clean(self.options.tmpdir, 2, self.confDict)
+        initialize_chain_clean(self.options.tmpdir, 3, self.confDict)
 
     def setup_network(self, split=False):
         # Keep the initial burst in flight while a second peer connects and claims its share.
-        self.nodes = start_nodes(2, self.options.tmpdir, [["-net.txRetryInterval=300000000"] for _ in range(2)])
+        self.nodes = start_nodes(3, self.options.tmpdir, [["-net.txRetryInterval=300000000"] for _ in range(3)])
         self.is_network_split = False
-        self.attackers = [TxRequestCounter() for _ in self.nodes]
+        self.attackers = [TxRequestCounter() for _ in self.nodes[:2]]
         for i, attacker in enumerate(self.attackers):
             attacker.add_connection(NodeConn('127.0.0.1', p2p_port(i), self.nodes[i], attacker))
         NetworkThread().start()
 
-    def fill_request_map(self, attacker, node):
+    def fill_request_map(self, attacker, node, expected=MAX_IN_FLIGHT_REQS):
         attacker.wait_for_verack()
 
         for i in range(0, NUM_FAKE, 25000):
@@ -62,7 +63,7 @@ class TxnRequestCapTest(BitcoinTestFramework):
                 count = len(attacker.requested)
         logging.info("attacker's transactions requested: %d, requester.mapTxnInfo: %d" %
                      (count, node.getstructuresizes()["requester.mapTxnInfo"]))
-        assert_equal(count, MAX_IN_FLIGHT_REQS)
+        assert_equal(count, expected)
 
     def run_test(self):
         for i, attacker in enumerate(self.attackers):
@@ -82,6 +83,15 @@ class TxnRequestCapTest(BitcoinTestFramework):
             expected = MAX_IN_FLIGHT_REQS // 2 + 1 if i == 0 else 1
             waitFor(30, lambda: node.getstructuresizes()["requester.mapTxnInfo"] == expected,
                     "the old peer allocation was not reclaimed")
+
+        # A light client gets only the baseline share, and a full node that joins can use the rest.
+        node = self.nodes[2]
+        client = TxRequestCounter()
+        client.add_connection(NodeConn('127.0.0.1', p2p_port(2), node, client, services=0))
+        self.fill_request_map(client, node, CLIENT_SHARE)
+        full = TxRequestCounter()
+        full.add_connection(NodeConn('127.0.0.1', p2p_port(2), node, full))
+        self.fill_request_map(full, node, MAX_IN_FLIGHT_REQS - CLIENT_SHARE)
 
 
 if __name__ == '__main__':
