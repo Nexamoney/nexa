@@ -405,4 +405,7 @@ public:
 
 extern CRequestManager requester; // Singleton class
 
+// Connected peers that share the transaction request limit, counting the announcing peer.
+size_t CountTxnRequestPeers(CNode *from);
+
 #endif

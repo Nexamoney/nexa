@@ -1045,14 +1045,7 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
             {
                 if (!fTxnLimitsUpdated)
                 {
-                    size_t nPeers = 0;
-                    {
-                        LOCK(cs_vNodes);
-                        for (CNode *node : vNodes)
-                            if (!node->IsDisconnecting() && (node == pfrom || node->fSuccessfullyConnected))
-                                ++nPeers;
-                    }
-                    requester.UpdateTxnRequestLimits(nPeers, pfrom);
+                    requester.UpdateTxnRequestLimits(CountTxnRequestPeers(pfrom), pfrom);
                     fTxnLimitsUpdated = true;
                 }
                 requester.AskFor(CInv(inv.type, inv.hash), pfrom, objType::TXN);

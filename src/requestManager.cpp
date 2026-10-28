@@ -151,6 +151,16 @@ void CRequestManager::cleanup(const CInv &inv)
 }
 
 
+size_t CountTxnRequestPeers(CNode *from)
+{
+    size_t nPeers = 0;
+    LOCK(cs_vNodes);
+    for (CNode *node : vNodes)
+        if (!node->IsDisconnecting() && (node == from || node->fSuccessfullyConnected))
+            ++nPeers;
+    return nPeers;
+}
+
 void CRequestManager::UpdateTxnRequestLimits(size_t nPeers, CNode *from)
 {
     int64_t nNow = GetTimeMillis();
