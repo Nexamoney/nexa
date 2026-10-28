@@ -33,21 +33,20 @@ class TxRequestCounter(SingleNodeConnCB):
 
 
 class TxnRequestCapTest(BitcoinTestFramework):
+    def setup_chain(self):
+        initialize_chain_clean(self.options.tmpdir, 2, self.confDict)
+
     def setup_network(self, split=False):
-        # Keep unanswered requests in flight for 60 s instead of 5 s, so one burst of announcements fills
-        # the map without racing the retry interval.
-        self.nodes = start_nodes(1, self.options.tmpdir, [["-net.txRetryInterval=60000000"]])
+        # Keep the initial burst in flight while a second peer connects and claims its share.
+        self.nodes = start_nodes(2, self.options.tmpdir, [["-net.txRetryInterval=300000000"] for _ in range(2)])
         self.is_network_split = False
-        self.attacker = TxRequestCounter()
-        self.attacker.add_connection(NodeConn('127.0.0.1', p2p_port(0), self.nodes[0], self.attacker))
-        self.honest = TxRequestCounter()
-        self.honest.add_connection(NodeConn('127.0.0.1', p2p_port(0), self.nodes[0], self.honest))
+        self.attackers = [TxRequestCounter() for _ in self.nodes]
+        for i, attacker in enumerate(self.attackers):
+            attacker.add_connection(NodeConn('127.0.0.1', p2p_port(i), self.nodes[i], attacker))
         NetworkThread().start()
 
-    def run_test(self):
-        attacker, honest = self.attacker, self.honest
+    def fill_request_map(self, attacker, node):
         attacker.wait_for_verack()
-        honest.wait_for_verack()
 
         for i in range(0, NUM_FAKE, 25000):
             fake = [CInv(CInv.MSG_TX, random.getrandbits(256)) for _ in range(min(25000, NUM_FAKE - i))]
@@ -62,11 +61,27 @@ class TxnRequestCapTest(BitcoinTestFramework):
                     break
                 count = len(attacker.requested)
         logging.info("attacker's transactions requested: %d, requester.mapTxnInfo: %d" %
-                     (count, self.nodes[0].getstructuresizes()["requester.mapTxnInfo"]))
+                     (count, node.getstructuresizes()["requester.mapTxnInfo"]))
+        assert_equal(count, MAX_IN_FLIGHT_REQS)
 
-        txhash = random.getrandbits(256)
-        honest.send_message(msg_inv([CInv(CInv.MSG_TX, txhash)]))
-        waitFor(15, lambda: txhash in honest.requested, "the honest peer's transaction was never requested")
+    def run_test(self):
+        for i, attacker in enumerate(self.attackers):
+            node = self.nodes[i]
+            self.fill_request_map(attacker, node)
+            if i == 1:
+                # Replacing the only peer must reclaim its old requests even though the peer count stays one.
+                attacker.connection.disconnect_node()
+                waitFor(30, lambda: len(node.getpeerinfo()) == 0)
+
+            honest = TxRequestCounter()
+            honest.add_connection(NodeConn('127.0.0.1', p2p_port(i), node, honest))
+            honest.wait_for_verack()
+            txhash = random.getrandbits(256)
+            honest.send_message(msg_inv([CInv(CInv.MSG_TX, txhash)]))
+            waitFor(15, lambda: txhash in honest.requested, "the honest peer's transaction was never requested")
+            expected = MAX_IN_FLIGHT_REQS // 2 + 1 if i == 0 else 1
+            waitFor(30, lambda: node.getstructuresizes()["requester.mapTxnInfo"] == expected,
+                    "the old peer allocation was not reclaimed")
 
 
 if __name__ == '__main__':

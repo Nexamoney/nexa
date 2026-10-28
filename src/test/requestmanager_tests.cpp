@@ -52,6 +52,24 @@ public:
     std::set<uint256> GetSetDeleter() { return _rman->setDeleter; }
     std::set<uint256> GetSetBlockDeleter() { return _rman->setBlockDeleter; }
     std::map<NodeId, CRequestManagerNodeState> GetNodeState() { return _rman->mapRequestManagerNodeState; }
+    uint64_t GetTxnRequestCount() { return _rman->nTxnRequestCount.load(); }
+
+    void SetTxnRate(uint64_t rate)
+    {
+        _rman->nApproximateTxnPerSec.store(rate);
+        _rman->nLastCheckForTPS.store(GetTimeMillis());
+    }
+
+    void CleanupTxnRequests()
+    {
+        LOCK(_rman->cs_objDownloader);
+        std::map<uint256, CUnknownObj> pending;
+        _rman->GetTxnRequests(pending);
+        _rman->CheckIfNewSource(pending, _rman->mapTxnInfo);
+        _rman->AddNewTxnRequests(pending);
+        _rman->Cleanup();
+        _rman->RunTxnDeleter(pending);
+    }
 
     void ClearMapBlkToAdd()
     {
@@ -132,6 +150,20 @@ static std::string NetMessage(CLockSwapQ<CSerializeData> &_vSendMsg)
 }
 
 static void ClearThinBlocksInFlight(CNode &node, CInv &inv) { thinrelay.ClearBlockInFlight(node.GetId(), inv.hash); }
+
+// Release queued references before a stack node is destroyed.
+static void ClearPrioritySendReferences(CNode &node)
+{
+    LOCK(cs_prioritySendQ);
+    for (auto it = vPrioritySendQ.begin(); it != vPrioritySendQ.end();)
+    {
+        if (it->get() == &node)
+            it = vPrioritySendQ.erase(it);
+        else
+            ++it;
+    }
+}
+
 BOOST_FIXTURE_TEST_SUITE(requestmanager_tests, TestingSetup)
 
 BOOST_AUTO_TEST_CASE(blockrequest_tests)
@@ -1197,6 +1229,8 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     vNodes.erase(remove(vNodes.begin(), vNodes.end(), &dummyNodeNone), vNodes.end());
     vNodes.erase(remove(vNodes.begin(), vNodes.end(), &dummyNodeCmpct), vNodes.end());
     vNodes.erase(remove(vNodes.begin(), vNodes.end(), &dummyNodeXthin), vNodes.end());
+    for (CNode *node : {&dummyNodeXthin, &dummyNodeGraphene, &dummyNodeCmpct, &dummyNodeNone})
+        ClearPrioritySendReferences(*node);
 }
 
 BOOST_AUTO_TEST_CASE(askfor_tests)
@@ -1562,9 +1596,10 @@ BOOST_AUTO_TEST_CASE(block_failing_checkblock_is_requested_again)
     BOOST_CHECK(!rman_access.GetMapBlkInfo()[inv.hash].fProcessing);
 
     rman_access.Cleanup(inv);
-    // Release the request-manager CNodeRef before this stack node is destroyed.
+    // Don't leave references to this stack node in the global requester.
     requester.RunBlockDeleter(mapTmp);
     thinrelay.ClearAllBlocksInFlight(node.GetId());
+    ClearPrioritySendReferences(node);
 }
 
 // A summary listing numProofs sub-block proofs. With fValidPow the proofs and the summary carry the
@@ -1772,6 +1807,7 @@ BOOST_AUTO_TEST_CASE(askfor_one_peer_cannot_fill_txn_requests)
 
     CRequestManager rman;
     CRequestManagerTest rman_access(&rman);
+    rman.UpdateTxnRequestLimits(2);
 
     // One peer announces more unknown transactions than the global cap, and they become in-flight requests.
     for (uint64_t i = 0; i <= MAX_IN_FLIGHT_REQS; i++)
@@ -1786,11 +1822,98 @@ BOOST_AUTO_TEST_CASE(askfor_one_peer_cannot_fill_txn_requests)
     BOOST_CHECK_EQUAL(rman_access.GetMapTxnToAdd().count(inv.hash), 1);
 
     // The attacker filled only its share, and gets it back once its requests are erased.
-    BOOST_CHECK_EQUAL(attacker.nTxnRequests.load(), MAX_IN_FLIGHT_REQS * DEFAULT_TX_REQUEST_PEER_SHARE / 100);
-    rman.Cleanup();
-    std::map<uint256, CUnknownObj> mapEmpty;
-    rman.RunTxnDeleter(mapEmpty);
+    BOOST_CHECK_EQUAL(attacker.nTxnRequests.load(), MAX_IN_FLIGHT_REQS / 2);
+    rman_access.CleanupTxnRequests();
     BOOST_CHECK_EQUAL(attacker.nTxnRequests.load(), 0);
+    BOOST_CHECK_EQUAL(honest.nTxnRequests.load(), 0);
+    BOOST_CHECK_EQUAL(rman_access.GetTxnRequestCount(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(askfor_peer_share_adapts_when_peers_join)
+{
+    CNode first(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode second(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+    CNode third(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c003, 10002)), "", true);
+    CNode fourth(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c004, 10003)), "", true);
+    CRequestManager rman;
+    CRequestManagerTest access(&rman);
+    rman.UpdateTxnRequestLimits(1);
+
+    // Keep requests in both maps so a joining peer must reclaim both queued and in-flight capacity.
+    for (uint64_t i = 0; i < MAX_IN_FLIGHT_REQS * 3 / 4; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &first, objType::TXN);
+    std::map<uint256, CUnknownObj> pending;
+    rman.GetTxnRequests(pending);
+    rman.AddNewTxnRequests(pending);
+    for (uint64_t i = MAX_IN_FLIGHT_REQS * 3 / 4; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &first, objType::TXN);
+    BOOST_REQUIRE_EQUAL(first.nTxnRequests.load(), MAX_IN_FLIGHT_REQS);
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), MAX_IN_FLIGHT_REQS);
+
+    std::vector<CNode *> peers = {&first, &second, &third, &fourth};
+    for (size_t count = 2; count <= peers.size(); count++)
+    {
+        rman.UpdateTxnRequestLimits(count);
+        const uint64_t limit = MAX_IN_FLIGHT_REQS / count;
+        for (size_t i = 0; i < count - 1; i++)
+            BOOST_CHECK_EQUAL(peers[i]->nTxnRequests.load(), limit);
+
+        // The new peer can immediately use its share even though the first peer filled the entire map.
+        for (uint64_t i = 0; i <= limit; i++)
+            rman.AskFor(CInv(MSG_TX, GetRandHash()), peers[count - 1], objType::TXN);
+        BOOST_CHECK_EQUAL(peers[count - 1]->nTxnRequests.load(), limit);
+        BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), count * limit);
+    }
+    rman.UpdateTxnRequestLimits(5);
+    for (CNode *peer : peers)
+        BOOST_CHECK_EQUAL(peer->nTxnRequests.load(), MAX_IN_FLIGHT_REQS / 4);
+
+    access.CleanupTxnRequests();
+    for (CNode *peer : peers)
+        BOOST_CHECK_EQUAL(peer->nTxnRequests.load(), 0);
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(askfor_new_peer_reclaims_disconnected_requests)
+{
+    CNode first(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode replacement(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+    CRequestManager rman;
+    CRequestManagerTest access(&rman);
+    rman.InitializeNodeState(first.GetId());
+    rman.InitializeNodeState(replacement.GetId());
+    rman.UpdateTxnRequestLimits(1, &first);
+    for (uint64_t i = 0; i < MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &first, objType::TXN);
+    BOOST_REQUIRE_EQUAL(first.nTxnRequests.load(), MAX_IN_FLIGHT_REQS);
+
+    first.CloseSocketDisconnect("test replaces the only peer");
+    rman.UpdateTxnRequestLimits(1, &replacement);
+    BOOST_CHECK_EQUAL(first.nTxnRequests.load(), 0);
+    const CInv inv(MSG_TX, GetRandHash());
+    rman.AskFor(inv, &replacement, objType::TXN);
+    BOOST_CHECK_EQUAL(access.GetMapTxnToAdd().count(inv.hash), 1);
+    access.CleanupTxnRequests();
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(askfor_peer_share_scales_with_throughput)
+{
+    CNode first(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode second(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+    CRequestManager rman;
+    CRequestManagerTest access(&rman);
+    access.SetTxnRate(20000);
+    rman.UpdateTxnRequestLimits(2);
+
+    for (uint64_t i = 0; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &first, objType::TXN);
+    BOOST_CHECK_EQUAL(first.nTxnRequests.load(), MAX_IN_FLIGHT_REQS);
+    const CInv inv(MSG_TX, GetRandHash());
+    rman.AskFor(inv, &second, objType::TXN);
+    BOOST_CHECK_EQUAL(access.GetMapTxnToAdd().count(inv.hash), 1);
+    access.CleanupTxnRequests();
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

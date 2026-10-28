@@ -73,6 +73,7 @@ CRequestManagerNodeState::CRequestManagerNodeState()
 {
     nDownloadingFromPeerSince = 0;
     nBlocksInFlight = 0;
+    fTxnAnnouncementsSeen = false;
 }
 
 CRequestManager::CRequestManager()
@@ -104,11 +105,12 @@ void CRequestManager::Cleanup()
 }
 
 // Give the announcing peer back its share of the transaction request limit.
-static void ReleaseTxnAnnouncer(CUnknownObj &item)
+void CRequestManager::ReleaseTxnAnnouncer(CUnknownObj &item)
 {
     if (item.announcer)
     {
         item.announcer->nTxnRequests--;
+        nTxnRequestCount--;
         item.announcer = nullptr;
     }
 }
@@ -149,6 +151,57 @@ void CRequestManager::cleanup(const CInv &inv)
 }
 
 
+void CRequestManager::UpdateTxnRequestLimits(size_t nPeers, CNode *from)
+{
+    int64_t nNow = GetTimeMillis();
+    int64_t nLastCheck = nLastCheckForTPS.load();
+    if (nNow - nLastCheck > 250 && nLastCheckForTPS.compare_exchange_strong(nLastCheck, nNow))
+        nApproximateTxnPerSec.store(mempool.GetInstantaneousTxPerSec());
+
+    const uint64_t maxReqs = std::max(MAX_IN_FLIGHT_REQS, nApproximateTxnPerSec.load() * 10);
+    const unsigned int share = std::min(std::max(txRequestPeerShare.Value(), 1U), 100U);
+    nPeers = std::max(size_t(1), nPeers);
+    const uint64_t peerLimit = std::max(maxReqs * share / 100, maxReqs / nPeers);
+
+    LOCK(cs_objDownloader);
+    LOCK(cs_addTxn);
+    bool fNewAnnouncer = false;
+    if (from)
+    {
+        auto state = mapRequestManagerNodeState.find(from->GetId());
+        if (state != mapRequestManagerNodeState.end())
+        {
+            fNewAnnouncer = !state->second.fTxnAnnouncementsSeen;
+            state->second.fTxnAnnouncementsSeen = true;
+        }
+    }
+    if (fNewAnnouncer || nPeers != nTxnRequestPeers || peerLimit < nTxnRequestPeerLimit ||
+        maxReqs < nTxnRequestLimit)
+    {
+        // Reclaim old allocations when peers join, before their announcements can be dropped by a full map.
+        for (OdMap *map : {&mapTxnInfo, &mapTxnToAdd})
+        {
+            for (auto it = map->begin(); it != map->end();)
+            {
+                CUnknownObj &item = it->second;
+                if (item.announcer && !item.fProcessing &&
+                    (item.announcer->IsDisconnecting() || item.announcer->nTxnRequests > peerLimit ||
+                        nTxnRequestCount > maxReqs))
+                {
+                    pendingTxns -= 1;
+                    ReleaseTxnAnnouncer(item);
+                    it = map->erase(it);
+                }
+                else
+                    ++it;
+            }
+        }
+    }
+    nTxnRequestLimit = maxReqs;
+    nTxnRequestPeerLimit = peerLimit;
+    nTxnRequestPeers = nPeers;
+}
+
 // Get this object from somewhere, asynchronously.
 void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
 {
@@ -157,31 +210,17 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
     CNodeRef noderef(from);
     if (obj.type == MSG_TX && objType == objType::TXN)
     {
-        // Limit the  number of times we update this value so we don't have to take the lock
-        // in the mempool so often. Doing this just a few times a second is ample accuracy.
-        int64_t nNow = GetTimeMillis();
-        int64_t nLastCheck = nLastCheckForTPS.load();
-        if (nNow - nLastCheck > 250)
-        {
-            if (nLastCheckForTPS.compare_exchange_strong(nLastCheck, nNow))
-            {
-                nApproximateTxnPerSec.store(mempool.GetInstantaneousTxPerSec());
-            }
-        }
-
         LOCK(cs_addTxn);
         OdMap::iterator item = mapTxnToAdd.find(obj.hash);
         if (item == mapTxnToAdd.end())
         {
             // Don't allow the in flight requests to grow unbounded, nor one peer to fill them.
-            uint64_t maxReqs = std::max(MAX_IN_FLIGHT_REQS, (nApproximateTxnPerSec * 10));
-            if (mapTxnInfo.size() + mapTxnToAdd.size() > maxReqs)
+            if (nTxnRequestCount >= nTxnRequestLimit)
             {
                 LOG(REQ, "Tx request buffer full: Dropping request for %s", obj.hash.ToString());
                 return;
             }
-            unsigned int share = std::min(std::max(txRequestPeerShare.Value(), 1U), 100U);
-            if (from->nTxnRequests >= maxReqs * share / 100)
+            if (from->nTxnRequests >= nTxnRequestPeerLimit)
             {
                 LOG(REQ, "Tx request share of peer %d full: Dropping request for %s", from->GetId(),
                     obj.hash.ToString());
@@ -190,6 +229,7 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
             item = mapTxnToAdd.emplace(obj.hash, CUnknownObj()).first;
             item->second.announcer = noderef;
             from->nTxnRequests++;
+            nTxnRequestCount++;
             pendingTxns += 1;
         }
         CUnknownObj &data = item->second;

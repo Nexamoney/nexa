@@ -531,7 +531,7 @@ CTweak<unsigned int> txRetryInterval("net.txRetryInterval",
         DEFAULT_MIN_TX_REQUEST_RETRY_INTERVAL),
     DEFAULT_MIN_TX_REQUEST_RETRY_INTERVAL);
 CTweak<unsigned int> txRequestPeerShare("net.txRequestPeerShare",
-    strprintf("Percent of the transaction request limit that one peer's announcements may fill (1-100, default: %d)",
+    strprintf("Baseline transaction request share per peer (1-100, default: %d); raised to 100/peer count if larger",
         DEFAULT_TX_REQUEST_PEER_SHARE),
     DEFAULT_TX_REQUEST_PEER_SHARE);
 CTweak<unsigned int> blkRetryInterval("net.blockRetryInterval",

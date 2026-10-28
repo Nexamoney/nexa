@@ -974,6 +974,7 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
         return error("message inv size() = %u", vInvSize);
     }
 
+    bool fTxnLimitsUpdated = false;
     for (unsigned int nInv = 0; nInv < vInvSize; nInv++)
     {
         if (shutdown_threads.load() == true)
@@ -1042,6 +1043,18 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
             // full node connections is ALWAYS marked as in IBD).
             else if (!fMayAlreadyHaveTx && (!IsInitialBlockDownload() || Params().NetworkIDString() == "regtest"))
             {
+                if (!fTxnLimitsUpdated)
+                {
+                    size_t nPeers = 0;
+                    {
+                        LOCK(cs_vNodes);
+                        for (CNode *node : vNodes)
+                            if (!node->IsDisconnecting() && (node == pfrom || node->fSuccessfullyConnected))
+                                ++nPeers;
+                    }
+                    requester.UpdateTxnRequestLimits(nPeers, pfrom);
+                    fTxnLimitsUpdated = true;
+                }
                 requester.AskFor(CInv(inv.type, inv.hash), pfrom, objType::TXN);
             }
         }
