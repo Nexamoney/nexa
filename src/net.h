@@ -402,7 +402,7 @@ public:
     /** Connection de-prioritization - Total useful bytes sent and received */
     std::atomic<uint64_t> nActivityBytes{0};
     // Transaction requests in the request manager created by this peer's announcements
-    std::atomic<uint64_t> nTxnRequests{0};
+    std::atomic<uint32_t> nTxnRequests{0};
     /** The last time bytes were sent to the remote peer */
     std::atomic<int64_t> nLastSend{0};
     /** The last time bytes were received from the remote peer */
