@@ -2546,7 +2546,8 @@ static bool threadProcessMessages(CNode *pnode)
         {
             // If already locked some other thread is working on it, so no work for this thread
             TRY_LOCK(pnode->csRecvGetData, lockRecv);
-            if (lockRecv && (!pnode->vRecvGetData.empty()))
+            if (lockRecv &&
+                (!pnode->vRecvGetData.empty() || !pnode->vRecvGetData2.empty() || !pnode->vRecvExtGetData.empty()))
                 fSleep = false;
         }
         if (fSleep)
