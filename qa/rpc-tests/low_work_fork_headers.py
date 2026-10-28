@@ -8,7 +8,8 @@ import test_framework.loginit
 # blocks below its tip must not be stored (NX-19). On mainnet ASERT lets a fork
 # from an old block run at minimum difficulty after its first header, so every
 # stored header would be nearly free for a peer and the block index never
-# shrinks. Forks within that depth are still stored.
+# shrinks. Forks within that depth, or within test.maxReorgDepth if it is
+# deeper, are still stored.
 
 from test_framework.blocktools import create_block, create_coinbase, getAncHash, ancestorHeight
 from test_framework.mininode import NetworkThread, NodeConn, SingleNodeConnCB
@@ -87,6 +88,12 @@ class LowWorkForkHeadersTest(BitcoinTestFramework):
         peer.sync_with_ping()
         assert_equal(self.count_stored(shallow), len(shallow))
         assert_equal(len(node.getchaintips()), tips_before + 1)
+
+        # A reorg limit deeper than LOW_WORK_HEADER_DEPTH widens the window, so the deep fork is now stored
+        node.set("test.maxReorgDepth=%d" % CHAIN_LENGTH)
+        peer.send_message(msg_headers([CBlockHeader(b) for b in deep]))
+        peer.sync_with_ping()
+        assert_equal(self.count_stored(deep), len(deep))
 
 
 if __name__ == '__main__':
