@@ -4,11 +4,13 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
 Bound INV-triggered GETHEADERS across both large and separate INV messages.
+Announcements beyond a peer's outstanding requests are dropped, not deferred.
 """
 import test_framework.loginit
 
 import logging
 import random
+import time
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
@@ -18,6 +20,7 @@ from test_framework.blocktools import create_block, create_coinbase, getAncHash
 
 NUM_BLOCKS = 5000
 MAX_INV_HEADER_REQUESTS = 16  # net.h
+INV_HEADER_REQUEST_TIMEOUT = 30  # net.h, in seconds
 IGNORE_CHECKSUM = 0x0000000200000002
 
 
@@ -97,7 +100,9 @@ class InvBlockGetHeadersTest(BitcoinTestFramework):
             targets = [random.getrandbits(256) for _ in range(2 * MAX_INV_HEADER_REQUESTS)]
             if peer is cookie_peer:
                 targets[0] = block.gethash()
-            peer.announce(targets, separate=True)
+            peer.announce(targets[:1])
+            self.wait_count(peer, 1)
+            peer.announce(targets[1:], separate=True)
             self.wait_count(peer, MAX_INV_HEADER_REQUESTS)
             peer.announce([targets[0]] * 20, separate=True)
             peer.sync_with_ping()
@@ -111,15 +116,25 @@ class InvBlockGetHeadersTest(BitcoinTestFramework):
             peer.sync_with_ping()
             assert_equal(peer.numGetHeaders, MAX_INV_HEADER_REQUESTS)
 
-        # Delivering the header releases its slot.
+        # Delivering the header frees its slot for the next announcement.
         cookie_peer.send_message(msg_headers([CBlockHeader(block)]))
+        cookie_peer.sync_with_ping()
+        later = random.getrandbits(256)
+        cookie_peer.announce([later])
         self.wait_count(cookie_peer, MAX_INV_HEADER_REQUESTS + 1)
+        assert_equal(cookie_peer.requests[-1][0], later)
 
-        # Without further announcements or replies, expiry must send the deferred targets.
+        # Dropped announcements are never sent, and new ones get slots once the requests time out.
+        time.sleep(INV_HEADER_REQUEST_TIMEOUT + 1)
         for peer in (cookie_peer, checksum_peer):
-            self.wait_count(peer, 2 * MAX_INV_HEADER_REQUESTS, timeout=45)
-            assert_equal({h for h, _ in peer.requests}, peer.announced)
-        logging.info("Separate INV windows, release on the header, duplicate suppression and timeout recovery passed")
+            sent = peer.numGetHeaders
+            peer.sync_with_ping()
+            assert_equal(peer.numGetHeaders, sent)
+            fresh = [random.getrandbits(256) for _ in range(2 * MAX_INV_HEADER_REQUESTS)]
+            peer.announce(fresh, separate=True)
+            self.wait_count(peer, sent + MAX_INV_HEADER_REQUESTS)
+            assert {h for h, _ in peer.requests[sent:]} <= set(fresh)
+        logging.info("Separate INV windows, release on the header, dropped announcements and timeout recovery passed")
 
 
 if __name__ == '__main__':
