@@ -966,6 +966,11 @@ static void SendInvHeaderRequests(CNode *pfrom, const uint256 &hash = uint256())
     auto &pending = pfrom->vPendingInvHeaders;
     while (!requests.empty() && nNow - requests.front().nTime >= INV_HEADER_REQUEST_TIMEOUT)
         requests.pop_front();
+    // Only the header frees a slot: a peer could send any number of empty replies.
+    requests.erase(
+        std::remove_if(requests.begin(), requests.end(),
+            [](const CNode::InvHeaderRequest &request) { return LookupBlockIndex(request.hash) != nullptr; }),
+        requests.end());
 
     if (!hash.IsNull() &&
         std::none_of(requests.begin(), requests.end(),
@@ -985,32 +990,9 @@ static void SendInvHeaderRequests(CNode *pfrom, const uint256 &hash = uint256())
         if (AlreadyHaveBlock(CInv(MSG_BLOCK, next)))
             continue;
 
-        // Cookie zero belongs to the existing header-sync requests.
-        pfrom->nInvHeaderCookie += 0x10000;
-        if (pfrom->nInvHeaderCookie == 0)
-            pfrom->nInvHeaderCookie = 0x10000;
-        pfrom->PushMessageWithCookie(
-            NetMsgType::GETHEADERS, pfrom->nInvHeaderCookie, chainActive.GetLocator(pindexBestHeader), next);
-        requests.push_back({next, pfrom->nInvHeaderCookie, nNow});
+        pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), next);
+        requests.push_back({next, nNow});
     }
-}
-
-static void ReceivedInvHeaders(CNode *pfrom, uint32_t cookie)
-{
-    {
-        LOCK(pfrom->cs_invHeaderRequests);
-        auto &requests = pfrom->vInvHeaderRequests;
-        auto it = requests.begin();
-        if (pfrom->skipChecksum)
-        {
-            it = std::find_if(requests.begin(), requests.end(),
-                [&](const CNode::InvHeaderRequest &request) { return cookie == (request.cookie | 0xFFFF); });
-        }
-        // Peers without cookies cannot distinguish replies from header announcements.
-        if (it != requests.end())
-            requests.erase(it);
-    }
-    SendInvHeaderRequests(pfrom);
 }
 
 template <class T>
@@ -2063,7 +2045,6 @@ bool ProcessMessage(CNode *pfrom,
         // Check size constraints
         if (nCount == 0)
         {
-            ReceivedInvHeaders(pfrom, msgCookie);
             LOG(NET, "No more headers from peer %s\n", pfrom->GetLogName());
             return true;
         }
@@ -2078,7 +2059,6 @@ bool ProcessMessage(CNode *pfrom,
         {
             vRecv >> headers[n];
         }
-        ReceivedInvHeaders(pfrom, msgCookie);
 
         std::set<uint256> summaryHashesInMessage;
         for (const CBlockHeader &header : headers)
