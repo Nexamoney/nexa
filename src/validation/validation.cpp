@@ -521,7 +521,7 @@ bool AcceptBlockHeader(const CBlockHeader &block,
         // ASERT eases a fork from an old block down to the minimum difficulty, so a header far behind our chain's
         // work is nearly free to make. Do not store one (NX-19).
         const int nWorkHeight = chainActive.Height() - (int)LOW_WORK_HEADER_DEPTH;
-        if (nWorkHeight > 0 && UintToArith256(block.chainWork) < chainActive[nWorkHeight]->chainWork())
+        if (nWorkHeight > 0 && (UintToArith256(block.chainWork) < chainActive[nWorkHeight]->chainWork()))
             return state.Invalid(
                 error("%s: block %s has too little chain work", __func__, hash.ToString()), 0, "low-work-header");
         pindex = AddToBlockIndex(chainparams, block);
