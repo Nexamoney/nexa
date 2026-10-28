@@ -82,7 +82,6 @@ static const int FEELER_INTERVAL = 120;
 static const unsigned int MAX_INV_SZ = 50000;
 // Bound INV header requests per peer; a request ends when its header is known or after the timeout.
 static const size_t MAX_INV_HEADER_REQUESTS = 16;
-static const size_t MAX_PENDING_INV_HEADER_REQUESTS = 64;
 static const int64_t INV_HEADER_REQUEST_TIMEOUT = 30 * 1000000;
 /** The maximum number of new addresses to accumulate before announcing. */
 static const unsigned int MAX_ADDR_TO_SEND = 1000;
@@ -392,7 +391,6 @@ public:
     };
     CCriticalSection cs_invHeaderRequests;
     std::deque<InvHeaderRequest> vInvHeaderRequests GUARDED_BY(cs_invHeaderRequests);
-    std::deque<uint256> vPendingInvHeaders GUARDED_BY(cs_invHeaderRequests);
 
     CCriticalSection csRecvGetData;
     std::deque<std::pair<CInv, uint32_t> > vRecvGetData GUARDED_BY(csRecvGetData);

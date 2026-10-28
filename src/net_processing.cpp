@@ -958,12 +958,11 @@ void static ProcessExtGetData(CNode *pfrom,
     }
 }
 
-static void SendInvHeaderRequests(CNode *pfrom, const uint256 &hash = uint256())
+static void SendInvHeaderRequest(CNode *pfrom, const uint256 &hash)
 {
     LOCK(pfrom->cs_invHeaderRequests);
     const int64_t nNow = GetStopwatchMicros();
     auto &requests = pfrom->vInvHeaderRequests;
-    auto &pending = pfrom->vPendingInvHeaders;
     while (!requests.empty() && nNow - requests.front().nTime >= INV_HEADER_REQUEST_TIMEOUT)
         requests.pop_front();
     // Only the header frees a slot: a peer could send any number of empty replies.
@@ -972,27 +971,14 @@ static void SendInvHeaderRequests(CNode *pfrom, const uint256 &hash = uint256())
             [](const CNode::InvHeaderRequest &request) { return LookupBlockIndex(request.hash) != nullptr; }),
         requests.end());
 
-    if (!hash.IsNull() &&
-        std::none_of(requests.begin(), requests.end(),
-            [&](const CNode::InvHeaderRequest &request) { return request.hash == hash; }) &&
-        std::find(pending.begin(), pending.end(), hash) == pending.end())
+    // Drop the announcement when full: the next request covers it, from our locator up to the newer block.
+    if (requests.size() >= MAX_INV_HEADER_REQUESTS || pfrom->nSendSize >= nMaxSendBufferSize)
     {
-        // Retain the latest targets when an unresponsive peer fills the deferred queue.
-        if (pending.size() == MAX_PENDING_INV_HEADER_REQUESTS)
-            pending.pop_front();
-        pending.push_back(hash);
+        LOG(NET, "Dropping header request for %s from peer %s\n", hash.ToString(), pfrom->GetLogName());
+        return;
     }
-
-    while (!pending.empty() && requests.size() < MAX_INV_HEADER_REQUESTS && pfrom->nSendSize < nMaxSendBufferSize)
-    {
-        const uint256 next = pending.front();
-        pending.pop_front();
-        if (AlreadyHaveBlock(CInv(MSG_BLOCK, next)))
-            continue;
-
-        pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), next);
-        requests.push_back({next, nNow});
-    }
+    pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), hash);
+    requests.push_back({hash, nNow});
 }
 
 template <class T>
@@ -1102,7 +1088,7 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
 
     // One request is enough: the peer replies with its headers from our locator up to the last announced block.
     if (!hashLastUnknownBlock.IsNull())
-        SendInvHeaderRequests(pfrom, hashLastUnknownBlock);
+        SendInvHeaderRequest(pfrom, hashLastUnknownBlock);
 
     return true;
 }
@@ -3691,8 +3677,6 @@ bool SendMessages(CNode *pto)
         // connection maintenance messages before the handshake is done.
         if (pto->fDisconnect || !pto->fSuccessfullyConnected)
             return true;
-
-        SendInvHeaderRequests(pto);
 
         //
         // Message: ping
