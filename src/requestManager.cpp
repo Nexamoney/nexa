@@ -175,8 +175,7 @@ void CRequestManager::UpdateTxnRequestLimits(size_t nPeers, CNode *from)
             state->second.fTxnAnnouncementsSeen = true;
         }
     }
-    if (fNewAnnouncer || nPeers != nTxnRequestPeers || peerLimit < nTxnRequestPeerLimit ||
-        maxReqs < nTxnRequestLimit)
+    if (fNewAnnouncer || nPeers != nTxnRequestPeers || peerLimit < nTxnRequestPeerLimit || maxReqs < nTxnRequestLimit)
     {
         // Reclaim old allocations when peers join, before their announcements can be dropped by a full map.
         for (OdMap *map : {&mapTxnInfo, &mapTxnToAdd})
