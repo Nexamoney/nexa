@@ -277,6 +277,7 @@ testScripts = [ RpcTest(t) for t in [
     'sendheaders',
     'recut_block_body',
     'rerequest_bad_block_body',
+    'low_work_fork_headers',
     'keypool',
     'prioritise_transaction',
     Disabled('invalidblockrequest', "TODO"),

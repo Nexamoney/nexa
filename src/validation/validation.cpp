@@ -518,6 +518,12 @@ bool AcceptBlockHeader(const CBlockHeader &block,
     if (pindex == nullptr)
     {
         LOCK(cs_main);
+        // ASERT eases a fork from an old block down to the minimum difficulty, so a header far behind our chain's
+        // work is nearly free to make. Do not store one (NX-19), unless a deeper reorg limit lets us reorg to it.
+        const int nWorkHeight = chainActive.Height() - std::max((int)LOW_WORK_HEADER_DEPTH, maxReorgDepth.Value());
+        if (nWorkHeight > 0 && (UintToArith256(block.chainWork) < chainActive[nWorkHeight]->chainWork()))
+            return state.Invalid(
+                error("%s: block %s has too little chain work", __func__, hash.ToString()), 0, "low-work-header");
         pindex = AddToBlockIndex(chainparams, block);
     }
 
