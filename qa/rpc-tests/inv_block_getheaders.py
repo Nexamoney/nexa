@@ -14,6 +14,7 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
 from test_framework.mininode import *
 from test_framework.nodemessages import *
+from test_framework.blocktools import create_block, create_coinbase, getAncHash
 
 NUM_BLOCKS = 5000
 MAX_INV_HEADER_REQUESTS = 16  # net.h
@@ -84,33 +85,41 @@ class InvBlockGetHeadersTest(BitcoinTestFramework):
         assert_equal(batch.requests[0][0], hashes[-1])
         logging.info("One large INV: one GETHEADERS, %d bytes", batch.getHeadersBytes)
 
+        # A header the cookie peer can deliver later for its first announcement.
+        node = self.nodes[0]
+        genesis = node.getblock(node.getbestblockhash())
+        block = create_block(int(genesis["hash"], 16), 1, int(genesis["chainwork"], 16) + 2, create_coinbase(1),
+                             getAncHash(1, node), genesis["time"] + 1)
+        block.solve()
+
         # Each connection gets its own window, including peers without cookie support.
         for peer in (cookie_peer, checksum_peer):
             targets = [random.getrandbits(256) for _ in range(2 * MAX_INV_HEADER_REQUESTS)]
+            if peer is cookie_peer:
+                targets[0] = block.gethash()
             peer.announce(targets, separate=True)
             self.wait_count(peer, MAX_INV_HEADER_REQUESTS)
             peer.announce([targets[0]] * 20, separate=True)
             peer.sync_with_ping()
             assert_equal(peer.numGetHeaders, MAX_INV_HEADER_REQUESTS)
 
-        # A matching out-of-order reply releases one slot; a replay releases none.
-        cookie = cookie_peer.requests[7][1]
-        cookie_peer.reply(0)
-        cookie_peer.sync_with_ping()
-        assert_equal(cookie_peer.numGetHeaders, MAX_INV_HEADER_REQUESTS)
-        cookie_peer.reply(cookie)
-        self.wait_count(cookie_peer, MAX_INV_HEADER_REQUESTS + 1)
-        cookie_peer.reply(cookie)
-        cookie_peer.sync_with_ping()
-        assert_equal(cookie_peer.numGetHeaders, MAX_INV_HEADER_REQUESTS + 1)
+        # Replies without the announced header release no slot, whatever cookie the peer guesses.
+        for cookie in [0] + [i << 16 for i in range(1, MAX_INV_HEADER_REQUESTS + 1)]:
+            cookie_peer.reply(cookie)
         checksum_peer.reply(0)
-        self.wait_count(checksum_peer, MAX_INV_HEADER_REQUESTS + 1)
+        for peer in (cookie_peer, checksum_peer):
+            peer.sync_with_ping()
+            assert_equal(peer.numGetHeaders, MAX_INV_HEADER_REQUESTS)
+
+        # Delivering the header releases its slot.
+        cookie_peer.send_message(msg_headers([CBlockHeader(block)]))
+        self.wait_count(cookie_peer, MAX_INV_HEADER_REQUESTS + 1)
 
         # Without further announcements or replies, expiry must send the deferred targets.
         for peer in (cookie_peer, checksum_peer):
             self.wait_count(peer, 2 * MAX_INV_HEADER_REQUESTS, timeout=45)
             assert_equal({h for h, _ in peer.requests}, peer.announced)
-        logging.info("Separate INV windows, reply matching, duplicate suppression and timeout recovery passed")
+        logging.info("Separate INV windows, release on the header, duplicate suppression and timeout recovery passed")
 
 
 if __name__ == '__main__':
