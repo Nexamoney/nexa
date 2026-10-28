@@ -80,6 +80,10 @@ static const int TIMEOUT_INTERVAL = 20 * 60;
 static const int FEELER_INTERVAL = 120;
 /** The maximum number of entries in an 'inv' protocol message */
 static const unsigned int MAX_INV_SZ = 50000;
+// Allow parallel sub-block discovery while bounding unanswered INV header requests.
+static const size_t MAX_INV_HEADER_REQUESTS = 16;
+static const size_t MAX_PENDING_INV_HEADER_REQUESTS = 64;
+static const int64_t INV_HEADER_REQUEST_TIMEOUT = 30 * 1000000;
 /** The maximum number of new addresses to accumulate before announcing. */
 static const unsigned int MAX_ADDR_TO_SEND = 1000;
 /** The maximum # of bytes to receive at once */
@@ -380,6 +384,17 @@ public:
     CLockSwapQ<CSerializeData> vLowPrioritySendMsg;
     std::atomic<uint64_t> nSendSize; // total size in bytes of all vSendMsg entries
     std::atomic<uint64_t> nSendBytes;
+
+    struct InvHeaderRequest
+    {
+        uint256 hash;
+        uint32_t cookie;
+        int64_t nTime;
+    };
+    CCriticalSection cs_invHeaderRequests;
+    std::deque<InvHeaderRequest> vInvHeaderRequests GUARDED_BY(cs_invHeaderRequests);
+    std::deque<uint256> vPendingInvHeaders GUARDED_BY(cs_invHeaderRequests);
+    uint32_t nInvHeaderCookie GUARDED_BY(cs_invHeaderRequests) = 0;
 
     CCriticalSection csRecvGetData;
     std::deque<std::pair<CInv, uint32_t> > vRecvGetData GUARDED_BY(csRecvGetData);

@@ -3,14 +3,12 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
-An INV of unknown block hashes must not make the node send one GETHEADERS,
-with a full locator, per hash.
+Bound INV-triggered GETHEADERS across both large and separate INV messages.
 """
 import test_framework.loginit
 
 import logging
 import random
-import time
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
@@ -18,49 +16,101 @@ from test_framework.mininode import *
 from test_framework.nodemessages import *
 
 NUM_BLOCKS = 5000
+MAX_INV_HEADER_REQUESTS = 16  # net.h
+IGNORE_CHECKSUM = 0x0000000200000002
 
 
 class GetHeadersCounter(SingleNodeConnCB):
-    def __init__(self):
+    def __init__(self, cookies=True):
         SingleNodeConnCB.__init__(self)
+        if cookies:
+            self.extversion = msg_extversion({IGNORE_CHECKSUM: 1})
+        self.cookies = cookies
+        self.announced = set()
+        self.requests = []
         self.numGetHeaders = 0
         self.getHeadersBytes = 0
 
     def on_getheaders(self, conn, message):
-        self.numGetHeaders += 1
-        self.getHeadersBytes += len(message.serialize())
+        if message.hashstop in self.announced:
+            self.requests.append((message.hashstop, self.cookie))
+            self.numGetHeaders += 1
+            self.getHeadersBytes += len(message.serialize())
+
+    def announce(self, hashes, separate=False):
+        with mininode_lock:
+            self.announced.update(hashes)
+        if separate:
+            for h in hashes:
+                self.send_message(msg_inv([CInv(CInv.MSG_BLOCK, h)]))
+        else:
+            self.send_message(msg_inv([CInv(CInv.MSG_BLOCK, h) for h in hashes]))
+
+    def reply(self, cookie):
+        self.connection.send_message_with_cookie(msg_headers(), cookie | 0xFFFF)
 
 
 class InvBlockGetHeadersTest(BitcoinTestFramework):
+    def setup_chain(self):
+        config = dict(self.confDict or {})
+        for option in ('usecashaddr', 'wallet.payTxFee', 'wallet.instant'):
+            config[option] = NoConfigValue()
+        initialize_chain_clean(self.options.tmpdir, 1, config)
+
     def setup_network(self, split=False):
         self.nodes = start_nodes(1, self.options.tmpdir)
         self.is_network_split = False
-        self.peer = GetHeadersCounter()
-        self.peer.add_connection(NodeConn('127.0.0.1', p2p_port(0), self.nodes[0], self.peer))
+        self.peers = [GetHeadersCounter(), GetHeadersCounter(), GetHeadersCounter(cookies=False)]
+        for peer in self.peers:
+            peer.add_connection(NodeConn('127.0.0.1', p2p_port(0), self.nodes[0], peer,
+                                         extversion_service=peer.cookies))
         NetworkThread().start()
 
-    def run_test(self):
-        peer = self.peer
-        peer.wait_for_verack()
+    def wait_count(self, peer, count, timeout=10):
+        waitFor(timeout, lambda: peer.numGetHeaders >= count)
         peer.sync_with_ping()
-        # Leave out the GETHEADERS the node sends on connect
         with mininode_lock:
-            peer.numGetHeaders = 0
-            peer.getHeadersBytes = 0
+            assert_equal(peer.numGetHeaders, count)
 
-        invs = [CInv(CInv.MSG_BLOCK, random.getrandbits(256)) for _ in range(NUM_BLOCKS)]
-        peer.send_message(msg_inv(invs))
-        peer.sync_with_ping()
-        # GETHEADERS can still arrive after the pong, so wait until the count settles
-        count = -1
-        while True:
-            time.sleep(2)
-            with mininode_lock:
-                if peer.numGetHeaders == count:
-                    break
-                count, size = peer.numGetHeaders, peer.getHeadersBytes
-        logging.info("INV of %d unknown blocks: %d GETHEADERS, %d bytes" % (NUM_BLOCKS, count, size))
-        assert_equal(count, 1)
+    def run_test(self):
+        for peer in self.peers:
+            peer.wait_for_verack()
+            peer.sync_with_ping()
+
+        batch, cookie_peer, checksum_peer = self.peers
+        hashes = [random.getrandbits(256) for _ in range(NUM_BLOCKS)]
+        batch.announce(hashes)
+        self.wait_count(batch, 1)
+        assert_equal(batch.requests[0][0], hashes[-1])
+        logging.info("One large INV: one GETHEADERS, %d bytes", batch.getHeadersBytes)
+
+        # Each connection gets its own window, including peers without cookie support.
+        for peer in (cookie_peer, checksum_peer):
+            targets = [random.getrandbits(256) for _ in range(2 * MAX_INV_HEADER_REQUESTS)]
+            peer.announce(targets, separate=True)
+            self.wait_count(peer, MAX_INV_HEADER_REQUESTS)
+            peer.announce([targets[0]] * 20, separate=True)
+            peer.sync_with_ping()
+            assert_equal(peer.numGetHeaders, MAX_INV_HEADER_REQUESTS)
+
+        # A matching out-of-order reply releases one slot; a replay releases none.
+        cookie = cookie_peer.requests[7][1]
+        cookie_peer.reply(0)
+        cookie_peer.sync_with_ping()
+        assert_equal(cookie_peer.numGetHeaders, MAX_INV_HEADER_REQUESTS)
+        cookie_peer.reply(cookie)
+        self.wait_count(cookie_peer, MAX_INV_HEADER_REQUESTS + 1)
+        cookie_peer.reply(cookie)
+        cookie_peer.sync_with_ping()
+        assert_equal(cookie_peer.numGetHeaders, MAX_INV_HEADER_REQUESTS + 1)
+        checksum_peer.reply(0)
+        self.wait_count(checksum_peer, MAX_INV_HEADER_REQUESTS + 1)
+
+        # Without further announcements or replies, expiry must send the deferred targets.
+        for peer in (cookie_peer, checksum_peer):
+            self.wait_count(peer, 2 * MAX_INV_HEADER_REQUESTS, timeout=45)
+            assert_equal({h for h, _ in peer.requests}, peer.announced)
+        logging.info("Separate INV windows, reply matching, duplicate suppression and timeout recovery passed")
 
 
 if __name__ == '__main__':
