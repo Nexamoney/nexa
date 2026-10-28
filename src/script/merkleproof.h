@@ -17,7 +17,8 @@ typedef enum
 
 } MerkleProofStep;
 
-enum MerkleRootAlg
+// Fixed underlying type so every option byte is a valid value; unknown ones fail when hashing
+enum MerkleRootAlg : uint8_t
 {
     // 8 bits of hash algorithm
     SHA256 = 0,
