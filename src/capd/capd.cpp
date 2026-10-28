@@ -293,6 +293,7 @@ bool CapdMsgPool::LoadMsgPool(void)
             file >> msg;
             CapdMsgRef ref = std::make_shared<CapdMsg>(msg);
             {
+                ref->InitialPriority(); // fill the cache under the lock, a lone message is never compared on insert
                 msgs.insert(ref);
                 size += ref->RamSize();
                 ++count;
@@ -590,7 +591,7 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
                 // It is possible for a node to accidentally send us a message within the priority when it was sent
                 // but too low by the time we process it.
                 auto punished = "";
-                if (priority < (cn->receivePriority * 0.75) - 1.0)
+                if (priority < cn->receivePriority - 1.0)
                 {
                     dosMan.Misbehaving(pfrom, 1, BanReasonInvalidPriority);
                     punished = " (and punish)";

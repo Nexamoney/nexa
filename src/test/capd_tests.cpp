@@ -380,8 +380,8 @@ BOOST_AUTO_TEST_CASE(capd_pool_test_vectors)
         BOOST_CHECK_MESSAGE(qty == 1, strprintf("expected 1 got %d", qty).c_str());
     }
 
-    SetMockTime(now + MSG_LIFETIME_SEC);
-    // Every message inserted should have a negative priority at this point, so relay priority should be the minimum
+    SetMockTime(now + 10 * MSG_LIFETIME_SEC);
+    // Every message inserted has decayed by 10 (1024x) at this point, so relay priority should be the minimum
     BOOST_CHECK(mp.GetRelayPriority() == MIN_RELAY_PRIORITY);
 
     // although other messages have expired, a new message should be easily added
@@ -441,7 +441,7 @@ BOOST_AUTO_TEST_CASE(capd_pool_test_vectors2)
     for (int count = 0; count < 200; count++)
     {
         // Move forward to where the high priority message should be aged out
-        SetMockTime(now + MSG_LIFETIME_SEC + (count * 10));
+        SetMockTime(now + 5 * MSG_LIFETIME_SEC + (count * 10));
 
         CapdMsg m(" message12345678 " + std::to_string(count));
         auto diff = mp.GetRelayPowTarget();
@@ -456,6 +456,97 @@ BOOST_AUTO_TEST_CASE(capd_pool_test_vectors2)
     BOOST_CHECK(findings.size() == 0);
 }
 
+// Messages of differing size, POW and creation time must never change relative priority order as they age
+BOOST_AUTO_TEST_CASE(capd_pool_order_is_time_invariant)
+{
+    int64_t t = GetTime();
+    CapdMsgPool mp;
+    mp.SetMaxSize(100000);
+
+    const unsigned int sizes[] = {10, 100, 150, 400, 700}; // > NOMINAL_MSG_SIZE incurs a size penalty
+    const unsigned int powMults[] = {16, 32, 64};
+    char c = 'a';
+    for (auto sz : sizes)
+    {
+        for (auto mult : powMults)
+        {
+            t += 37; // stagger creation times so older higher-POW msgs interleave with newer lower-POW ones
+            SetMockTime(t);
+            CapdMsg m(std::string(sz, c++));
+            m.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(mult));
+            m.Solve();
+            mp.add(MsgRefCopy(m));
+        }
+    }
+
+    std::vector<CapdMsgRef> order;
+    mp.visit(
+        [&order](const CapdMsgRef &m)
+        {
+            order.push_back(m);
+            return true;
+        });
+    BOOST_CHECK_EQUAL(order.size(), 15U);
+
+    for (int64_t dt : {0, 1, 300, 600, 3600, 86400})
+    {
+        SetMockTime(t + dt);
+        std::vector<CapdMsgRef> cur;
+        mp.visit(
+            [&cur](const CapdMsgRef &m)
+            {
+                cur.push_back(m);
+                return true;
+            });
+        BOOST_CHECK(cur == order);
+        // the pool's (fixed) order must still match every message's current priority
+        for (size_t i = 1; i < cur.size(); i++)
+            BOOST_CHECK(cur[i - 1]->Priority() <= cur[i]->Priority() + 1e-9);
+    }
+    SetMockTime(0);
+}
+
+
+// As messages age, the pool's local priority must still be the lowest current priority, and a full pool must
+// evict that message. An older message with more work stays above a newer one with less.
+BOOST_AUTO_TEST_CASE(capd_pool_thresholds_follow_time)
+{
+    int64_t now = GetTime();
+    SetMockTime(now);
+
+    CapdMsgPool mp;
+    mp.SetMaxSize(4000);
+
+    // A: 40 times the minimum work, created now
+    CapdMsg msgA("A message 12345");
+    msgA.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(40));
+    msgA.Solve();
+    mp.add(MsgRefCopy(msgA));
+
+    // B: 4 times the minimum work, created later
+    SetMockTime(now + 500);
+    CapdMsg msgB("B message 12345");
+    msgB.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(4));
+    msgB.Solve();
+    mp.add(MsgRefCopy(msgB));
+
+    // Both have decayed by the elapsed time since their creation; B still has the lowest priority
+    SetMockTime(now + 580);
+    BOOST_CHECK(msgB.Priority() < msgA.Priority());
+    mp.SetMaxSize(mp.Size());
+    BOOST_CHECK_EQUAL(mp.GetLocalPriority(), msgB.Priority());
+
+    // With the pool full, a new message evicts the lowest priority one
+    CapdMsg msgC("C message 12345");
+    msgC.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(8));
+    msgC.Solve();
+    mp.add(MsgRefCopy(msgC));
+    BOOST_CHECK(mp.find(msgA.GetHash()) != nullmsgref);
+    BOOST_CHECK(mp.find(msgB.GetHash()) == nullmsgref);
+    BOOST_CHECK(mp.find(msgC.GetHash()) != nullmsgref);
+
+    SetMockTime(0);
+}
 
 BOOST_AUTO_TEST_CASE(capd_http) { BOOST_CHECK(1 == 1); }
 class CMsgMaker
