@@ -664,20 +664,33 @@ build-ubuntu-tests-ubsan:
         <<: *ccache_settings
         key: ubuntu_cache_clang_ubsan
     variables:
-        CFLAGS: "-O1 -g -fno-omit-frame-pointer -fsanitize=undefined -fno-sanitize-recover=undefined"
-        CXXFLAGS: "-O1 -g -fno-omit-frame-pointer -fsanitize=undefined -fno-sanitize-recover=undefined"
+        CFLAGS: "-O1 -g -fno-omit-frame-pointer -fsanitize=undefined"
+        CXXFLAGS: "-O1 -g -fno-omit-frame-pointer -fsanitize=undefined"
         LDFLAGS: "-fsanitize=undefined"
     script:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --with-gui=no --disable-bench
         - make -j"$CPUS" -C src test/test_nexa
-        - ./src/test/test_nexa --log_level=test_suite
+        - |
+            # UBSan recovers, so the run reports every finding instead of stopping at the first
+            mkdir -p ubsan
+            status=0
+            UBSAN_OPTIONS="print_stacktrace=1:log_path=$PWD/ubsan/report" ./src/test/test_nexa --log_level=test_suite || status=$?
+            cat ubsan/report.* 2>/dev/null || true
+            findings=$(cat ubsan/report.* 2>/dev/null | grep 'runtime error:' | sort | uniq -c | sort -rn || true)
+            if [ -n "$findings" ]; then
+                echo "UBSan findings (count, location, error):"
+                echo "$findings"
+                status=1
+            fi
+            exit $status
     artifacts:
         when: on_failure
         paths:
             - ./build/config.log
             - ./build/src/test/test_nexa
+            - ./build/ubsan/
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
