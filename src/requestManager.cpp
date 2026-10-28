@@ -44,7 +44,7 @@
 
 using namespace std;
 
-extern CTweak<unsigned int> maxBlocksInTransitPerPeer;
+extern CTweak<uint64_t> maxBlocksInTransitPerPeer;
 extern CTweak<unsigned int> blockDownloadWindow;
 extern CTweak<unsigned int> blockLookAheadInterval;
 extern CTweak<unsigned int> blkRetryInterval;

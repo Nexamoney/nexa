@@ -1075,6 +1075,31 @@ BOOST_AUTO_TEST_CASE(merkleMultiProofScripts)
     }
 }
 
+BOOST_AUTO_TEST_CASE(merkleOpcodeUnknownAlg)
+{
+    // Algorithms 4 to 15 fit the option bits, so they only fail when something has to be hashed
+    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
+    VchType one(32);
+    one[0] = 1;
+    VchType two(32);
+    two[0] = 2;
+    for (int alg = 4; alg < 16; alg++)
+    {
+        auto opt = merkleRootOption((MerkleRootAlg)alg, MerkleRootFlags::MR_NONE);
+        // A single hashed element with an empty proof is its own root
+        CScript s = CScript() << VchType() << one << 1 << opt << OP_MERKLEROOT;
+        CheckPass(flags, Stack(), s, {one});
+
+        VchType proof = VchType() << MULTIPROOF_RIGHT_SIBLING << two;
+        s = CScript() << proof << one << 1 << opt << OP_MERKLEROOT;
+        CheckError(flags, Stack(), s, SCRIPT_ERR_INVALID_PARAMETER);
+
+        opt = merkleRootOption((MerkleRootAlg)alg, MerkleRootFlags::HASH_ELEMENTS);
+        s = CScript() << VchType() << one << 1 << opt << OP_MERKLEROOT;
+        CheckError(flags, Stack(), s, SCRIPT_ERR_INVALID_PARAMETER);
+    }
+}
+
 
 VchType buildProofSubTree(int depth)
 {
