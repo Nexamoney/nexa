@@ -45,7 +45,7 @@ public:
 class CValidationInterface
 {
 protected:
-    virtual void UpdatedBlockTip(const CBlockIndex *pindex) {}
+    virtual void UpdatedBlockTip(const CBlockIndex *pindex, const ConstCBlockRef pblock) {}
     virtual void SyncTransaction(const CTransactionRef &ptx, const ConstCBlockRef pblock, int txIdx) {}
     virtual void SyncDoubleSpend(const CTransactionRef ptx) {}
     virtual void SetBestChain(const CBlockLocator &locator) {}
@@ -63,7 +63,7 @@ protected:
 struct CMainSignals
 {
     /** Notifies listeners of updated block chain tip */
-    boost::signals2::signal<void(const CBlockIndex *)> UpdatedBlockTip;
+    boost::signals2::signal<void(const CBlockIndex *, const ConstCBlockRef)> UpdatedBlockTip;
     /** Notifies listeners of updated transaction data (transaction, and optionally the block it is found in. */
     boost::signals2::signal<void(const CTransactionRef &, const ConstCBlockRef, int txIndex)> SyncTransaction;
     /** Notifies listeners of a transaction in the mempool that was double spent. */

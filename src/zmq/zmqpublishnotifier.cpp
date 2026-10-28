@@ -4,8 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "zmqpublishnotifier.h"
-#include "blockstorage/blockstorage.h"
-#include "chainparams.h"
+#include "crypto/common.h"
 #include "main.h"
 #include "util.h"
 
@@ -69,6 +68,7 @@ bool CZMQAbstractPublishNotifier::Initialize(void *pcontext)
             zmqError("Failed to create socket");
             return false;
         }
+        csZmq = std::make_shared<CCriticalSection>();
 
         int rc = zmq_bind(psocket, address.c_str());
         if (rc != 0)
@@ -86,6 +86,7 @@ bool CZMQAbstractPublishNotifier::Initialize(void *pcontext)
         LOG(ZMQ, "zmq: Reusing socket for address %s\n", address);
 
         psocket = i->second->psocket;
+        csZmq = i->second->csZmq;
         mapPublishNotifiers.insert(std::make_pair(address, this));
 
         return true;
@@ -115,29 +116,45 @@ void CZMQAbstractPublishNotifier::Shutdown()
         if (count <= 1)
         {
             LOG(ZMQ, "Close socket at address %s\n", address);
+            LOCK(*csZmq);
             int linger = 0;
             zmq_setsockopt(psocket, ZMQ_LINGER, &linger, sizeof(linger));
             zmq_close(psocket);
         }
 
         psocket = nullptr;
+        csZmq.reset();
     }
 }
 
-bool CZMQPublishHashBlockNotifier::NotifyBlock(const CBlockIndex *pindex)
+bool CZMQAbstractPublishNotifier::SendZmqMessage(const char *command, const void *data, size_t size)
+{
+    assert(psocket);
+    LOCK(*csZmq);
+
+    // Advance the sequence even if the send fails so the subscriber sees a gap rather than silently missing a message
+    uint32_t &nSequence = mapSequence[command];
+    unsigned char msgseq[sizeof(uint32_t)];
+    WriteLE32(&msgseq[0], nSequence);
+    nSequence++;
+
+    int rc = zmq_send_multipart(psocket, command, strlen(command), data, size, msgseq, sizeof(msgseq), nullptr);
+    return rc == 0;
+}
+
+bool CZMQPublishHashBlockNotifier::NotifyBlock(const CBlockIndex *pindex, const ConstCBlockRef /*pblock*/)
 {
     uint256 hash = pindex->GetBlockHash();
     LOG(ZMQ, "zmq: Publish hashblock %s\n", hash.GetHex());
     char data[32];
     for (unsigned int i = 0; i < 32; i++)
         data[31 - i] = hash.begin()[i];
-    int rc = zmq_send_multipart(psocket, "hashblock", (size_t)9, data, (size_t)32, nullptr);
-    return rc == 0;
+    return SendZmqMessage("hashblock", data, 32);
 }
 
 bool CZMQPublishHashTransactionNotifier::NotifyTransaction(const CTransactionRef &ptx)
 {
-    int rc;
+    bool rc;
 
     {
         uint256 hash = ptx->GetId();
@@ -145,7 +162,7 @@ bool CZMQPublishHashTransactionNotifier::NotifyTransaction(const CTransactionRef
         char data[32];
         for (unsigned int i = 0; i < 32; i++)
             data[31 - i] = hash.begin()[i];
-        rc = zmq_send_multipart(psocket, "txid", (size_t)4, data, (size_t)32, nullptr);
+        rc = SendZmqMessage("txid", data, 32);
     }
 
     {
@@ -154,22 +171,22 @@ bool CZMQPublishHashTransactionNotifier::NotifyTransaction(const CTransactionRef
         char data[32];
         for (unsigned int i = 0; i < 32; i++)
             data[31 - i] = hash.begin()[i];
-        rc |= zmq_send_multipart(psocket, "txidem", (size_t)6, data, (size_t)32, nullptr);
+        rc &= SendZmqMessage("txidem", data, 32);
     }
 
-    return rc == 0;
+    return rc;
 }
 
 bool CZMQPublishHashDoubleSpendNotifier::NotifyDoubleSpend(const CTransactionRef ptx)
 {
-    int rc;
+    bool rc;
     {
         uint256 hash = ptx->GetId();
         LOG(ZMQ, "zmq: Publish dsid %s\n", hash.GetHex());
         char data[32];
         for (unsigned int i = 0; i < 32; i++)
             data[31 - i] = hash.begin()[i];
-        rc = zmq_send_multipart(psocket, "dsid", (size_t)4, data, (size_t)32, nullptr);
+        rc = SendZmqMessage("dsid", data, 32);
     }
 
     {
@@ -178,31 +195,18 @@ bool CZMQPublishHashDoubleSpendNotifier::NotifyDoubleSpend(const CTransactionRef
         char data[32];
         for (unsigned int i = 0; i < 32; i++)
             data[31 - i] = hash.begin()[i];
-        rc |= zmq_send_multipart(psocket, "dsidem", (size_t)6, data, (size_t)32, nullptr);
-        return rc == 0;
+        rc &= SendZmqMessage("dsidem", data, 32);
+        return rc;
     }
 }
 
-bool CZMQPublishRawBlockNotifier::NotifyBlock(const CBlockIndex *pindex)
+bool CZMQPublishRawBlockNotifier::NotifyBlock(const CBlockIndex *pindex, const ConstCBlockRef pblock)
 {
     LOG(ZMQ, "zmq: Publish rawblock %s\n", pindex->GetBlockHash().GetHex());
 
-    const Consensus::Params &consensusParams = Params().GetConsensus();
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-    {
-        LOCK(cs_main);
-        const ConstCBlockRef pblock = ReadBlockFromDisk(pindex, consensusParams);
-        if (!pblock)
-        {
-            zmqError("Can't read block from disk");
-            return false;
-        }
-
-        ss << *pblock;
-    }
-
-    int rc = zmq_send_multipart(psocket, "rawblock", (size_t)8, &(*ss.begin()), ss.size(), nullptr);
-    return rc == 0;
+    ss << *pblock;
+    return SendZmqMessage("rawblock", &(*ss.begin()), ss.size());
 }
 
 bool CZMQPublishRawTransactionNotifier::NotifyTransaction(const CTransactionRef &ptx)
@@ -212,8 +216,7 @@ bool CZMQPublishRawTransactionNotifier::NotifyTransaction(const CTransactionRef 
     LOG(ZMQ, "zmq: Publish rawtx %s (%s)\n", id.GetHex(), idem.GetHex());
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
     ss << *ptx;
-    int rc = zmq_send_multipart(psocket, "rawtx", (size_t)5, &(*ss.begin()), ss.size(), nullptr);
-    return rc == 0;
+    return SendZmqMessage("rawtx", &(*ss.begin()), ss.size());
 }
 
 bool CZMQPublishRawDoubleSpendNotifier::NotifyDoubleSpend(const CTransactionRef ptx)
@@ -223,6 +226,5 @@ bool CZMQPublishRawDoubleSpendNotifier::NotifyDoubleSpend(const CTransactionRef 
     LOG(ZMQ, "zmq: Publish rawds %s (%s)\n", id.GetHex(), idem.GetHex());
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
     ss << ptx;
-    int rc = zmq_send_multipart(psocket, "rawds", (size_t)5, &(*ss.begin()), ss.size(), nullptr);
-    return rc == 0;
+    return SendZmqMessage("rawds", &(*ss.begin()), ss.size());
 }

@@ -63,6 +63,8 @@ Currently, the following notifications are supported:
     -zmqpubhashds=address
     -zmqpubrawds=address
 
+These options can also be provided in nexa.conf.
+
 The socket type is PUB and the address must be a valid ZeroMQ socket
 address. The same address can be used in more than one notification.
 
@@ -71,13 +73,18 @@ For instance:
     $ nexad -zmqpubhashtx=tcp://127.0.0.1:28332 \
                -zmqpubrawtx=ipc:///tmp/nexad.tx.raw
 
-Each PUB notification has a topic and body, where the header
+Each PUB notification has a topic, body and sequence number, where the header
 corresponds to the notification type. For instance, for the
 notification `-zmqpubhashtx` the topic is `hashtx` (no null
 terminator) and the body is the hexadecimal transaction hash (32
 bytes).
 
-These options can also be provided in nexa.conf.
+The third part is a 4 byte little endian sequence number.
+Every topic has its own sequence, which starts at 0 increases by one
+for each message published on that topic. A gap in the sequence means
+the subscriber missed one or more notifications (for example because
+it was too slow and ZeroMQ dropped messages at its high water mark)
+and should resynchronize.
 
 ZeroMQ endpoint specifiers for TCP (and others) are documented in the
 [ZeroMQ API](http://api.zeromq.org/4-0:_start).
