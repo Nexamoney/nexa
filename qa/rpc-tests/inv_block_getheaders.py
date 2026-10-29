@@ -4,13 +4,13 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
 Bound INV-triggered GETHEADERS across both large and separate INV messages.
-Announcements beyond a peer's outstanding requests are dropped, not deferred.
+Retain excess announcements and resume them without another INV.
 """
 import test_framework.loginit
 
 import logging
 import random
-import time
+import sys
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
@@ -57,6 +57,8 @@ class GetHeadersCounter(SingleNodeConnCB):
 class InvBlockGetHeadersTest(BitcoinTestFramework):
     def setup_chain(self):
         config = dict(self.confDict or {})
+        # Keep admission order deterministic for the deferred FIFO check.
+        config['net.msgHandlerThreads'] = 1
         for option in ('usecashaddr', 'wallet.payTxFee', 'wallet.instant'):
             config[option] = NoConfigValue()
         initialize_chain_clean(self.options.tmpdir, 1, config)
@@ -96,17 +98,16 @@ class InvBlockGetHeadersTest(BitcoinTestFramework):
         block.solve()
 
         # Each connection gets its own window, including peers without cookie support.
+        announced = []
         for peer in (cookie_peer, checksum_peer):
             targets = [random.getrandbits(256) for _ in range(2 * MAX_INV_HEADER_REQUESTS)]
             if peer is cookie_peer:
                 targets[0] = block.gethash()
+            announced.append(targets)
             peer.announce(targets[:1])
             self.wait_count(peer, 1)
             peer.announce(targets[1:], separate=True)
             self.wait_count(peer, MAX_INV_HEADER_REQUESTS)
-            peer.announce([targets[0]] * 20, separate=True)
-            peer.sync_with_ping()
-            assert_equal(peer.numGetHeaders, MAX_INV_HEADER_REQUESTS)
 
         # Replies without the announced header release no slot, whatever cookie the peer guesses.
         for cookie in [0] + [i << 16 for i in range(1, MAX_INV_HEADER_REQUESTS + 1)]:
@@ -116,26 +117,18 @@ class InvBlockGetHeadersTest(BitcoinTestFramework):
             peer.sync_with_ping()
             assert_equal(peer.numGetHeaders, MAX_INV_HEADER_REQUESTS)
 
-        # Delivering the header frees its slot for the next announcement.
+        # Delivering the header resumes the first deferred request without another INV.
         cookie_peer.send_message(msg_headers([CBlockHeader(block)]))
         cookie_peer.sync_with_ping()
-        later = random.getrandbits(256)
-        cookie_peer.announce([later])
         self.wait_count(cookie_peer, MAX_INV_HEADER_REQUESTS + 1)
-        assert_equal(cookie_peer.requests[-1][0], later)
+        assert_equal(cookie_peer.requests[-1][0], announced[0][MAX_INV_HEADER_REQUESTS])
 
-        # Dropped announcements are never sent, and new ones get slots once the requests time out.
-        time.sleep(INV_HEADER_REQUEST_TIMEOUT + 1)
-        for peer in (cookie_peer, checksum_peer):
-            sent = peer.numGetHeaders
-            peer.sync_with_ping()
-            assert_equal(peer.numGetHeaders, sent)
-            fresh = [random.getrandbits(256) for _ in range(2 * MAX_INV_HEADER_REQUESTS)]
-            peer.announce(fresh, separate=True)
-            self.wait_count(peer, sent + MAX_INV_HEADER_REQUESTS)
-            assert {h for h, _ in peer.requests[sent:]} <= set(fresh)
-        logging.info("Separate INV windows, release on the header, dropped announcements and timeout recovery passed")
+        # Expiry also resumes retained announcements without further messages from the peer.
+        for peer, targets in zip((cookie_peer, checksum_peer), announced):
+            self.wait_count(peer, 2 * MAX_INV_HEADER_REQUESTS, timeout=INV_HEADER_REQUEST_TIMEOUT + 3)
+            assert_equal({h for h, _ in peer.requests}, set(targets))
+        logging.info("Separate INV windows, release on the header and automatic deferred recovery passed")
 
 
 if __name__ == '__main__':
-    InvBlockGetHeadersTest().main()
+    sys.exit(InvBlockGetHeadersTest().main())

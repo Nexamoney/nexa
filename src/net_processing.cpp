@@ -958,11 +958,19 @@ void static ProcessExtGetData(CNode *pfrom,
     }
 }
 
-static void SendInvHeaderRequest(CNode *pfrom, const uint256 &hash)
+static void SendInvHeaderRequest(CNode *pfrom, const uint256 &hash = uint256())
 {
     LOCK(pfrom->cs_invHeaderRequests);
+    if (pfrom->IsDisconnecting())
+        return;
     const int64_t nNow = GetStopwatchMicros();
+    const int64_t nextCheck = pfrom->nNextInvHeaderRequestTime.load();
+    if (hash.IsNull() && (nextCheck == 0 || nNow < nextCheck))
+        return;
     auto &requests = pfrom->vInvHeaderRequests;
+    auto &pending = pfrom->vPendingInvHeaderRequests;
+    if (!hash.IsNull())
+        pending.push_back(hash);
     while (!requests.empty() && nNow - requests.front().nTime >= INV_HEADER_REQUEST_TIMEOUT)
         requests.pop_front();
     // Only the header frees a slot: a peer could send any number of empty replies.
@@ -971,14 +979,29 @@ static void SendInvHeaderRequest(CNode *pfrom, const uint256 &hash)
             [](const CNode::InvHeaderRequest &request) { return LookupBlockIndex(request.hash) != nullptr; }),
         requests.end());
 
-    // Drop the announcement when full: the next request covers it, from our locator up to the newer block.
-    if (requests.size() >= MAX_INV_HEADER_REQUESTS || pfrom->nSendSize >= nMaxSendBufferSize)
+    while (!pending.empty())
     {
-        LOG(NET, "Dropping header request for %s from peer %s\n", hash.ToString(), pfrom->GetLogName());
+        if (LookupBlockIndex(pending.front()) != nullptr)
+        {
+            pending.pop_front();
+            continue;
+        }
+        if (requests.size() >= MAX_INV_HEADER_REQUESTS || pfrom->nSendSize >= nMaxSendBufferSize)
+            break;
+        pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), pending.front());
+        requests.push_back({pending.front(), nNow});
+        pending.pop_front();
+    }
+    if (pending.size() > MAX_PENDING_INV_HEADER_REQUESTS)
+    {
+        // Bound retained work without silently losing announcements on a live connection.
+        pfrom->CloseSocketDisconnect("pending INV header request limit exceeded");
+        pending.clear();
+        requests.clear();
+        pfrom->nNextInvHeaderRequestTime = 0;
         return;
     }
-    pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), hash);
-    requests.push_back({hash, nNow});
+    pfrom->nNextInvHeaderRequestTime = pending.empty() ? 0 : nNow + 1000000;
 }
 
 template <class T>
@@ -3708,6 +3731,10 @@ bool SendMessages(CNode *pto)
         // Check for block download timeout and disconnect node if necessary. Does not require cs_main.
         int64_t nNow = GetStopwatchMicros();
         requester.DisconnectOnDownloadTimeout(pto, consensusParams, nNow);
+
+        const int64_t nextInvHeaderRequest = pto->nNextInvHeaderRequestTime.load();
+        if (nextInvHeaderRequest != 0 && nNow >= nextInvHeaderRequest)
+            SendInvHeaderRequest(pto);
 
         // Address refresh broadcast
         if (!IsInitialBlockDownload() && pto->nNextLocalAddrSend < nNow)
