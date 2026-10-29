@@ -7,7 +7,7 @@
 #include "util.h"
 
 
-CZMQAbstractNotifier::~CZMQAbstractNotifier() { assert(!psocket); }
+CZMQAbstractNotifier::~CZMQAbstractNotifier() {}
 bool CZMQAbstractNotifier::NotifyBlock(const CBlockIndex * /*CBlockIndex*/, const ConstCBlockRef /*pblock*/)
 {
     return true;

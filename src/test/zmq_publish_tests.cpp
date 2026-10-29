@@ -59,7 +59,7 @@ class TestPublisher : public CZMQAbstractPublishNotifier
 {
 public:
     ~TestPublisher() { Shutdown(); }
-    using CZMQAbstractPublishNotifier::SendZmqMessage;
+    bool SendZmqMessage(const char *command, const void *data, size_t size) { return socket->Send(command, data, size); }
 };
 
 class TestSubscriber
