@@ -958,6 +958,52 @@ void static ProcessExtGetData(CNode *pfrom,
     }
 }
 
+static void SendInvHeaderRequest(CNode *pfrom, const uint256 &hash = uint256())
+{
+    LOCK(pfrom->cs_invHeaderRequests);
+    if (pfrom->IsDisconnecting())
+        return;
+    const int64_t nNow = GetStopwatchMicros();
+    const int64_t nextCheck = pfrom->nNextInvHeaderRequestTime.load();
+    if (hash.IsNull() && (nextCheck == 0 || nNow < nextCheck))
+        return;
+    auto &requests = pfrom->vInvHeaderRequests;
+    auto &pending = pfrom->vPendingInvHeaderRequests;
+    if (!hash.IsNull())
+        pending.push_back(hash);
+    while (!requests.empty() && nNow - requests.front().nTime >= INV_HEADER_REQUEST_TIMEOUT)
+        requests.pop_front();
+    // Only the header frees a slot: a peer could send any number of empty replies.
+    requests.erase(
+        std::remove_if(requests.begin(), requests.end(),
+            [](const CNode::InvHeaderRequest &request) { return LookupBlockIndex(request.hash) != nullptr; }),
+        requests.end());
+
+    while (!pending.empty())
+    {
+        if (LookupBlockIndex(pending.front()) != nullptr)
+        {
+            pending.pop_front();
+            continue;
+        }
+        if (requests.size() >= MAX_INV_HEADER_REQUESTS || pfrom->nSendSize >= nMaxSendBufferSize)
+            break;
+        pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), pending.front());
+        requests.push_back({pending.front(), nNow});
+        pending.pop_front();
+    }
+    if (pending.size() > MAX_PENDING_INV_HEADER_REQUESTS)
+    {
+        // Bound retained work without silently losing announcements on a live connection.
+        pfrom->CloseSocketDisconnect("pending INV header request limit exceeded");
+        pending.clear();
+        requests.clear();
+        pfrom->nNextInvHeaderRequestTime = 0;
+        return;
+    }
+    pfrom->nNextInvHeaderRequestTime = pending.empty() ? 0 : nNow + 1000000;
+}
+
 template <class T>
 static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vInv)
 {
@@ -975,6 +1021,7 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
     }
 
     bool fTxnLimitsUpdated = false;
+    uint256 hashLastUnknownBlock;
     for (unsigned int nInv = 0; nInv < vInvSize; nInv++)
     {
         if (shutdown_threads.load() == true)
@@ -1013,7 +1060,7 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
                 // we will instead request the header rather than the block.  This is safer and prevents an
                 // attacker from sending us fake INV's for blocks that do not exist or try to get us to request
                 // and download fake blocks.
-                pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), inv.hash);
+                hashLastUnknownBlock = inv.hash;
             }
             else
             {
@@ -1061,6 +1108,10 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
         // Track requests for our stuff.
         GetMainSignals().Inventory(inv.hash);
     }
+
+    // One request is enough: the peer replies with its headers from our locator up to the last announced block.
+    if (!hashLastUnknownBlock.IsNull())
+        SendInvHeaderRequest(pfrom, hashLastUnknownBlock);
 
     return true;
 }
@@ -3680,6 +3731,10 @@ bool SendMessages(CNode *pto)
         // Check for block download timeout and disconnect node if necessary. Does not require cs_main.
         int64_t nNow = GetStopwatchMicros();
         requester.DisconnectOnDownloadTimeout(pto, consensusParams, nNow);
+
+        const int64_t nextInvHeaderRequest = pto->nNextInvHeaderRequestTime.load();
+        if (nextInvHeaderRequest != 0 && nNow >= nextInvHeaderRequest)
+            SendInvHeaderRequest(pto);
 
         // Address refresh broadcast
         if (!IsInitialBlockDownload() && pto->nNextLocalAddrSend < nNow)
