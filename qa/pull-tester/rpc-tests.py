@@ -221,6 +221,7 @@ testScripts = [ RpcTest(t) for t in [
     'extgetdata_deferred',
     'txn_request_cap',
     'inv_block_getheaders',
+    'inv_block_getheaders_recovery',
     'msgCookie',
     'tailstorm_uncle_sync',
     'capd',
