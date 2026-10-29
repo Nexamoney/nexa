@@ -49,6 +49,7 @@ extern CTweak<unsigned int> blockDownloadWindow;
 extern CTweak<unsigned int> blockLookAheadInterval;
 extern CTweak<unsigned int> blkRetryInterval;
 extern CTweak<unsigned int> txRetryInterval;
+extern CTweak<unsigned int> txRequestPeerShare;
 extern CTweak<bool> requestMissingSubblocks;
 
 // Request management
@@ -72,6 +73,7 @@ CRequestManagerNodeState::CRequestManagerNodeState()
 {
     nDownloadingFromPeerSince = 0;
     nBlocksInFlight = 0;
+    fTxnAnnouncementsSeen = false;
 }
 
 CRequestManager::CRequestManager()
@@ -99,6 +101,17 @@ void CRequestManager::Cleanup()
         auto prev = i;
         ++i;
         cleanup(prev); // cleanup erases which is why I need to advance the iterator first
+    }
+}
+
+// Give the announcing peer back its share of the transaction request limit.
+void CRequestManager::ReleaseTxnAnnouncer(CUnknownObj &item)
+{
+    if (item.announcer)
+    {
+        item.announcer->nTxnRequests--;
+        nTxnRequestCount--;
+        item.announcer = nullptr;
     }
 }
 
@@ -138,6 +151,71 @@ void CRequestManager::cleanup(const CInv &inv)
 }
 
 
+size_t CountTxnRequestPeers(CNode *from)
+{
+    size_t nPeers = 0;
+    LOCK(cs_vNodes);
+    for (CNode *node : vNodes)
+        if (!node->IsDisconnecting() && !node->fClient && (node == from || node->fSuccessfullyConnected))
+            ++nPeers;
+    return nPeers;
+}
+
+void CRequestManager::UpdateTxnRequestLimits(size_t nPeers, CNode *from)
+{
+    int64_t nNow = GetTimeMillis();
+    int64_t nLastCheck = nLastCheckForTPS.load();
+    if (nNow - nLastCheck > 250 && nLastCheckForTPS.compare_exchange_strong(nLastCheck, nNow))
+        nApproximateTxnPerSec.store(mempool.GetInstantaneousTxPerSec());
+
+    const uint64_t maxReqs = std::max(MAX_IN_FLIGHT_REQS, nApproximateTxnPerSec.load() * 10);
+    const unsigned int share = std::min(std::max(txRequestPeerShare.Value(), 1U), 100U);
+    nPeers = std::max(size_t(1), nPeers);
+    // A peer only claims to be a light client, so it never gets more than the baseline share.
+    const uint64_t clientLimit = maxReqs * share / 100;
+    const uint64_t peerLimit = std::max(clientLimit, maxReqs / nPeers);
+
+    LOCK(cs_objDownloader);
+    LOCK(cs_addTxn);
+    bool fNewAnnouncer = false;
+    if (from)
+    {
+        auto state = mapRequestManagerNodeState.find(from->GetId());
+        if (state != mapRequestManagerNodeState.end())
+        {
+            fNewAnnouncer = !state->second.fTxnAnnouncementsSeen;
+            state->second.fTxnAnnouncementsSeen = true;
+        }
+    }
+    if (fNewAnnouncer || nPeers != nTxnRequestPeers || peerLimit < nTxnRequestPeerLimit ||
+        clientLimit < nTxnRequestClientLimit || maxReqs < nTxnRequestLimit)
+    {
+        // Reclaim old allocations when peers join, before their announcements can be dropped by a full map.
+        for (OdMap *map : {&mapTxnInfo, &mapTxnToAdd})
+        {
+            for (auto it = map->begin(); it != map->end();)
+            {
+                CUnknownObj &item = it->second;
+                if (item.announcer && !item.fProcessing &&
+                    (item.announcer->IsDisconnecting() ||
+                        item.announcer->nTxnRequests > (item.announcer->fClient ? clientLimit : peerLimit) ||
+                        nTxnRequestCount > maxReqs))
+                {
+                    pendingTxns -= 1;
+                    ReleaseTxnAnnouncer(item);
+                    it = map->erase(it);
+                }
+                else
+                    ++it;
+            }
+        }
+    }
+    nTxnRequestLimit = maxReqs;
+    nTxnRequestPeerLimit = peerLimit;
+    nTxnRequestClientLimit = clientLimit;
+    nTxnRequestPeers = nPeers;
+}
+
 // Get this object from somewhere, asynchronously.
 void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
 {
@@ -146,28 +224,28 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
     CNodeRef noderef(from);
     if (obj.type == MSG_TX && objType == objType::TXN)
     {
-        // Limit the  number of times we update this value so we don't have to take the lock
-        // in the mempool so often. Doing this just a few times a second is ample accuracy.
-        int64_t nNow = GetTimeMillis();
-        int64_t nLastCheck = nLastCheckForTPS.load();
-        if (nNow - nLastCheck > 250)
-        {
-            if (nLastCheckForTPS.compare_exchange_strong(nLastCheck, nNow))
-            {
-                nApproximateTxnPerSec.store(mempool.GetInstantaneousTxPerSec());
-            }
-        }
-
-        // Don't allow the in flight requests to grow unbounded.
-        if (mapTxnInfo.size() > std::max(MAX_IN_FLIGHT_REQS, (nApproximateTxnPerSec * 10)))
-        {
-            LOG(REQ, "Tx request buffer full: Dropping request for %s", obj.hash.ToString());
-            return;
-        }
-
         LOCK(cs_addTxn);
-        std::pair<OdMap::iterator, bool> result = mapTxnToAdd.emplace(obj.hash, CUnknownObj());
-        OdMap::iterator &item = result.first;
+        OdMap::iterator item = mapTxnToAdd.find(obj.hash);
+        if (item == mapTxnToAdd.end())
+        {
+            // Don't allow the in flight requests to grow unbounded, nor one peer to fill them.
+            if (nTxnRequestCount >= nTxnRequestLimit)
+            {
+                LOG(REQ, "Tx request buffer full: Dropping request for %s", obj.hash.ToString());
+                return;
+            }
+            if (from->nTxnRequests >= (from->fClient ? nTxnRequestClientLimit : nTxnRequestPeerLimit))
+            {
+                LOG(REQ, "Tx request share of peer %d full: Dropping request for %s", from->GetId(),
+                    obj.hash.ToString());
+                return;
+            }
+            item = mapTxnToAdd.emplace(obj.hash, CUnknownObj()).first;
+            item->second.announcer = noderef;
+            from->nTxnRequests++;
+            nTxnRequestCount++;
+            pendingTxns += 1;
+        }
         CUnknownObj &data = item->second;
         data.obj = obj;
         data.objType = objType;
@@ -177,11 +255,6 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
         // if multiple invs were received before the transaction
         // was actually requested.
         data.AddSource(noderef, obj);
-
-        if (result.second) // inserted new
-        {
-            pendingTxns += 1;
-        }
     }
     else if (IsBlockType(obj) && (objType == objType::BLOCK || objType == objType::SUBBLOCK))
     {
@@ -856,8 +929,15 @@ void CRequestManager::RunTxnDeleter(OdMap &maybeToSend)
     }
     for (const uint256 &hash : setTemp)
     {
-        maybeToSend.erase(hash);
-        mapTxnInfo.erase(hash);
+        for (OdMap *map : {&maybeToSend, &mapTxnInfo})
+        {
+            OdMap::iterator it = map->find(hash);
+            if (it != map->end())
+            {
+                ReleaseTxnAnnouncer(it->second);
+                map->erase(it);
+            }
+        }
     }
 }
 
@@ -1162,6 +1242,7 @@ void CRequestManager::CheckIfNewSource(OdMap &mapNewRequests, OdMap &mapOldReque
                 iterOld->second.AddSource(item.noderef, iterNew->second.obj);
             }
             // Remove the the new request
+            ReleaseTxnAnnouncer(iterNew->second);
             iterNew = mapNewRequests.erase(iterNew);
         }
         else

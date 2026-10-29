@@ -530,6 +530,10 @@ CTweak<unsigned int> txRetryInterval("net.txRetryInterval",
     strprintf("How long to wait in microseconds before requesting a transaction from another source (default: %d)",
         DEFAULT_MIN_TX_REQUEST_RETRY_INTERVAL),
     DEFAULT_MIN_TX_REQUEST_RETRY_INTERVAL);
+CTweak<unsigned int> txRequestPeerShare("net.txRequestPeerShare",
+    strprintf("Baseline transaction request share per peer (1-100, default: %d); up to 100/full nodes if larger",
+        DEFAULT_TX_REQUEST_PEER_SHARE),
+    DEFAULT_TX_REQUEST_PEER_SHARE);
 CTweak<unsigned int> blkRetryInterval("net.blockRetryInterval",
     strprintf("How long to wait in microseconds before requesting a block from another source (default: %d)",
         DEFAULT_MIN_BLK_REQUEST_RETRY_INTERVAL),
