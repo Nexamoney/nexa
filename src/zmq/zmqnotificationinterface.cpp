@@ -132,7 +132,8 @@ void CZMQNotificationInterface::Shutdown()
     }
 }
 
-// Keep the notifier list stable during callbacks. A hard send error disables the shared endpoint.
+// Keep the notifier list stable during callbacks. A hard send error disables the shared endpoint,
+// which is logged once, so later failures are only logged with -debug=zmq.
 // Sequence gaps report notifications dropped by PUB sockets.
 void CZMQNotificationInterface::UpdatedBlockTip(const CBlockIndex *pindex, const ConstCBlockRef pblock)
 {
@@ -140,8 +141,8 @@ void CZMQNotificationInterface::UpdatedBlockTip(const CBlockIndex *pindex, const
     {
         if (!notifier->NotifyBlock(pindex, pblock))
         {
-            LOGA("zmq: Failed to publish %s for block %s at %s\n", notifier->GetType(), pindex->GetBlockHash().GetHex(),
-                notifier->GetAddress());
+            LOG(ZMQ, "zmq: Failed to publish %s for block %s at %s\n", notifier->GetType(),
+                pindex->GetBlockHash().GetHex(), notifier->GetAddress());
         }
     }
 }
@@ -152,7 +153,7 @@ void CZMQNotificationInterface::SyncTransaction(const CTransactionRef &ptx, cons
     {
         if (!notifier->NotifyTransaction(ptx))
         {
-            LOGA("zmq: Failed to publish %s for tx %s at %s\n", notifier->GetType(), ptx->GetId().GetHex(),
+            LOG(ZMQ, "zmq: Failed to publish %s for tx %s at %s\n", notifier->GetType(), ptx->GetId().GetHex(),
                 notifier->GetAddress());
         }
     }
@@ -164,8 +165,8 @@ void CZMQNotificationInterface::SyncDoubleSpend(const CTransactionRef ptx)
     {
         if (!notifier->NotifyDoubleSpend(ptx))
         {
-            LOGA("zmq: Failed to publish %s for double spend %s at %s\n", notifier->GetType(), ptx->GetId().GetHex(),
-                notifier->GetAddress());
+            LOG(ZMQ, "zmq: Failed to publish %s for double spend %s at %s\n", notifier->GetType(),
+                ptx->GetId().GetHex(), notifier->GetAddress());
         }
     }
 }
