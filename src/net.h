@@ -88,6 +88,7 @@ static const int64_t INV_HEADER_REQUEST_TIMEOUT = 30 * 1000000;
 static const unsigned int MAX_ADDR_TO_SEND = 1000;
 /** The maximum # of bytes to receive at once */
 static const int64_t MAX_RECV_CHUNK = 256 * 1024;
+static const int64_t MAX_QUEUED_SEND_MSGS = 64;
 /** -listen default */
 static const bool DEFAULT_LISTEN = true;
 /** -upnp default */
