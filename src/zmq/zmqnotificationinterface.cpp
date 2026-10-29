@@ -132,9 +132,8 @@ void CZMQNotificationInterface::Shutdown()
     }
 }
 
-// A failed notification is logged but the notifier is kept, because removing it would modify the notifier list
-// while other threads may be iterating it.  Subscribers detect any missed notification by the gap in the
-// per-topic sequence number.
+// Keep the notifier list stable during callbacks. A hard send error disables the shared endpoint.
+// Sequence gaps report notifications dropped by PUB sockets.
 void CZMQNotificationInterface::UpdatedBlockTip(const CBlockIndex *pindex, const ConstCBlockRef pblock)
 {
     for (CZMQAbstractNotifier *notifier : notifiers)

@@ -33,7 +33,10 @@ static int zmq_send_multipart(void *sock, const void *data, size_t size, ...)
 
         data = va_arg(args, const void *);
 
-        rc = zmq_msg_send(&msg, sock, data ? ZMQ_SNDMORE : 0);
+        do
+        {
+            rc = zmq_msg_send(&msg, sock, data ? ZMQ_SNDMORE : 0);
+        } while (rc == -1 && errno == EINTR);
         if (rc == -1)
         {
             zmqError("Unable to send ZMQ msg");
@@ -68,7 +71,7 @@ bool CZMQAbstractPublishNotifier::Initialize(void *pcontext)
             zmqError("Failed to create socket");
             return false;
         }
-        csZmq = std::make_shared<CCriticalSection>();
+        socketState = std::make_shared<SocketState>();
 
         int rc = zmq_bind(psocket, address.c_str());
         if (rc != 0)
@@ -86,7 +89,7 @@ bool CZMQAbstractPublishNotifier::Initialize(void *pcontext)
         LOG(ZMQ, "zmq: Reusing socket for address %s\n", address);
 
         psocket = i->second->psocket;
-        csZmq = i->second->csZmq;
+        socketState = i->second->socketState;
         mapPublishNotifiers.insert(std::make_pair(address, this));
 
         return true;
@@ -116,30 +119,45 @@ void CZMQAbstractPublishNotifier::Shutdown()
         if (count <= 1)
         {
             LOG(ZMQ, "Close socket at address %s\n", address);
-            LOCK(*csZmq);
-            int linger = 0;
-            zmq_setsockopt(psocket, ZMQ_LINGER, &linger, sizeof(linger));
-            zmq_close(psocket);
+            LOCK(socketState->cs);
+            if (!socketState->failed)
+            {
+                int linger = 0;
+                zmq_setsockopt(psocket, ZMQ_LINGER, &linger, sizeof(linger));
+                zmq_close(psocket);
+            }
         }
 
         psocket = nullptr;
-        csZmq.reset();
+        socketState.reset();
     }
 }
 
 bool CZMQAbstractPublishNotifier::SendZmqMessage(const char *command, const void *data, size_t size)
 {
     assert(psocket);
-    LOCK(*csZmq);
+    LOCK(socketState->cs);
+    if (socketState->failed)
+        return false;
 
-    // Advance the sequence even if the send fails so the subscriber sees a gap rather than silently missing a message
+    // Sequence gaps let subscribers detect messages dropped by PUB at the high water mark.
     uint32_t &nSequence = mapSequence[command];
     unsigned char msgseq[sizeof(uint32_t)];
     WriteLE32(&msgseq[0], nSequence);
     nSequence++;
 
     int rc = zmq_send_multipart(psocket, command, strlen(command), data, size, msgseq, sizeof(msgseq), nullptr);
-    return rc == 0;
+    if (rc != 0)
+    {
+        // A partial multipart message cannot be discarded without closing the socket.
+        socketState->failed = true;
+        int linger = 0;
+        zmq_setsockopt(psocket, ZMQ_LINGER, &linger, sizeof(linger));
+        zmq_close(psocket);
+        LOGA("zmq: Disabled failed publisher at %s; restart to restore notifications\n", address);
+        return false;
+    }
+    return true;
 }
 
 bool CZMQPublishHashBlockNotifier::NotifyBlock(const CBlockIndex *pindex, const ConstCBlockRef /*pblock*/)

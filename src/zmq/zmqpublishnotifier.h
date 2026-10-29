@@ -25,9 +25,14 @@ protected:
     bool SendZmqMessage(const char *command, const void *data, size_t size);
 
 private:
-    // Serializes use of psocket, which is shared by every publish notifier bound to the same address
-    std::shared_ptr<CCriticalSection> csZmq;
-    // Next sequence number for each topic published by this notifier, guarded by csZmq
+    struct SocketState
+    {
+        CCriticalSection cs;
+        bool failed GUARDED_BY(cs) = false;
+    };
+    // All notifiers at one address share the lock and failure state.
+    std::shared_ptr<SocketState> socketState;
+    // Next sequence number for each topic, guarded by socketState->cs.
     std::map<std::string, uint32_t> mapSequence;
 };
 

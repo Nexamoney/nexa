@@ -86,6 +86,11 @@ the subscriber missed one or more notifications (for example because
 it was too slow and ZeroMQ dropped messages at its high water mark)
 and should resynchronize.
 
+Interrupted sends are retried. If a send fails otherwise, the publisher
+closes that endpoint to avoid continuing an incomplete multipart message.
+All topics sharing the endpoint stop publishing until the node restarts;
+other endpoints continue normally. The failure is logged.
+
 ZeroMQ endpoint specifiers for TCP (and others) are documented in the
 [ZeroMQ API](http://api.zeromq.org/4-0:_start).
 
