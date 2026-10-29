@@ -3,11 +3,17 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "crypto/common.h"
+#include "logging.h"
+#include "primitives/transaction.h"
+#include "validationinterface.h"
+#include "zmq/zmqnotificationinterface.h"
 #include "zmq/zmqpublishnotifier.h"
 
 #include <boost/test/unit_test.hpp>
 #include <cerrno>
+#include <cstdio>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #ifndef MAC_OSX
@@ -200,6 +206,62 @@ BOOST_AUTO_TEST_CASE(allocation_failure_disables_only_the_shared_endpoint)
         BOOST_REQUIRE(healthy.SendZmqMessage("alpha", "live", 4));
         healthySub.Check("alpha", "live", 0);
     }
+}
+
+BOOST_AUTO_TEST_CASE(disabled_endpoint_is_logged_once)
+{
+    CZMQNotificationInterface *zmq =
+        CZMQNotificationInterface::CreateWithArguments({{"-zmqpubhashtx", "inproc://zmq-log"}});
+    BOOST_REQUIRE(zmq);
+    RegisterValidationInterface(zmq);
+
+    // Capture what the logger prints to the console, without -debug=zmq whatever earlier tests enabled.
+    const bool fConsole = fPrintToConsole, fDebugLog = fPrintToDebugLog;
+    const uint64_t categories = Logging::categoriesEnabled;
+    Logging::LogToggleCategory(ZMQ, false);
+    FILE *log = tmpfile();
+    BOOST_REQUIRE(log);
+    fflush(stdout);
+    const int savedStdout = dup(STDOUT_FILENO);
+    dup2(fileno(log), STDOUT_FILENO);
+    fPrintToConsole = true;
+    fPrintToDebugLog = false;
+
+    // Transactions keep coming after the endpoint is disabled; that must not add a log line each.
+    fault = ZmqFault();
+    fault.failInit = 1;
+    for (int i = 0; i < 100; i++)
+    {
+        CMutableTransaction tx;
+        tx.nLockTime = i;
+        GetMainSignals().SyncTransaction(MakeTransactionRef(tx), nullptr, -1);
+    }
+    fault = ZmqFault();
+
+    fflush(stdout);
+    dup2(savedStdout, STDOUT_FILENO);
+    close(savedStdout);
+    fPrintToConsole = fConsole;
+    fPrintToDebugLog = fDebugLog;
+    Logging::categoriesEnabled = categories;
+    UnregisterValidationInterface(zmq);
+    delete zmq;
+
+    std::string output;
+    rewind(log);
+    char buf[4096];
+    for (size_t n; (n = fread(buf, 1, sizeof(buf), log)) > 0;)
+        output.append(buf, n);
+    fclose(log);
+    auto count = [&](const std::string &text)
+    {
+        size_t found = 0;
+        for (size_t pos = output.find(text); pos != std::string::npos; pos = output.find(text, pos + 1))
+            found++;
+        return found;
+    };
+    BOOST_CHECK_EQUAL(count("Disabled failed publisher at inproc://zmq-log"), 1);
+    BOOST_CHECK_EQUAL(count("Failed to publish"), 0);
 }
 #endif
 
