@@ -215,6 +215,7 @@ testScripts = [ RpcTest(t) for t in [
     Disabled('hardfork1_activation_blocksizelimit', "Already activated on fork1"),
     'hardfork2_activation_tailstorm',
     'tailstorm_cross_branch',
+    'inv_getheaders_resources',
     'headerPath',
     'rejectReply',
     'handshake_timeout',
