@@ -132,53 +132,41 @@ void CZMQNotificationInterface::Shutdown()
     }
 }
 
-void CZMQNotificationInterface::UpdatedBlockTip(const CBlockIndex *pindex)
+// Keep the notifier list stable during callbacks. A hard send error disables the shared endpoint,
+// which is logged once, so later failures are only logged with -debug=zmq.
+// Sequence gaps report notifications dropped by PUB sockets.
+void CZMQNotificationInterface::UpdatedBlockTip(const CBlockIndex *pindex, const ConstCBlockRef pblock)
 {
-    for (std::list<CZMQAbstractNotifier *>::iterator i = notifiers.begin(); i != notifiers.end();)
+    for (CZMQAbstractNotifier *notifier : notifiers)
     {
-        CZMQAbstractNotifier *notifier = *i;
-        if (notifier->NotifyBlock(pindex))
+        if (!notifier->NotifyBlock(pindex, pblock))
         {
-            i++;
-        }
-        else
-        {
-            notifier->Shutdown();
-            i = notifiers.erase(i);
+            LOG(ZMQ, "zmq: Failed to publish %s for block %s at %s\n", notifier->GetType(),
+                pindex->GetBlockHash().GetHex(), notifier->GetAddress());
         }
     }
 }
 
 void CZMQNotificationInterface::SyncTransaction(const CTransactionRef &ptx, const ConstCBlockRef pblock, int txIndex)
 {
-    for (std::list<CZMQAbstractNotifier *>::iterator i = notifiers.begin(); i != notifiers.end();)
+    for (CZMQAbstractNotifier *notifier : notifiers)
     {
-        CZMQAbstractNotifier *notifier = *i;
-        if (notifier->NotifyTransaction(ptx))
+        if (!notifier->NotifyTransaction(ptx))
         {
-            i++;
-        }
-        else
-        {
-            notifier->Shutdown();
-            i = notifiers.erase(i);
+            LOG(ZMQ, "zmq: Failed to publish %s for tx %s at %s\n", notifier->GetType(), ptx->GetId().GetHex(),
+                notifier->GetAddress());
         }
     }
 }
 
 void CZMQNotificationInterface::SyncDoubleSpend(const CTransactionRef ptx)
 {
-    for (std::list<CZMQAbstractNotifier *>::iterator i = notifiers.begin(); i != notifiers.end();)
+    for (CZMQAbstractNotifier *notifier : notifiers)
     {
-        CZMQAbstractNotifier *notifier = *i;
-        if (notifier->NotifyDoubleSpend(ptx))
+        if (!notifier->NotifyDoubleSpend(ptx))
         {
-            i++;
-        }
-        else
-        {
-            notifier->Shutdown();
-            i = notifiers.erase(i);
+            LOG(ZMQ, "zmq: Failed to publish %s for double spend %s at %s\n", notifier->GetType(),
+                ptx->GetId().GetHex(), notifier->GetAddress());
         }
     }
 }

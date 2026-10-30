@@ -4291,7 +4291,7 @@ bool ConnectTip(CValidationState &state,
         CheckAndAlertUnknownVersionbits(chainparams, pindexNew);
 
         // Notify external zmq listeners about the new tip.
-        GetMainSignals().UpdatedBlockTip(pindexNew);
+        GetMainSignals().UpdatedBlockTip(pindexNew, pblock);
     }
 
     // Apply token index updates if there are any

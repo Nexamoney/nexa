@@ -4,15 +4,43 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "zmqpublishnotifier.h"
-#include "blockstorage/blockstorage.h"
-#include "chainparams.h"
+#include "crypto/common.h"
 #include "main.h"
 #include "util.h"
 
 static std::multimap<std::string, CZMQAbstractPublishNotifier *> mapPublishNotifiers;
 
-// Internal function to send multipart message
-static int zmq_send_multipart(void *sock, const void *data, size_t size, ...)
+GuardedZmqSocket::~GuardedZmqSocket()
+{
+    LOCK(cs_guardedZmqSocket);
+    if (psocket)
+    {
+        LOG(ZMQ, "Close socket at address %s\n", address);
+        Close();
+    }
+}
+
+void GuardedZmqSocket::Close()
+{
+    int linger = 0;
+    zmq_setsockopt(psocket, ZMQ_LINGER, &linger, sizeof(linger));
+    zmq_close(psocket);
+    psocket = nullptr;
+}
+
+bool GuardedZmqSocket::Bind()
+{
+    LOCK(cs_guardedZmqSocket);
+    if (zmq_bind(psocket, address.c_str()) != 0)
+    {
+        zmqError("Failed to bind address");
+        return false;
+    }
+    return true;
+}
+
+// Send each (data, size) pair as one part of a multipart message; the list ends with a null data pointer
+int GuardedZmqSocket::SendMultipart(const void *data, size_t size, ...)
 {
     va_list args;
     va_start(args, size);
@@ -34,7 +62,10 @@ static int zmq_send_multipart(void *sock, const void *data, size_t size, ...)
 
         data = va_arg(args, const void *);
 
-        rc = zmq_msg_send(&msg, sock, data ? ZMQ_SNDMORE : 0);
+        do
+        {
+            rc = zmq_msg_send(&msg, psocket, data ? ZMQ_SNDMORE : 0);
+        } while (rc == -1 && errno == EINTR);
         if (rc == -1)
         {
             zmqError("Unable to send ZMQ msg");
@@ -54,28 +85,50 @@ static int zmq_send_multipart(void *sock, const void *data, size_t size, ...)
     return 0;
 }
 
+bool GuardedZmqSocket::Send(const char *command, const void *data, size_t size)
+{
+    LOCK(cs_guardedZmqSocket);
+    if (!psocket)
+        return false;
+
+    // Sequence gaps let subscribers detect messages dropped by PUB at the high water mark.
+    uint32_t &nSequence = mapSequence[command];
+    unsigned char msgseq[sizeof(uint32_t)];
+    WriteLE32(&msgseq[0], nSequence);
+    nSequence++;
+
+    int rc = SendMultipart(command, strlen(command), data, size, msgseq, sizeof(msgseq), nullptr);
+    if (rc != 0)
+    {
+        // A partial multipart message cannot be discarded without closing the socket.
+        Close();
+        LOGA("zmq: Disabled failed publisher at %s; restart to restore notifications\n", address);
+        return false;
+    }
+    return true;
+}
+
+CZMQAbstractPublishNotifier::~CZMQAbstractPublishNotifier() { assert(!socket); }
+
 bool CZMQAbstractPublishNotifier::Initialize(void *pcontext)
 {
-    assert(!psocket);
+    assert(!socket);
 
     // check if address is being used by other publish notifier
     std::multimap<std::string, CZMQAbstractPublishNotifier *>::iterator i = mapPublishNotifiers.find(address);
 
     if (i == mapPublishNotifiers.end())
     {
-        psocket = zmq_socket(pcontext, ZMQ_PUB);
+        void *psocket = zmq_socket(pcontext, ZMQ_PUB);
         if (!psocket)
         {
             zmqError("Failed to create socket");
             return false;
         }
+        socket = std::make_shared<GuardedZmqSocket>(psocket, address);
 
-        int rc = zmq_bind(psocket, address.c_str());
-        if (rc != 0)
-        {
-            zmqError("Failed to bind address");
+        if (!socket->Bind())
             return false;
-        }
 
         // register this notifier for the address, so it can be reused for other publish notifier
         mapPublishNotifiers.insert(std::make_pair(address, this));
@@ -85,7 +138,7 @@ bool CZMQAbstractPublishNotifier::Initialize(void *pcontext)
     {
         LOG(ZMQ, "zmq: Reusing socket for address %s\n", address);
 
-        psocket = i->second->psocket;
+        socket = i->second->socket;
         mapPublishNotifiers.insert(std::make_pair(address, this));
 
         return true;
@@ -94,11 +147,9 @@ bool CZMQAbstractPublishNotifier::Initialize(void *pcontext)
 
 void CZMQAbstractPublishNotifier::Shutdown()
 {
-    // If Initialize did not succeed, or was never called, then shutdown may be called with psocket == nullptr
-    if (psocket != nullptr)
+    // If Initialize did not succeed, or was never called, then shutdown may be called with socket == nullptr
+    if (socket != nullptr)
     {
-        int count = mapPublishNotifiers.count(address);
-
         // remove this notifier from the list of publishers using this address
         typedef std::multimap<std::string, CZMQAbstractPublishNotifier *>::iterator iterator;
         std::pair<iterator, iterator> iterpair = mapPublishNotifiers.equal_range(address);
@@ -112,32 +163,24 @@ void CZMQAbstractPublishNotifier::Shutdown()
             }
         }
 
-        if (count <= 1)
-        {
-            LOG(ZMQ, "Close socket at address %s\n", address);
-            int linger = 0;
-            zmq_setsockopt(psocket, ZMQ_LINGER, &linger, sizeof(linger));
-            zmq_close(psocket);
-        }
-
-        psocket = nullptr;
+        // The last notifier using the socket closes it
+        socket.reset();
     }
 }
 
-bool CZMQPublishHashBlockNotifier::NotifyBlock(const CBlockIndex *pindex)
+bool CZMQPublishHashBlockNotifier::NotifyBlock(const CBlockIndex *pindex, const ConstCBlockRef /*pblock*/)
 {
     uint256 hash = pindex->GetBlockHash();
     LOG(ZMQ, "zmq: Publish hashblock %s\n", hash.GetHex());
     char data[32];
     for (unsigned int i = 0; i < 32; i++)
         data[31 - i] = hash.begin()[i];
-    int rc = zmq_send_multipart(psocket, "hashblock", (size_t)9, data, (size_t)32, nullptr);
-    return rc == 0;
+    return socket->Send("hashblock", data, 32);
 }
 
 bool CZMQPublishHashTransactionNotifier::NotifyTransaction(const CTransactionRef &ptx)
 {
-    int rc;
+    bool rc;
 
     {
         uint256 hash = ptx->GetId();
@@ -145,7 +188,7 @@ bool CZMQPublishHashTransactionNotifier::NotifyTransaction(const CTransactionRef
         char data[32];
         for (unsigned int i = 0; i < 32; i++)
             data[31 - i] = hash.begin()[i];
-        rc = zmq_send_multipart(psocket, "txid", (size_t)4, data, (size_t)32, nullptr);
+        rc = socket->Send("txid", data, 32);
     }
 
     {
@@ -154,22 +197,22 @@ bool CZMQPublishHashTransactionNotifier::NotifyTransaction(const CTransactionRef
         char data[32];
         for (unsigned int i = 0; i < 32; i++)
             data[31 - i] = hash.begin()[i];
-        rc |= zmq_send_multipart(psocket, "txidem", (size_t)6, data, (size_t)32, nullptr);
+        rc &= socket->Send("txidem", data, 32);
     }
 
-    return rc == 0;
+    return rc;
 }
 
 bool CZMQPublishHashDoubleSpendNotifier::NotifyDoubleSpend(const CTransactionRef ptx)
 {
-    int rc;
+    bool rc;
     {
         uint256 hash = ptx->GetId();
         LOG(ZMQ, "zmq: Publish dsid %s\n", hash.GetHex());
         char data[32];
         for (unsigned int i = 0; i < 32; i++)
             data[31 - i] = hash.begin()[i];
-        rc = zmq_send_multipart(psocket, "dsid", (size_t)4, data, (size_t)32, nullptr);
+        rc = socket->Send("dsid", data, 32);
     }
 
     {
@@ -178,31 +221,18 @@ bool CZMQPublishHashDoubleSpendNotifier::NotifyDoubleSpend(const CTransactionRef
         char data[32];
         for (unsigned int i = 0; i < 32; i++)
             data[31 - i] = hash.begin()[i];
-        rc |= zmq_send_multipart(psocket, "dsidem", (size_t)6, data, (size_t)32, nullptr);
-        return rc == 0;
+        rc &= socket->Send("dsidem", data, 32);
+        return rc;
     }
 }
 
-bool CZMQPublishRawBlockNotifier::NotifyBlock(const CBlockIndex *pindex)
+bool CZMQPublishRawBlockNotifier::NotifyBlock(const CBlockIndex *pindex, const ConstCBlockRef pblock)
 {
     LOG(ZMQ, "zmq: Publish rawblock %s\n", pindex->GetBlockHash().GetHex());
 
-    const Consensus::Params &consensusParams = Params().GetConsensus();
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-    {
-        LOCK(cs_main);
-        const ConstCBlockRef pblock = ReadBlockFromDisk(pindex, consensusParams);
-        if (!pblock)
-        {
-            zmqError("Can't read block from disk");
-            return false;
-        }
-
-        ss << *pblock;
-    }
-
-    int rc = zmq_send_multipart(psocket, "rawblock", (size_t)8, &(*ss.begin()), ss.size(), nullptr);
-    return rc == 0;
+    ss << *pblock;
+    return socket->Send("rawblock", &(*ss.begin()), ss.size());
 }
 
 bool CZMQPublishRawTransactionNotifier::NotifyTransaction(const CTransactionRef &ptx)
@@ -212,8 +242,7 @@ bool CZMQPublishRawTransactionNotifier::NotifyTransaction(const CTransactionRef 
     LOG(ZMQ, "zmq: Publish rawtx %s (%s)\n", id.GetHex(), idem.GetHex());
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
     ss << *ptx;
-    int rc = zmq_send_multipart(psocket, "rawtx", (size_t)5, &(*ss.begin()), ss.size(), nullptr);
-    return rc == 0;
+    return socket->Send("rawtx", &(*ss.begin()), ss.size());
 }
 
 bool CZMQPublishRawDoubleSpendNotifier::NotifyDoubleSpend(const CTransactionRef ptx)
@@ -223,6 +252,5 @@ bool CZMQPublishRawDoubleSpendNotifier::NotifyDoubleSpend(const CTransactionRef 
     LOG(ZMQ, "zmq: Publish rawds %s (%s)\n", id.GetHex(), idem.GetHex());
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
     ss << ptx;
-    int rc = zmq_send_multipart(psocket, "rawds", (size_t)5, &(*ss.begin()), ss.size(), nullptr);
-    return rc == 0;
+    return socket->Send("rawds", &(*ss.begin()), ss.size());
 }

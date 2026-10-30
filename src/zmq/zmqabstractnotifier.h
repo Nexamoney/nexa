@@ -16,7 +16,6 @@ typedef CZMQAbstractNotifier *(*CZMQNotifierFactory)();
 class CZMQAbstractNotifier
 {
 public:
-    CZMQAbstractNotifier() : psocket(nullptr) {}
     virtual ~CZMQAbstractNotifier();
 
     template <typename T>
@@ -32,12 +31,11 @@ public:
     virtual bool Initialize(void *pcontext) = 0;
     virtual void Shutdown() = 0;
 
-    virtual bool NotifyBlock(const CBlockIndex *pindex);
+    virtual bool NotifyBlock(const CBlockIndex *pindex, const ConstCBlockRef pblock);
     virtual bool NotifyTransaction(const CTransactionRef &ptx);
     virtual bool NotifyDoubleSpend(const CTransactionRef ptx);
 
 protected:
-    void *psocket;
     std::string type;
     std::string address;
 };
