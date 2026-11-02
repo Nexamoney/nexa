@@ -1783,7 +1783,7 @@ bool ProcessMessage(CNode *pfrom,
         // Run process getdata and process as much of the getdata's as we can before taking the lock
         // and appending the remainder to the vRecvGetData queue.
         ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
-        if (!invDeque.empty())
+        if (!invDeque.empty() && (pfrom->vRecvGetData.size() + invDeque.size() < MAX_QUEUED_GETDATA))
         {
             LOCK(pfrom->csRecvGetData);
             pfrom->vRecvGetData.insert(pfrom->vRecvGetData.end(), invDeque.begin(), invDeque.end());
@@ -1835,7 +1835,7 @@ bool ProcessMessage(CNode *pfrom,
         // Run process getdata and process as much of the getdata's as we can before taking the lock
         // and appending the remainder to the vRecvGetData2 queue.
         ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
-        if (!invDeque.empty())
+        if (!invDeque.empty() && (pfrom->vRecvGetData2.size() + invDeque.size() < MAX_QUEUED_GETDATA))
         {
             LOCK(pfrom->csRecvGetData);
             pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.end(), invDeque.begin(), invDeque.end());
@@ -1883,7 +1883,7 @@ bool ProcessMessage(CNode *pfrom,
         // Run process extgetdata and process as much of the extgetdata's as we can before taking the lock
         // and appending the remainder to the vRecvExtGetData queue.
         ProcessExtGetData(pfrom, chainparams.GetConsensus(), invDeque);
-        if (!invDeque.empty())
+        if (!invDeque.empty() && (pfrom->vRecvExtGetData.size() + invDeque.size() < MAX_QUEUED_GETDATA))
         {
             LOCK(pfrom->csRecvGetData);
             pfrom->vRecvExtGetData.insert(pfrom->vRecvExtGetData.end(), invDeque.begin(), invDeque.end());
