@@ -3416,7 +3416,10 @@ bool ProcessMessages(CNode *pfrom)
             if (!invDeque.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                pfrom->vRecvGetData.insert(pfrom->vRecvGetData.begin(), invDeque.begin(), invDeque.end());
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvGetData.insert(pfrom->vRecvGetData.begin(), invDeque.begin(), invDeque.end());
+                }
             }
         }
         if (!pfrom->vRecvGetData2.empty())
@@ -3434,7 +3437,10 @@ bool ProcessMessages(CNode *pfrom)
             if (!invDeque.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.begin(), invDeque.begin(), invDeque.end());
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.begin(), invDeque.begin(), invDeque.end());
+                }
             }
         }
         if (!pfrom->vRecvExtGetData.empty())
@@ -3452,7 +3458,10 @@ bool ProcessMessages(CNode *pfrom)
             if (!invDeque.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                pfrom->vRecvExtGetData.insert(pfrom->vRecvExtGetData.begin(), invDeque.begin(), invDeque.end());
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvExtGetData.insert(pfrom->vRecvExtGetData.begin(), invDeque.begin(), invDeque.end());
+                }
             }
         }
     }
