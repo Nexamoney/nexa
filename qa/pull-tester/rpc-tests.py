@@ -226,6 +226,7 @@ testScripts = [ RpcTest(t) for t in [
     'msgCookie',
     'tailstorm_uncle_sync',
     'capd',
+    'capd_future_createtime',
     'testpynode',
     'grouptokens',
     Disabled('sigchecks_inputstandardness_activation', 'Already activated, and mempool bad sigcheck mempool cleanup removed so test will fail'),

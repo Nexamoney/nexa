@@ -18,6 +18,7 @@ arith_uint256 MIN_FORWARD_MSG_DIFFICULTY("007fffffffffffffffffffffffffffffffffff
 arith_uint256 MIN_LOCAL_MSG_DIFFICULTY("00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
 
 uint64_t MSG_LIFETIME_SEC = 60 * 10; // expected message halflife in seconds
+uint64_t MSG_MAX_FUTURE_SEC = 60; // clock skew beyond which a peer relaying a future message is penalised
 uint64_t NOMINAL_MSG_SIZE = 100; // A message of this size or less has no penalty
 
 PriorityType MIN_RELAY_PRIORITY = Priority(MIN_FORWARD_MSG_DIFFICULTY, NOMINAL_MSG_SIZE, 0);
@@ -101,7 +102,8 @@ uint256 CapdMsg::CalcHash() const
 
 PriorityType CapdMsg::Priority() const
 {
-    return InitialPriority() - (double)(uint64_t)(GetTime() - createTime) / MSG_LIFETIME_SEC;
+    // A negative age ranks a message created ahead of our clock slightly above its initial priority, as the index does
+    return InitialPriority() - ((double)GetTime() - (double)createTime) / MSG_LIFETIME_SEC;
 }
 PriorityType CapdMsg::InitialPriority() const
 {
