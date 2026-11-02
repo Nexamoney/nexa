@@ -18,7 +18,7 @@ arith_uint256 MIN_FORWARD_MSG_DIFFICULTY("007fffffffffffffffffffffffffffffffffff
 arith_uint256 MIN_LOCAL_MSG_DIFFICULTY("00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
 
 uint64_t MSG_LIFETIME_SEC = 60 * 10; // expected message halflife in seconds
-uint64_t MSG_MAX_FUTURE_SEC = 60; // how far ahead of our clock a message may be created
+uint64_t MSG_MAX_FUTURE_SEC = 60; // clock skew beyond which a peer relaying a future message is penalised
 uint64_t NOMINAL_MSG_SIZE = 100; // A message of this size or less has no penalty
 
 PriorityType MIN_RELAY_PRIORITY = Priority(MIN_FORWARD_MSG_DIFFICULTY, NOMINAL_MSG_SIZE, 0);

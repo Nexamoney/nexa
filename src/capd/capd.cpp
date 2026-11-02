@@ -389,11 +389,11 @@ void CapdMsgPool::add(const CapdMsgRef &msg)
             throw CapdMsgPoolException("Message POW inconsistent");
         }
 
-        // A future creation time raises a message's priority, so only allow clock skew
-        if (msg->createTime > (uint64_t)GetTime() + MSG_MAX_FUTURE_SEC)
+        // A later creation time buys priority, so creators are expected to backdate their messages
+        if (msg->createTime > (uint64_t)GetTime())
         {
-            LOG(CAPD, "Message created too far in the future");
-            throw CapdMsgPoolException("Message created too far in the future");
+            LOG(CAPD, "Message created in the future");
+            throw CapdMsgPoolException("Message created in the future");
         }
 
         if (msg->Priority() < _GetLocalPriority())
@@ -590,6 +590,14 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
             auto msgRef = MakeMsgRef(CapdMsg(msg));
             uint256 hash = msgRef->GetHash();
             LOG(CAPD, "received Msg %s\n", hash.GetHex());
+            if (msgRef->createTime > (uint64_t)GetTime())
+            {
+                // Only penalise beyond clock skew between us and the creator
+                if (msgRef->createTime > (uint64_t)GetTime() + MSG_MAX_FUTURE_SEC)
+                    dosMan.Misbehaving(pfrom, 1, BanReasonInvalidPriority);
+                LOG(CAPD, "Capd drop: message %s created in the future\n", hash.GetHex());
+                continue;
+            }
             PriorityType priority = msgRef->Priority();
             LOG(CAPD, "Msg priority %f\n", priority);
             if (priority < cn->receivePriority)

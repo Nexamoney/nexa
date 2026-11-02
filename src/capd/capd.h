@@ -45,7 +45,7 @@ extern arith_uint256 MIN_FORWARD_MSG_DIFFICULTY;
 extern arith_uint256 MIN_LOCAL_MSG_DIFFICULTY;
 
 extern uint64_t MSG_LIFETIME_SEC; //!< expected message halflife in seconds
-extern uint64_t MSG_MAX_FUTURE_SEC; //!< how far ahead of our clock a message may be created
+extern uint64_t MSG_MAX_FUTURE_SEC; //!< clock skew beyond which a peer relaying a future message is penalised
 
 /** The minimum message priority accepted and forwarded by the network
     Having a minimum reduces spam even if the msg pool is under utilized */

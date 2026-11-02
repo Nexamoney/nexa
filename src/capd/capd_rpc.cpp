@@ -15,6 +15,9 @@
 #include "rpc/server.h"
 #include "utilstrencodings.h"
 
+// Peers drop messages created ahead of their clock, so allow for theirs being slightly behind ours
+static const long int CAPD_SEND_BACKDATE_SEC = 5;
+
 UniValue CapdMsg2UniValue(CapdMsgRef msg)
 {
     UniValue ret(UniValue::VOBJ);
@@ -102,8 +105,10 @@ UniValue capdrpc(const UniValue &params, bool fHelp)
         }
 
         CapdMsgRef msg = std::make_shared<CapdMsg>(data);
-        msg->SetPowTargetHarderThanPriority(msgpool.GetRelayPriority());
-        msg->Solve();
+        // Make up for the priority lost to backdating, which would otherwise put it below the relay priority
+        msg->SetPowTargetHarderThanPriority(
+            msgpool.GetRelayPriority() + (PriorityType)CAPD_SEND_BACKDATE_SEC / MSG_LIFETIME_SEC);
+        msg->Solve(CAPD_SEND_BACKDATE_SEC);
         msgpool.add(msg);
 
         // Check all query peers to see if they are interested in this new message
