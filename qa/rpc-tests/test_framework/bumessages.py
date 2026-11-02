@@ -81,8 +81,8 @@ class CapdMsg(object):
         self.difficultyBits = compact_from_uint256(t)
         return self.difficultyBits
 
-    def solve(self, minPriority):
-        self.createTime = int(time.time())
+    def solve(self, minPriority, createTime=None):
+        self.createTime = int(time.time()) if createTime is None else createTime
         # convert priority to nBits format and back rather than straight to difficulty
         # because rounding during the conversion
         self.setDifficultyBitsFromPriority(minPriority)

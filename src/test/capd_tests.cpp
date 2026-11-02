@@ -548,6 +548,59 @@ BOOST_AUTO_TEST_CASE(capd_pool_thresholds_follow_time)
     SetMockTime(0);
 }
 
+// A message created slightly ahead of our clock is ranked by its creation time, not by a wrapped age
+BOOST_AUTO_TEST_CASE(capd_future_create_time)
+{
+    int64_t now = GetTime();
+    SetMockTime(now);
+
+    CapdMsgPool mp;
+    mp.SetMaxSize(100000);
+
+    CapdMsg ahead("ahead 123456789");
+    ahead.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(4));
+    ahead.Solve(now + 30);
+    BOOST_CHECK(ahead.Priority() > ahead.InitialPriority());
+    BOOST_CHECK_NO_THROW(mp.add(MsgRefCopy(ahead)));
+    BOOST_CHECK(mp.find(ahead.GetHash()) != nullmsgref);
+
+    // Far enough ahead to be refused
+    CapdMsg far("far ahead 12345");
+    far.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(4));
+    far.Solve(now + 3600);
+    BOOST_CHECK_THROW(mp.add(MsgRefCopy(far)), CapdMsgPoolException);
+    BOOST_CHECK(mp.find(far.GetHash()) == nullmsgref);
+
+    SetMockTime(0);
+}
+
+// If the clock steps back after admission, the pool's priorities must still follow its order
+BOOST_AUTO_TEST_CASE(capd_pool_clock_steps_back)
+{
+    int64_t now = GetTime();
+    SetMockTime(now);
+
+    CapdMsgPool mp;
+    mp.SetMaxSize(100000);
+
+    CapdMsg older("older 123456789");
+    older.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(2));
+    older.Solve(300); // created 300 s ago
+    mp.add(MsgRefCopy(older));
+
+    CapdMsg newer("newer 123456789");
+    newer.SetPowTarget(MIN_LOCAL_MSG_DIFFICULTY / arith_uint256(64));
+    newer.Solve();
+    mp.add(MsgRefCopy(newer));
+
+    // newer is now 5 s ahead of the clock
+    SetMockTime(now - 5);
+    BOOST_CHECK(older.Priority() < newer.Priority());
+    BOOST_CHECK_EQUAL(mp.GetHighestPriority(), newer.Priority());
+
+    SetMockTime(0);
+}
+
 BOOST_AUTO_TEST_CASE(capd_http) { BOOST_CHECK(1 == 1); }
 class CMsgMaker
 {
