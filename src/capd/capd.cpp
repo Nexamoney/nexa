@@ -389,6 +389,13 @@ void CapdMsgPool::add(const CapdMsgRef &msg)
             throw CapdMsgPoolException("Message POW inconsistent");
         }
 
+        // A future creation time raises a message's priority, so only allow clock skew
+        if (msg->createTime > (uint64_t)GetTime() + MSG_MAX_FUTURE_SEC)
+        {
+            LOG(CAPD, "Message created too far in the future");
+            throw CapdMsgPoolException("Message created too far in the future");
+        }
+
         if (msg->Priority() < _GetLocalPriority())
         {
             LOG(CAPD, "message priority %f below local priority %f", msg->Priority(), _GetLocalPriority());
