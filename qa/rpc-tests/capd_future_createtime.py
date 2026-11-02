@@ -3,8 +3,9 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
-A CAPD message created slightly ahead of the node's clock, as by a sender whose clock runs fast, must be accepted
-without penalising the peer that relayed it.  One created far ahead is dropped, also without a penalty.
+A CAPD message created ahead of the node's clock is dropped, since a later creation time would buy priority.  The peer
+that relayed it is only penalised beyond clock skew.  Messages sent with "capd send" are backdated a few seconds, so
+peers whose clocks are slightly behind do not drop them.
 """
 import test_framework.loginit
 
@@ -70,22 +71,27 @@ class CapdFutureCreateTimeTest(BitcoinTestFramework):
         now = int(time.time())
         self.nodes[0].setmocktime(now)
 
+        # Messages are handled in order, so once a later message is in, the ones before it have been handled
+        def handled(msg, n):
+            marker = CapdMsg(b"marker %d after the test message" % n)
+            marker.solve(2, now)
+            hdlr.send_message(msg_capdmsg([msg, marker]))
+            waitFor(TIMEOUT, lambda: hashToHex(marker.calcHash()) in self.nodes[0].capd("list"))
+
         ahead = CapdMsg(b"created 5 s ahead")
         ahead.solve(2, now + 5)
-        hdlr.send_message(msg_capdmsg([ahead]))
-        waitFor(TIMEOUT, lambda: hashToHex(ahead.calcHash()) in self.nodes[0].capd("list"))
+        handled(ahead, 0)
+        assert hashToHex(ahead.calcHash()) not in self.nodes[0].capd("list")
         assert_equal(self.banscore(), 0)
 
         far = CapdMsg(b"created 1 h ahead")
         far.solve(2, now + 3600)
-        hdlr.send_message(msg_capdmsg([far]))
-        # Messages are handled in order, so once this one is in, the one before it has been handled
-        marker = CapdMsg(b"created now......")
-        marker.solve(2, now)
-        hdlr.send_message(msg_capdmsg([marker]))
-        waitFor(TIMEOUT, lambda: hashToHex(marker.calcHash()) in self.nodes[0].capd("list"))
+        handled(far, 1)
         assert hashToHex(far.calcHash()) not in self.nodes[0].capd("list")
-        assert_equal(self.banscore(), 0)
+        assert_equal(self.banscore(), 1)
+
+        sent = self.nodes[0].capd("send", "sent by rpc")
+        assert self.nodes[0].capd("get", sent)["created"] < now
 
 
 if __name__ == '__main__':
