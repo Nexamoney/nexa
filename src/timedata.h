@@ -69,4 +69,7 @@ int64_t GetTimeOffset();
 int64_t GetAdjustedTime();
 void AddTimeData(const CNetAddr &ip, int64_t nTime);
 
+/** Clear peer samples, the time offset and the warning latch between tests. */
+void ResetTimeDataForTest();
+
 #endif // NEXA_TIMEDATA_H
