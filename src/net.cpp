@@ -400,6 +400,17 @@ CNodeRef FindNodeRef(const std::string &addrName)
     return CNodeRef(FindNode(addrName));
 }
 
+CNodeRef FindNodeRef(const NodeId id)
+{
+    LOCK(cs_vNodes);
+    for (CNode *node : vNodes)
+    {
+        if (node->GetId() == id)
+            return CNodeRef(node);
+    }
+    return CNodeRef();
+}
+
 CNodeRef FindNodeRef(const CNetAddr &ip)
 {
     LOCK(cs_vNodes);

@@ -396,6 +396,8 @@ public:
     // Next monotonic check for deferred work, or zero when none is queued.
     std::atomic<int64_t> nNextInvHeaderRequestTime{0};
 
+    // Regtest RPC control; ordinary peers cannot pause request servicing.
+    std::atomic<bool> pauseGetDataForTest{false};
     CCriticalSection csRecvGetData;
     std::deque<std::pair<CInv, uint32_t> > vRecvGetData GUARDED_BY(csRecvGetData);
     std::deque<std::pair<CInv2, uint32_t> > vRecvGetData2 GUARDED_BY(csRecvGetData);

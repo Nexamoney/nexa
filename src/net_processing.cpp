@@ -449,6 +449,9 @@ void static ProcessGetData(CNode *pfrom,
     const Consensus::Params &consensusParams,
     std::deque<std::pair<T, uint32_t> > &vInv)
 {
+    if (pfrom->pauseGetDataForTest.load())
+        return;
+
     std::vector<T> vNotFound;
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
 
@@ -758,6 +761,9 @@ void static ProcessExtGetData(CNode *pfrom,
     const Consensus::Params &consensusParams,
     std::deque<std::pair<T, uint32_t> > &vInv)
 {
+    if (pfrom->pauseGetDataForTest.load())
+        return;
+
     std::vector<T> vNotFound;
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
 
@@ -3402,7 +3408,7 @@ bool ProcessMessages(CNode *pfrom)
     bool fOk = true;
 
     // Check getdata requests first if there are no priority messages waiting.
-    if (!fPriorityRecvMsg.load())
+    if (!fPriorityRecvMsg.load() && !pfrom->pauseGetDataForTest.load())
     {
         if (!pfrom->vRecvGetData.empty())
         {
