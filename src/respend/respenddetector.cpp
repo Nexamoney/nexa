@@ -85,7 +85,6 @@ int ClaimOrphanProof(DoubleSpendProofStorage &storage,
                 continue;
             LOG(DSPROOF, "Rescued a DoubleSpendProof orphan %d", proofId);
             auto rc = validate(dsp);
-            DbgAssert(rc == DoubleSpendProof::Valid || rc == DoubleSpendProof::Invalid, );
 
             if (rc == DoubleSpendProof::Valid)
             {
@@ -103,12 +102,14 @@ int ClaimOrphanProof(DoubleSpendProofStorage &storage,
                 proofHash = dsp.GetHash();
                 return proofId;
             }
-            else
+            else if (rc == DoubleSpendProof::Invalid)
             {
                 LOG(DSPROOF, "DoubleSpendProof did not validate %s", dsp.GetHash().ToString());
                 storage.remove(proofId);
                 dosMan.Misbehaving(iter->second, 5, BanReasonInvalidDSProof);
             }
+            // Otherwise the spent coin is not visible yet (e.g. its transaction has not arrived, or the other spend
+            // was mined), so keep the orphan for a later rescue or expiry
         }
     }
     return -1;
