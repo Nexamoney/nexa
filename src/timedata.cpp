@@ -37,18 +37,29 @@ int64_t GetAdjustedTime() { return GetTime() + GetTimeOffset(); }
 static int64_t abs64(int64_t n) { return (n >= 0 ? n : -n); }
 #define NEXA_TIMEDATA_MAX_SAMPLES 200
 
+static set<CNetAddr> setKnown;
+static CMedianFilter<int64_t> vTimeOffsets(NEXA_TIMEDATA_MAX_SAMPLES, 0);
+static bool fDone = false;
+
+void ResetTimeDataForTest()
+{
+    LOCK(cs_nTimeOffset);
+    setKnown.clear();
+    vTimeOffsets = CMedianFilter<int64_t>(NEXA_TIMEDATA_MAX_SAMPLES, 0);
+    fDone = false;
+    nTimeOffset = 0;
+}
+
 void AddTimeData(const CNetAddr &ip, int64_t nOffsetSample)
 {
     LOCK(cs_nTimeOffset);
     // Ignore duplicates
-    static set<CNetAddr> setKnown;
     if (setKnown.size() == NEXA_TIMEDATA_MAX_SAMPLES)
         return;
     if (!setKnown.insert(ip).second)
         return;
 
     // Add data
-    static CMedianFilter<int64_t> vTimeOffsets(NEXA_TIMEDATA_MAX_SAMPLES, 0);
     vTimeOffsets.input(nOffsetSample);
     LOG(NET, "added time data, samples %d, offset %+d (%+d minutes)\n", vTimeOffsets.size(), nOffsetSample,
         nOffsetSample / 60);
@@ -83,7 +94,6 @@ void AddTimeData(const CNetAddr &ip, int64_t nOffsetSample)
         {
             nTimeOffset = 0;
 
-            static bool fDone;
             if (!fDone)
             {
                 // If nobody has a time different than ours but within 5 minutes of ours, give a warning
