@@ -888,4 +888,54 @@ BOOST_AUTO_TEST_CASE(capd_query_hash_range)
     node1.capd = nullptr;
 }
 
+// Install a notification for content and drop the query's reply
+static void CapdNotifyQuery(CNode &node, const std::vector<unsigned char> &content)
+{
+    CDataStream pkt = MsgMaker(node, NetMsgType::CAPDQUERY,
+        [&](auto &p)
+        {
+            p << (uint32_t)1 << (uint8_t)(CapdProtocol::CAPD_QUERY_TYPE_MSG_HASH | CapdProtocol::CAPD_QUERY_NOTIFY)
+              << (uint32_t)0 << (uint32_t)10 << content;
+        });
+    BOOST_CHECK(HandleCapdMessage(node, pkt));
+    node.vLowPrioritySendMsg.clear();
+}
+
+// A peer cannot install an unbounded number of notifications, but can still refresh one it has
+BOOST_AUTO_TEST_CASE(capd_notification_limit)
+{
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+    CAddress addr = CAddress(CService(ipv4Addr, 7777), NODE_NETWORK);
+    CNode node1(INVALID_SOCKET, addr, "", false);
+    CapdNode capdNode1(&node1);
+    node1.isCapdEnabled = true;
+    node1.capd = &capdNode1;
+
+    const size_t sent = 2000;
+    for (size_t i = 0; i < sent; i++)
+    {
+        std::vector<unsigned char> content(16, 0);
+        WriteLE32(content.data(), i);
+        CapdNotifyQuery(node1, content);
+    }
+    size_t installed;
+    {
+        LOCK(capdNode1.csCapdNode);
+        installed = capdNode1.notifications.size();
+    }
+    BOOST_CHECK_LT(installed, sent);
+    BOOST_CHECK_GT(node1.nMisbehavior.load(), 0);
+
+    const int misbehavior = node1.nMisbehavior.load();
+    CapdNotifyQuery(node1, std::vector<unsigned char>(16, 0));
+    BOOST_CHECK_EQUAL(node1.nMisbehavior.load(), misbehavior);
+    {
+        LOCK(capdNode1.csCapdNode);
+        BOOST_CHECK_EQUAL(capdNode1.notifications.size(), installed);
+    }
+
+    node1.capd = nullptr;
+}
+
 BOOST_AUTO_TEST_SUITE_END()
