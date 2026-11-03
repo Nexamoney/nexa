@@ -67,6 +67,8 @@ static const CRPCConvertParam vRPCConvertParams[] =
 {
     {"stop", 0},
     {"setmocktime", 0},
+    {"setmockgetdata", 0},
+    {"setmockgetdata", 1},
     {"getaddednodeinfo", 0},
     {"setgenerate", 0},
     {"setgenerate", 1},

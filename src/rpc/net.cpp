@@ -12,6 +12,7 @@
 #include "dosman.h"
 #include "main.h"
 #include "net.h"
+#include "net_processing.h"
 #include "netbase.h"
 #include "nodestate.h"
 #include "protocol.h"
@@ -796,6 +797,42 @@ UniValue clearbanned(const UniValue &params, bool fHelp)
     return NullUniValue;
 }
 
+UniValue setmockgetdata(const UniValue &params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw runtime_error("setmockgetdata nodeid ( paused )\n"
+                            "\nInspect deferred GETDATA queues and optionally pause servicing (regtest only).\n"
+                            "Existing handler calls may finish after pausing. Pause before sending test requests.\n"
+                            "\nArguments:\n"
+                            "1. nodeid  (integer, required) Peer id from getpeerinfo.\n"
+                            "2. paused  (boolean, optional) Pause or resume GETDATA and EXTGETDATA servicing.\n"
+                            "\nReturns paused, getdata, getdata2, extgetdata, total and limit.\n");
+    if (Params().NetworkIDString() != CBaseChainParams::REGTEST)
+        throw JSONRPCError(RPC_MISC_ERROR, "setmockgetdata is for regtest only");
+
+    RPCTypeCheck(params, {UniValue::VNUM, UniValue::VBOOL});
+    CNodeRef node = FindNodeRef(params[0].get_int64());
+    if (!node)
+        throw JSONRPCError(RPC_CLIENT_NODE_NOT_CONNECTED, "Peer not found");
+
+    LOCK(node->csRecvGetData);
+    if (params.size() == 2)
+        node->pauseGetDataForTest.store(params[1].get_bool());
+    const size_t legacy = node->vRecvGetData.size();
+    const size_t compact = node->vRecvGetData2.size();
+    const size_t extended = node->vRecvExtGetData.size();
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("paused", node->pauseGetDataForTest.load());
+    result.pushKV("getdata", (uint64_t)legacy);
+    result.pushKV("getdata2", (uint64_t)compact);
+    result.pushKV("extgetdata", (uint64_t)extended);
+    result.pushKV("total", (uint64_t)(legacy + compact + extended));
+    result.pushKV("limit", (uint64_t)MAX_QUEUED_GETDATA);
+    return result;
+}
+
+static const CRPCCommand mockGetDataCommand = {"hidden", "setmockgetdata", &setmockgetdata, true};
+
 static const CRPCCommand commands[] = {
     //  category              name                      actor (function)         okSafeMode
     //  --------------------- ------------------------  -----------------------  ----------
@@ -815,6 +852,8 @@ static const CRPCCommand commands[] = {
 
 void RegisterNetRPCCommands(CRPCTable &table)
 {
+    if (Params().NetworkIDString() == CBaseChainParams::REGTEST)
+        table.appendCommand(mockGetDataCommand);
     for (auto cmd : commands)
         table.appendCommand(cmd);
 }
