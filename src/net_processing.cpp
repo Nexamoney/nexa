@@ -1388,6 +1388,9 @@ bool ProcessMessage(CNode *pfrom,
         LOG(NET, "receive version message: %s: version %d, blocks=%d, us=%s, peer=%s\n", pfrom->cleanSubVer,
             pfrom->nVersion, pfrom->nStartingHeight, addrMe.ToString(), pfrom->GetLogName());
 
+        // A negative peer time would overflow the subtraction
+        if (nTime < 0)
+            nTime = 0;
         int64_t nTimeOffset = nTime - GetTime();
         pfrom->nTimeOffset = nTimeOffset;
         AddTimeData(pfrom->addr, nTimeOffset);
