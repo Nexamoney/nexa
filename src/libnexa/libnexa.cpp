@@ -1714,22 +1714,13 @@ SLAPI int extractFromMerkleBlock(int numTxes,
     }
 
     memcpy(dest, merkleRoot.begin(), HASH_LEN);
-
     dest += HASH_LEN;
-    if (dest > end)
-    {
-        return (int)ret;
-    }
 
-    // Fill the rest with transaction hashes
-    for (size_t i = 0; i < matches.size(); i++)
+    // Fill the rest with transaction hashes, as many as fit.  The caller can tell from ret if some did not.
+    for (size_t i = 0; i < matches.size() && (size_t)(end - dest) >= HASH_LEN; i++)
     {
         memcpy(dest, matches[i].begin(), HASH_LEN);
         dest += HASH_LEN;
-        if (dest > end)
-        {
-            return (int)ret;
-        }
     }
     return (int)ret;
 }
