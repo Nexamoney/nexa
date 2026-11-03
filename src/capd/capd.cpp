@@ -32,6 +32,8 @@ uint64_t msgpoolMaxSize = CapdMsgPool::DEFAULT_MSG_POOL_MAX_SIZE;
 const uint64_t CAPD_MAX_INV_TO_SEND = 20000;
 const uint64_t CAPD_MAX_MSG_TO_REQUEST = 10000;
 const uint64_t CAPD_MAX_MSG_TO_SEND = 5000;
+// Bounds a peer's notification memory and the CAPDREMOVENOTIFY scan
+const uint64_t CAPD_MAX_NOTIFICATIONS = 1024;
 
 CapdMsgPool msgpool;
 CapdProtocol capdProtocol(msgpool);
@@ -478,8 +480,11 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
         auto sz = content.size();
         if ((sz == 2) || (sz == 4) || (sz == 8) || (sz == 16))
         {
-            if (notify)
-                cn->installNotification(cookie, quantity, type, content);
+            if (notify && !cn->installNotification(cookie, quantity, type, content))
+            {
+                LOG(CAPD, "Capd: too many notifications installed by %s\n", pfrom->GetLogName());
+                dosMan.Misbehaving(pfrom, 10, BanReasonInvalidSize);
+            }
 
             std::vector<CapdMsgRef> msgs = msgpool.find(content);
             if (type == CAPD_QUERY_TYPE_MSG)
@@ -802,13 +807,16 @@ bool CapdNode::FlushMessages()
     return true;
 }
 
-void CapdNode::installNotification(uint32_t cookie,
+bool CapdNode::installNotification(uint32_t cookie,
     uint32_t maxQuantityPerMessage,
     uint8_t type,
     const std::vector<unsigned char> &content)
 {
     LOCK(csCapdNode);
+    if (notifications.size() >= CAPD_MAX_NOTIFICATIONS && notifications.count(content) == 0)
+        return false;
     notifications[content] = {cookie, maxQuantityPerMessage, type};
+    return true;
 }
 
 
