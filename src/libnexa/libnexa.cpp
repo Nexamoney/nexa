@@ -701,7 +701,7 @@ SLAPI int parseGroupDescription(const uint8_t *in, const uint64_t inlen, uint8_t
 
     // for ease of copy, build the json object in a std::string first
     std::string result = "{";
-    for (size_t i = 0; i < _vDesc.size(); ++i)
+    for (size_t i = 0; i < _vDesc.size() && i < descriptionTitles.size(); ++i)
     {
         result = result + "\"" + descriptionTitles[i] + "\":\"" + _vDesc[i] + "\",";
     }

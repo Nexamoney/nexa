@@ -246,6 +246,11 @@ class LibnexaTest(BitcoinTestFramework):
         expected_result = json.loads('{"ticker":"AVAS","name":"Ava\'s Cash","url":"https://avas.cash/avas.json","hash":"aa7a225c49e23037a9229c65bda47153ac073113cdb64c3729c1b33930f00a78","decimals":"8"}')
         assert op_return == expected_result
 
+        # Fields after the 5th are ignored, so a 6th OP_0 must not add a key past the title table
+        op_return_script = bytes.fromhex("6a0438564c05") + bytes(6)
+        res = libnexa.parseGroupDescription(op_return_script)
+        assert_equal(sorted(json.loads(res.decode("UTF-8")[:-1]).keys()), ["decimals", "hash", "name", "ticker", "url"])
+
     def test_getArgsHashFromScriptPubkey(self):
         template = bytes.fromhex("005114b87c2c40c01b062c2de4289fdf2776ad5e3ad8cd")
         res = libnexa.getArgsHashFromScriptPubkey(template)

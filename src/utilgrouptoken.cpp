@@ -27,9 +27,9 @@ bool GetTokenDescription(const CScript &script, std::vector<std::string> &_vDesc
     if (grpId != DEFAULT_OP_RETURN_GROUP_ID)
         return false;
 
-    // Get labels
-    int count = 0;
-    while (script.GetOp(pc, op, vchRet))
+    // Get labels: ticker, name, url, hash and decimals. Anything after them is ignored.
+    unsigned int count = 0;
+    while (count < NUM_GROUP_ID_OP_RETURN_FIELDS && script.GetOp(pc, op, vchRet))
     {
         if (op != OP_0)
         {
@@ -81,7 +81,7 @@ bool GetTokenDescription(const CScript &script, std::vector<std::string> &_vDesc
         {
             _vDesc.push_back("");
         }
-        while (_vDesc.size() < 5)
+        while (_vDesc.size() < NUM_GROUP_ID_OP_RETURN_FIELDS)
         {
             _vDesc.push_back("0");
         }

@@ -1826,6 +1826,17 @@ BOOST_AUTO_TEST_CASE(grouptoken_descriptions_malformed)
     ret4 << OP_RETURN << OpRetGroupId << label << label << label << OP_1;
     BOOST_CHECK(GetTokenDescription(ret4, vLabels));
     BOOST_CHECK_EQUAL(vLabels[3], "");
+
+    // Fields after the 5th are ignored, OP_0 included
+    CScript ret5;
+    ret5 << OP_RETURN << OpRetGroupId << OP_0 << OP_0 << OP_0 << OP_0 << OP_0 << OP_0;
+    BOOST_CHECK(GetTokenDescription(ret5, vLabels));
+    BOOST_CHECK_EQUAL(vLabels.size(), 5);
+    CScript ret6;
+    ret6 << OP_RETURN << OpRetGroupId << label << label << label << OP_0 << OP_2 << OP_0 << label << OP_0;
+    BOOST_CHECK(GetTokenDescription(ret6, vLabels));
+    BOOST_CHECK_EQUAL(vLabels.size(), 5);
+    BOOST_CHECK_EQUAL(vLabels[4], "2");
 }
 
 BOOST_AUTO_TEST_CASE(grouptoken_index_mintage_exact)
