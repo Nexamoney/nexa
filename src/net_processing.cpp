@@ -70,6 +70,17 @@ static size_t MaxTailstormFallbackHeaders() { return MaxTailstormSubblockHeaders
 
 static size_t MaxTailstormFallbackHeadersPerPeer() { return Params().GetConsensus().tailstorm_k; }
 
+static bool WithinBudget(CNode *pfrom, size_t nAdditionalRequests)
+{
+    LOCK(pfrom->csRecvGetData);
+    if ((pfrom->vRecvGetData.size() + pfrom->vRecvGetData2.size() + pfrom->vRecvExtGetData.size() +
+            nAdditionalRequests) < MAX_QUEUED_GETDATA)
+    {
+        return true;
+    }
+    return false;
+}
+
 CSubblockHeaderCache::CSubblockHeaderCache()
     : maxSize(MAX_UNCONNECTED_SUBBLOCK_HEADERS), maxPerPeer(0), maxFallbackSize(0), maxFallbackPerPeer(0),
       deriveMaxPerPeer(true)
@@ -1782,11 +1793,17 @@ bool ProcessMessage(CNode *pfrom,
 
         // Run process getdata and process as much of the getdata's as we can before taking the lock
         // and appending the remainder to the vRecvGetData queue.
-        ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
-        if (!invDeque.empty())
+        if (WithinBudget(pfrom, invDeque.size()))
         {
-            LOCK(pfrom->csRecvGetData);
-            pfrom->vRecvGetData.insert(pfrom->vRecvGetData.end(), invDeque.begin(), invDeque.end());
+            ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
+            if (!invDeque.empty())
+            {
+                LOCK(pfrom->csRecvGetData);
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvGetData.insert(pfrom->vRecvGetData.end(), invDeque.begin(), invDeque.end());
+                }
+            }
         }
     }
 
@@ -1834,11 +1851,17 @@ bool ProcessMessage(CNode *pfrom,
 
         // Run process getdata and process as much of the getdata's as we can before taking the lock
         // and appending the remainder to the vRecvGetData2 queue.
-        ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
-        if (!invDeque.empty())
+        if (WithinBudget(pfrom, invDeque.size()))
         {
-            LOCK(pfrom->csRecvGetData);
-            pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.end(), invDeque.begin(), invDeque.end());
+            ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
+            if (!invDeque.empty())
+            {
+                LOCK(pfrom->csRecvGetData);
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.end(), invDeque.begin(), invDeque.end());
+                }
+            }
         }
     }
 
@@ -1882,11 +1905,17 @@ bool ProcessMessage(CNode *pfrom,
 
         // Run process extgetdata and process as much of the extgetdata's as we can before taking the lock
         // and appending the remainder to the vRecvExtGetData queue.
-        ProcessExtGetData(pfrom, chainparams.GetConsensus(), invDeque);
-        if (!invDeque.empty())
+        if (WithinBudget(pfrom, invDeque.size()))
         {
-            LOCK(pfrom->csRecvGetData);
-            pfrom->vRecvExtGetData.insert(pfrom->vRecvExtGetData.end(), invDeque.begin(), invDeque.end());
+            ProcessExtGetData(pfrom, chainparams.GetConsensus(), invDeque);
+            if (!invDeque.empty())
+            {
+                LOCK(pfrom->csRecvGetData);
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvExtGetData.insert(pfrom->vRecvExtGetData.end(), invDeque.begin(), invDeque.end());
+                }
+            }
         }
     }
 
@@ -3387,7 +3416,10 @@ bool ProcessMessages(CNode *pfrom)
             if (!invDeque.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                pfrom->vRecvGetData.insert(pfrom->vRecvGetData.begin(), invDeque.begin(), invDeque.end());
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvGetData.insert(pfrom->vRecvGetData.begin(), invDeque.begin(), invDeque.end());
+                }
             }
         }
         if (!pfrom->vRecvGetData2.empty())
@@ -3405,7 +3437,10 @@ bool ProcessMessages(CNode *pfrom)
             if (!invDeque.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.begin(), invDeque.begin(), invDeque.end());
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.begin(), invDeque.begin(), invDeque.end());
+                }
             }
         }
         if (!pfrom->vRecvExtGetData.empty())
@@ -3423,7 +3458,10 @@ bool ProcessMessages(CNode *pfrom)
             if (!invDeque.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                pfrom->vRecvExtGetData.insert(pfrom->vRecvExtGetData.begin(), invDeque.begin(), invDeque.end());
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvExtGetData.insert(pfrom->vRecvExtGetData.begin(), invDeque.begin(), invDeque.end());
+                }
             }
         }
     }

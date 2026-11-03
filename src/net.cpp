@@ -1587,8 +1587,7 @@ void ThreadSocketHandler()
                 // If traffic shaping says we can grab some bytes, and we don't have full send messages buffers
                 // (that is, the receiver is reading our responses), then grab some more requests to process
                 int64_t amt2Recv = receiveShaper.available(RECV_SHAPER_MIN_FRAG);
-                if (lockRecv && (amt2Recv > 0) &&
-                    (pnode->vSendMsg.size() + pnode->vLowPrioritySendMsg.size() < MAX_QUEUED_SEND_MSGS))
+                if (lockRecv && (amt2Recv > 0))
                 {
                     {
                         progress++;

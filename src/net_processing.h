@@ -18,6 +18,10 @@ class CUtxo;
 
 static const size_t MAX_UNCONNECTED_SUBBLOCK_HEADERS = 2000;
 
+// The maximum number of getdata requests we can queue before dropping messages. This
+// is only here to prevent a DOS attack and is unlikely to ever be exceeded.
+static const size_t MAX_QUEUED_GETDATA = 1000000;
+
 class CSubblockHeaderCache
 {
 public:
