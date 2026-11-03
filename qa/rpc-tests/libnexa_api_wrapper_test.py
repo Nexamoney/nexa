@@ -381,7 +381,22 @@ class LibnexaTest(BitcoinTestFramework):
         pass
 
     def test_extractFromMerkleBlock(self):
-        pass
+        # Two transactions, both matched: root, leaf 0 and leaf 1 are all flagged
+        h0 = bytes(range(32))
+        h1 = bytes(range(32, 64))
+        spare = b"\xaa" * 32
+
+        res, buf = libnexa.extractFromMerkleBlock(2, b"\x07", h0 + h1, 2, 3 * 32)
+        assert_equal(res, 3)
+        assert_equal(buf[32:96], h0 + h1)
+        assert_equal(buf[96:], spare)
+
+        # Room for the root and one match only: libnexa must not write the second match past it, and still returns
+        # how many hashes there are so the caller can tell the result is incomplete
+        res, buf = libnexa.extractFromMerkleBlock(2, b"\x07", h0 + h1, 2, 2 * 32)
+        assert_equal(res, 3)
+        assert_equal(buf[32:64], h0)
+        assert_equal(buf[64:], spare)
 
     def test_capdSolve(self):
         pass
@@ -505,7 +520,7 @@ class LibnexaTest(BitcoinTestFramework):
         self.test_getWorkFromDifficultyBits()
         self.test_getDifficultyBitsFromWork()
         #self.test_createBloomFilter()
-        #self.test_extractFromMerkleBlock()
+        self.test_extractFromMerkleBlock()
         #self.test_capdSolve()
         #self.test_capdCheck()
         #self.test_capdHash()
