@@ -225,23 +225,25 @@ bool CapdMsg::Solve(long int time)
 
 void CapdMsg::SetPowTargetHarderThan(uint256 target)
 {
-    // Subtract 1 from the difficulty as a compact number.  By doing it this way we are certain
-    // that the change isn't rounded away.
+    // Make the target slightly smaller by subtracting from the mantissa of its compact form.  Working in the
+    // compact form guarantees the change is not rounded away when the target is stored as difficultyBits.
+    // The reduction is random (so solvers do not all pick the same target) but proportional to the mantissa,
+    // at most 1/256 of it, so the target is never more than ~0.4% harder (+0.006 priority) than asked.
+    // A fixed-size reduction made targets with a small mantissa, such as every exact integer priority, many
+    // times harder than requested.
     uint32_t cInt = UintToArith256(target).GetCompact();
-    uint32_t mantissaBits = ((1 << 23) - 1);
+    const uint32_t mantissaBits = ((1 << 23) - 1);
     uint32_t mantissa = (cInt & mantissaBits);
-    uint32_t expBits = ~mantissaBits;
-    uint32_t randomReduction = (std::rand() % 0x7FFF) + 0x8000;
-
-    if (mantissa > randomReduction) // subtract a bit from the mantissa if we won't underflow
+    // GetCompact normalizes the mantissa to at least 0x8000 for any nonzero target, so (mantissa >> 8) >= 0x80
+    // and the subtraction below cannot underflow.  The result may be unnormalized, which SetCompact accepts.
+    uint32_t maxReduction = mantissa >> 8;
+    if (maxReduction == 0) // zero target: nothing can be harder, so leave it as is
     {
-        cInt -= randomReduction;
+        SetPowTarget(target);
+        return;
     }
-    else // subtract one from the exponent and set the enough bits that its like 0x100 -> 0xff
-    {
-        randomReduction -= mantissa;
-        cInt = ((cInt - (1 << 25)) & expBits) | (mantissaBits - randomReduction);
-    }
+    uint32_t randomReduction = 1 + (uint32_t)(std::rand() % maxReduction);
+    cInt -= randomReduction;
 
     arith_uint256 num;
     SetPowTarget(num.SetCompact(cInt));

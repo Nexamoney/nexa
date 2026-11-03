@@ -224,6 +224,24 @@ BOOST_AUTO_TEST_CASE(capd_msg_test_vectors)
         }
     }
 
+    if (true)
+    {
+        // SetPowTargetHarderThanPriority must give at least the requested priority, but not much more.  Exact integer
+        // priorities give targets whose compact mantissa is small (0xffff, 0x7fff), which a fixed-size reduction made
+        // many times harder than requested.
+        CapdMsg msg("this is a test");
+        for (PriorityType priority : {0.0, 0.5, 1.0, 1.1, 2.0, 3.0, 7.0, 7.25})
+        {
+            for (unsigned int i = 0; i < 200; i++)
+            {
+                msg.SetPowTargetHarderThanPriority(priority);
+                PriorityType got = msg.InitialPriority();
+                BOOST_CHECK_MESSAGE(got >= priority && got < priority + 0.01,
+                    strprintf("requested priority %f, got %f (bits 0x%08x)", priority, got, msg.difficultyBits));
+            }
+        }
+    }
+
     mp.clear();
     mp.SetMaxSize(2000);
     uint256 diff = mp.GetRelayPowTarget();
