@@ -924,7 +924,7 @@ BOOST_AUTO_TEST_CASE(capd_notification_limit)
         LOCK(capdNode1.csCapdNode);
         installed = capdNode1.notifications.size();
     }
-    BOOST_CHECK_LT(installed, sent);
+    BOOST_CHECK_EQUAL(installed, CAPD_MAX_NOTIFICATIONS);
     BOOST_CHECK_GT(node1.nMisbehavior.load(), 0);
 
     const int misbehavior = node1.nMisbehavior.load();

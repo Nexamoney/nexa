@@ -33,6 +33,7 @@ class CapdProtocol;
 extern const uint64_t CAPD_MAX_INV_TO_SEND;
 extern const uint64_t CAPD_MAX_MSG_TO_REQUEST;
 extern const uint64_t CAPD_MAX_MSG_TO_SEND;
+extern const uint64_t CAPD_MAX_NOTIFICATIONS;
 
 extern bool StartCapd();
 extern void StopCapd();
@@ -764,8 +765,9 @@ public:
     // Return true if anything needed to be sent.
     bool FlushMessages();
 
-    //! Remember a request to notify this node about incoming matching messages
-    void installNotification(uint32_t cookie,
+    //! Remember a request to notify this node about incoming matching messages.
+    //! Returns false, installing nothing, if this node already has CAPD_MAX_NOTIFICATIONS for other content.
+    bool installNotification(uint32_t cookie,
         uint32_t maxQtyPerMessage,
         uint8_t type,
         const std::vector<unsigned char> &content);
