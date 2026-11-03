@@ -699,4 +699,39 @@ BOOST_AUTO_TEST_CASE(dsproof_orphan_claim_eviction)
     }
 }
 
+// A rescued orphan whose validity can't be determined yet, e.g. because the spent coin isn't visible, is kept
+// and its peer is not penalized. Only an invalid proof is removed and penalized.
+BOOST_AUTO_TEST_CASE(dsproof_orphan_claim_undetermined)
+{
+    const COutPoint prevOut(uint256S("0505050505050505050505050505050505050505050505050505050505050505"), 0);
+    CNode node(INVALID_SOCKET, CAddress(), "", true);
+    {
+        LOCK(cs_vNodes);
+        vNodes.push_back(&node);
+    }
+
+    DoubleSpendProofStorage storage;
+    DoubleSpendProof proof = MakeStorageTestProof(prevOut, 1);
+    storage.addOrphan(proof, node.GetId());
+    for (DoubleSpendProof::Validity rc : {DoubleSpendProof::MissingUTXO, DoubleSpendProof::MissingTransaction})
+    {
+        uint256 proofHash;
+        BOOST_CHECK_EQUAL(
+            ClaimOrphanProof(storage, prevOut, proofHash, [rc](const DoubleSpendProof &) { return rc; }), -1);
+        BOOST_CHECK(storage.exists(proof.GetHash()));
+        BOOST_CHECK_EQUAL(storage.findOrphans(prevOut).size(), 1);
+        BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 0);
+    }
+
+    uint256 proofHash;
+    BOOST_CHECK_EQUAL(ClaimOrphanProof(storage, prevOut, proofHash,
+                          [](const DoubleSpendProof &) { return DoubleSpendProof::Invalid; }),
+        -1);
+    BOOST_CHECK(!storage.exists(proof.GetHash()));
+    BOOST_CHECK_EQUAL(node.nMisbehavior.load(), 5);
+
+    LOCK(cs_vNodes);
+    vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &node), vNodes.end());
+}
+
 BOOST_AUTO_TEST_SUITE_END();
