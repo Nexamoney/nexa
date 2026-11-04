@@ -927,7 +927,7 @@ BOOST_AUTO_TEST_CASE(capd_notification_limit)
     BOOST_CHECK_EQUAL(installed, CAPD_MAX_NOTIFICATIONS);
     BOOST_CHECK_GT(node1.nMisbehavior.load(), 0);
 
-    const int misbehavior = node1.nMisbehavior.load();
+    const double misbehavior = node1.nMisbehavior.load();
     CapdNotifyQuery(node1, std::vector<unsigned char>(16, 0));
     BOOST_CHECK_EQUAL(node1.nMisbehavior.load(), misbehavior);
     {
