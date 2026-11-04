@@ -679,6 +679,10 @@ static bool ReconstructBlock(CNode *pfrom,
     // ConnectBlock() to determine which if any inputs we can skip the checking of inputs.
     pblock->fXVal = DEFAULT_XVAL_ENABLED;
 
+    // Now that the block is fully reconstruced we can delete all the thinblock data
+    // and the thinblock in flight.
+    thinrelay.ClearAllBlockData(pfrom, pblock->GetHash());
+
     return true;
 }
 
