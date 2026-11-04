@@ -249,9 +249,8 @@ void DoubleSpendProofStorage::periodicCleanup(const boost::system::error_code &e
     {
         if (iter->second.second <= expire)
         {
-            // An orphan that is never claimed could be a valid proof whose spend this node saw only in a block,
-            // so its sender should not be penalized. Invalid proofs are penalized when ClaimOrphanProof() validates
-            // them. Orphan storage is bounded by SECONDS_TO_KEEP_ORPHANS and MAX_ORPHAN_DSPROOF_BYTES.
+            // Not penalized: an orphan that is never claimed could be a valid proof whose spend this node saw only in a
+            // block. Invalid proofs are penalized when ClaimOrphanProof() validates them.
             const int proofId = iter->first;
             // remove() erases the orphan itself and needs it to clean the outpoint lookup table
             ++iter;

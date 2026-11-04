@@ -4,6 +4,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 import test_framework.loginit
+import os
 #
 # Test proper accounting with a double-spend conflict
 #
@@ -15,6 +16,8 @@ from test_framework.util import *
 class TxnDoubleSpendTest(BitcoinTestFramework):
 
     def setup_network(self):
+        # The orphan expiry check reads dsproof log lines from node0
+        self.extra_args = [["-debug=dsproof"]] * 4
         # Start with split network:
         return super(TxnDoubleSpendTest, self).setup_network(True)
 
@@ -259,6 +262,42 @@ class TxnDoubleSpendTest(BitcoinTestFramework):
         # node1 created this proof locally; node0 received it over the network and validated it.
         waitFor(30, lambda: self.nodes[1].gettxpoolentry(second_spend1_txidem)["doublespent"] == True)
         waitFor(30, lambda: self.nodes[0].gettxpoolentry(second_spend1_txidem)["doublespent"] == True)
+
+        # An orphan proof that expires must not cost its sender any ban score.  node3 holds both spends of
+        # one of its coins, so it creates the proof and announces it.  node0 never sees either spend, so it
+        # stores the proof as an orphan, and moving its clock past the orphan limit makes the next cleanup
+        # tick drop it.
+        utxo = self.nodes[3].listunspent()[0]
+        inputs = [{ "outpoint" : utxo["outpoint"], "amount" : utxo["amount"]}]
+        outputs = { self.nodes[3].getnewaddress("p2pkh") : utxo["amount"] - self.relayfee }
+        orphan_spend1 = self.nodes[3].signrawtransaction(self.nodes[3].createrawtransaction(inputs, outputs))
+        outputs = { self.nodes[3].getnewaddress("p2pkh") : utxo["amount"] - 2*self.relayfee }
+        orphan_spend2 = self.nodes[3].signrawtransaction(self.nodes[3].createrawtransaction(inputs, outputs))
+        assert orphan_spend1["txidem"] != orphan_spend2["txidem"], "transactions are not different"
+
+        banscore = { p["id"] : p["banscore"] for p in self.nodes[0].getpeerinfo() }
+        node0_log = log_filename(self.options.tmpdir, 0, "debug.log")
+        def logSince(offset):
+            with open(node0_log, "r", errors="replace") as f:
+                f.seek(offset)
+                return f.read()
+
+        offset = os.path.getsize(node0_log)
+        self.nodes[3].sendrawtransaction(orphan_spend1["hex"], False, "default", False, False, False)
+        try:
+            self.nodes[3].sendrawtransaction(orphan_spend2["hex"], False, "default", False, False, False)
+        except JSONRPCException as e:
+            assert_equal(e.error["message"], "258: txn-txpool-conflict")
+        else:
+            assert False, "orphan doublespend was accepted"
+        waitFor(30, lambda: "Double spend proof is orphan: postponed" in logSince(offset))
+
+        # The cleanup timer runs on wall time: first two minutes after startup, then every minute.
+        offset = os.path.getsize(node0_log)
+        self.nodes[0].setmocktime(int(time.time()) + 100)
+        waitFor(150, lambda: "DSP orphan count: 0 " in logSince(offset))
+        self.nodes[0].setmocktime(0)
+        assert_equal({ p["id"] : p["banscore"] for p in self.nodes[0].getpeerinfo() }, banscore)
 
 
 if __name__ == '__main__':
