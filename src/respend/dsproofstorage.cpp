@@ -3,7 +3,6 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "respend/dsproofstorage.h"
-#include "dosman.h"
 #include "hashwrapper.h"
 #include "util.h"
 #include "version.h"
@@ -250,13 +249,13 @@ void DoubleSpendProofStorage::periodicCleanup(const boost::system::error_code &e
     {
         if (iter->second.second <= expire)
         {
-            const int peerId = iter->second.first;
+            // An orphan that is never claimed could be a valid proof whose spend this node saw only in a block,
+            // so its sender should not be penalized. Invalid proofs are penalized when ClaimOrphanProof() validates
+            // them. Orphan storage is bounded by SECONDS_TO_KEEP_ORPHANS and MAX_ORPHAN_DSPROOF_BYTES.
             const int proofId = iter->first;
             // remove() erases the orphan itself and needs it to clean the outpoint lookup table
             ++iter;
             remove(proofId);
-
-            dosMan.Misbehaving(peerId, 1, BanReasonDSProofOrphanExpiry);
         }
         else
         {
