@@ -111,7 +111,12 @@ PriorityType CapdMsg::InitialPriority() const
         cachedInitialPriority = ::Priority(difficultyBits, data.size(), 0);
     return cachedInitialPriority;
 }
-bool CapdMsg::DoesPowMeetTarget() const { return GetPowTarget() > GetHash(); }
+bool CapdMsg::DoesPowMeetTarget() const
+{
+    if (!IsNonceSizeValid())
+        return false;
+    return GetPowTarget() > GetHash();
+}
 std::string CapdMsg::EncodeHex()
 {
     CDataStream strmdata(SER_NETWORK, PROTOCOL_VERSION);

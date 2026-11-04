@@ -248,6 +248,83 @@ BOOST_AUTO_TEST_CASE(capd_msg_test_vectors)
     BOOST_CHECK(diff == ArithToUint256(MIN_FORWARD_MSG_DIFFICULTY)); // because no messages in the pool
 }
 
+BOOST_AUTO_TEST_CASE(capd_nonce_size_limits)
+{
+    // Easiest possible target, so nearly any nonce meets it
+    arith_uint256 target = UintToArith256(uint256S("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
+    CapdMsg msg("nonce size test");
+    msg.difficultyBits = target.GetCompact();
+
+    msg.nonce.clear();
+    BOOST_CHECK(!msg.IsNonceSizeValid());
+    BOOST_CHECK(!msg.DoesPowMeetTarget());
+
+    for (size_t len = CapdMsg::MIN_NONCE_SIZE; len <= CapdMsg::MAX_NONCE_SIZE; len++)
+    {
+        msg.nonce.assign(len, 0);
+        msg.cachedHash = uint256();
+        BOOST_CHECK(msg.IsNonceSizeValid());
+        // Valid lengths fall through to the ordinary POW comparison
+        BOOST_CHECK(msg.DoesPowMeetTarget() == (msg.GetPowTarget() > msg.CalcHash()));
+    }
+
+    msg.nonce.assign(CapdMsg::MAX_NONCE_SIZE + 1, 0);
+    msg.cachedHash = uint256();
+    BOOST_CHECK(!msg.IsNonceSizeValid());
+    BOOST_CHECK(!msg.DoesPowMeetTarget());
+
+    // The pool must reject a message whose nonce is too long
+    CapdMsgPool pool;
+    BOOST_CHECK_THROW(pool.add(msg), CapdMsgPoolException);
+}
+
+BOOST_AUTO_TEST_CASE(capd_nonce_size_serialization)
+{
+    CapdMsg msg("nonce serialization test");
+    msg.difficultyBits = 0x207fffff;
+
+    // A maximum-length nonce round-trips cleanly
+    msg.nonce.assign(CapdMsg::MAX_NONCE_SIZE, 0xab);
+    {
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << msg;
+        CapdMsg msg2;
+        BOOST_CHECK_NO_THROW(ss >> msg2);
+        BOOST_CHECK(msg2.nonce == msg.nonce);
+        BOOST_CHECK(msg2.data == msg.data);
+        BOOST_CHECK(msg2.GetHash() == msg.GetHash());
+    }
+
+    // Serializing a message whose nonce is too long fails
+    msg.nonce.assign(CapdMsg::MAX_NONCE_SIZE + 1, 0xab);
+    {
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        BOOST_CHECK_THROW(ss << msg, std::ios_base::failure);
+    }
+
+    // Deserializing hand-built bytes with a too-long nonce fails.  Field order matches CapdMsg's network
+    // serialization: fields, createTime, difficultyBits, nonce, [expiration], [rescindHash], data
+    {
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << (uint8_t)0 << msg.createTime << msg.difficultyBits
+           << std::vector<uint8_t>(CapdMsg::MAX_NONCE_SIZE + 1, 0xab) << msg.data;
+        CapdMsg msg2;
+        BOOST_CHECK_THROW(ss >> msg2, std::ios_base::failure);
+    }
+
+    // The same hand-built encoding with a maximum-length nonce deserializes, confirming the bytes above are
+    // otherwise well formed
+    {
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << (uint8_t)0 << msg.createTime << msg.difficultyBits << std::vector<uint8_t>(CapdMsg::MAX_NONCE_SIZE, 0xab)
+           << msg.data;
+        CapdMsg msg2;
+        BOOST_CHECK_NO_THROW(ss >> msg2);
+        BOOST_CHECK(msg2.nonce.size() == CapdMsg::MAX_NONCE_SIZE);
+        BOOST_CHECK(ss.empty());
+    }
+}
+
 BOOST_AUTO_TEST_CASE(capd_pool_test_vectors)
 {
     int64_t now = GetTime();
@@ -818,6 +895,152 @@ BOOST_AUTO_TEST_CASE(capd_p2p)
     BOOST_CHECK(capdNode1.sendMsgs.size() == 1);
 
     // Since CapdNode is stack allocated, remove it before destructing the CNode
+    node1.capd = nullptr;
+}
+
+// A message whose id is repeated within one CAPDGETMSG is queued and sent once; separate requests each get a copy
+BOOST_AUTO_TEST_CASE(capd_getmsg_dedup)
+{
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+    CAddress addr = CAddress(CService(ipv4Addr, 7777), NODE_NETWORK);
+    CNode node1(INVALID_SOCKET, addr, "", false);
+    CapdNode capdNode1(&node1);
+    node1.isCapdEnabled = true;
+    node1.capd = &capdNode1;
+
+    msgpool.clear();
+    CapdMsg msg1("dedup test");
+    msg1.SetPowTarget(msgpool.GetRelayPowTarget());
+    msg1.Solve();
+    msgpool.add(MsgRefCopy(msg1));
+    const uint256 hash = msg1.GetHash();
+
+    auto getMsg = [&](unsigned int copies)
+    {
+        CDataStream pkt = MsgMaker(node1, NetMsgType::CAPDGETMSG,
+            [&](auto &p) { p << MIN_RELAY_PRIORITY << std::vector<uint256>(copies, hash); });
+        return HandleCapdMessage(node1, pkt);
+    };
+    auto queued = [&]()
+    {
+        LOCK(capdNode1.csCapdNode);
+        return capdNode1.sendMsgs.size();
+    };
+
+    // One request repeating the id the maximum number of times queues one copy
+    BOOST_CHECK(getMsg(CAPD_MAX_MSG_TO_REQUEST));
+    BOOST_CHECK_EQUAL(queued(), 1UL);
+
+    // A separate request queues another copy, but its own repeats are still collapsed
+    BOOST_CHECK(getMsg(CAPD_MAX_MSG_TO_REQUEST));
+    BOOST_CHECK_EQUAL(queued(), 2UL);
+
+    // Repeats are collapsed even when interleaved with other (here unknown) ids
+    {
+        uint256 unknown;
+        *unknown.begin() = 5;
+        CDataStream pkt = MsgMaker(node1, NetMsgType::CAPDGETMSG,
+            [&](auto &p) {
+                p << MIN_RELAY_PRIORITY << std::vector<uint256>{hash, unknown, hash, unknown, hash};
+            });
+        BOOST_CHECK(HandleCapdMessage(node1, pkt));
+    }
+    BOOST_CHECK_EQUAL(queued(), 3UL);
+
+    // The flush sends exactly the queued copies
+    node1.vLowPrioritySendMsg.clear();
+    BOOST_CHECK(capdNode1.FlushMessages());
+    size_t sentMsgs = 0;
+    CSerializeData reply;
+    while (node1.vLowPrioritySendMsg.pop_front(reply))
+    {
+        CDataStream r(reply.begin() + CMessageHeader::HEADER_SIZE, reply.end(), SER_NETWORK, PROTOCOL_VERSION);
+        std::vector<CapdMsg> msgs;
+        r >> msgs;
+        for (const auto &m : msgs)
+            BOOST_CHECK(m.GetHash() == hash);
+        sentMsgs += msgs.size();
+    }
+    BOOST_CHECK_EQUAL(sentMsgs, 3UL);
+    BOOST_CHECK_EQUAL(queued(), 0UL);
+
+    msgpool.clear();
+    node1.capd = nullptr;
+}
+
+// FlushMessages splits uncookied messages into CAPDMSGs of approximately CAPD_MAX_SEND_CHUNK_BYTES each
+BOOST_AUTO_TEST_CASE(capd_flush_chunking)
+{
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+    CAddress addr = CAddress(CService(ipv4Addr, 7777), NODE_NETWORK);
+    CNode node1(INVALID_SOCKET, addr, "", false);
+    CapdNode capdNode1(&node1);
+    node1.isCapdEnabled = true;
+    node1.capd = &capdNode1;
+
+    std::vector<CapdMsgRef> refs;
+    for (int i = 0; i < 10; i++)
+    {
+        CapdMsg m("chunk test " + std::to_string(i));
+        m.nonce.assign(1, 0); // the message only needs to serialize
+        refs.push_back(MsgRefCopy(m));
+    }
+    const uint64_t msgSize = refs[0]->RamSize();
+
+    // Flush the queue and return the number of messages in each CAPDMSG sent, in order
+    auto flush = [&]()
+    {
+        node1.vLowPrioritySendMsg.clear();
+        BOOST_CHECK(capdNode1.FlushMessages());
+        std::vector<size_t> counts;
+        CSerializeData reply;
+        while (node1.vLowPrioritySendMsg.pop_front(reply))
+        {
+            CDataStream r(reply.begin() + CMessageHeader::HEADER_SIZE, reply.end(), SER_NETWORK, PROTOCOL_VERSION);
+            std::vector<CapdMsg> msgs;
+            r >> msgs;
+            counts.push_back(msgs.size());
+        }
+        return counts;
+    };
+
+    const uint64_t savedChunk = CAPD_MAX_SEND_CHUNK_BYTES;
+
+    // A limit of 3 messages' worth of bytes gives chunks of 3, 3, 3 and 1
+    CAPD_MAX_SEND_CHUNK_BYTES = 3 * msgSize;
+    for (auto &r : refs)
+        capdNode1.sendMsg(r, 0xFFFF);
+    BOOST_CHECK((flush() == std::vector<size_t>{3, 3, 3, 1}));
+
+    // A limit just above 2 messages fills each chunk with 3, since a chunk may exceed the limit by one message
+    CAPD_MAX_SEND_CHUNK_BYTES = 2 * msgSize + 1;
+    for (auto &r : refs)
+        capdNode1.sendMsg(r, 0xFFFF);
+    BOOST_CHECK((flush() == std::vector<size_t>{3, 3, 3, 1}));
+
+    // A limit smaller than one message sends each message alone
+    CAPD_MAX_SEND_CHUNK_BYTES = 1;
+    for (auto &r : refs)
+        capdNode1.sendMsg(r, 0xFFFF);
+    BOOST_CHECK((flush() == std::vector<size_t>(10, 1)));
+
+    // The default limit sends everything in one CAPDMSG
+    CAPD_MAX_SEND_CHUNK_BYTES = savedChunk;
+    for (auto &r : refs)
+        capdNode1.sendMsg(r, 0xFFFF);
+    BOOST_CHECK((flush() == std::vector<size_t>{10}));
+
+    // Only cookied messages queued: each goes alone, and no empty CAPDMSG is sent for the uncookied path
+    capdNode1.sendMsg(refs[0], 0x10000 | 0xFFFF);
+    capdNode1.sendMsg(refs[1], 0x20000 | 0xFFFF);
+    BOOST_CHECK((flush() == std::vector<size_t>{1, 1}));
+
+    // Nothing queued: nothing sent
+    BOOST_CHECK(flush().empty());
+
+    CAPD_MAX_SEND_CHUNK_BYTES = savedChunk;
     node1.capd = nullptr;
 }
 

@@ -40,6 +40,7 @@
 #include "wallet/grouptokencache.h"
 
 #include <limits>
+#include <new>
 
 
 extern std::atomic<int64_t> nTimeBestReceived;
@@ -3725,6 +3726,7 @@ bool ProcessMessages(CNode *pfrom)
 bool SendMessages(CNode *pto)
 {
     const Consensus::Params &consensusParams = Params().GetConsensus();
+    try
     {
         // First set fDisconnect if appropriate.
         pto->DisconnectIfBanned();
@@ -4291,6 +4293,18 @@ bool SendMessages(CNode *pto)
                 requester.RequestNextBlocksToDownload(pto);
             }
         }
+    }
+    catch (const std::bad_alloc &)
+    {
+        // Assembling this peer's outgoing data ran out of memory (for example a peer requesting many copies of large
+        // CAPD messages).  Drop the peer rather than let the exception escape ThreadMessageHandler and terminate the
+        // node.  Clear its pending CAPD sends so that we do not retry the same allocation before the disconnect
+        // completes.
+        if (pto->capd)
+            pto->capd->clear();
+        pto->CloseSocketDisconnect("out of memory while sending messages");
+        LOGA("Disconnecting peer %s: out of memory while preparing messages to send\n", pto->GetLogName());
+        return false;
     }
     return true;
 }
