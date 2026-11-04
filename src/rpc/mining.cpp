@@ -581,6 +581,8 @@ static UniValue MkFullMiningCandidateJson(const std::set<std::string> &setClient
     result.pushKV("bits", strprintf("%08x", pblock->nBits));
     // BU get the height directly from the block because pindexPrev could change if another block has come in.
     result.pushKV("height", (int64_t)(pblock->GetHeight()));
+    result.pushKV("hashAncestor", pblock->hashAncestor.GetHex());
+    result.pushKV("chainWork", pblock->chainWork.GetHex());
 
     return result;
 }
