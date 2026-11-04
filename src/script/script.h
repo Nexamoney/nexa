@@ -939,22 +939,18 @@ public:
 
     /** Returns true if every opcode in this script decodes (i.e. no push runs past the end of the script).
         Bytes following an OP_RETURN are not executed, so they are not required to decode.
-        Scripts that begin with OP_INVALIDOPCODE are also considered bad because they cannot ever succeed.
+        Template and argument items are read as data, so opcode validity is checked during execution.
     */
     bool IsWellFormed() const
     {
         const_iterator pc = begin();
-        bool first = true;
         while (pc < end())
         {
             opcodetype opcode;
             if (!GetOp(pc, opcode))
                 return false;
-            if (first && (opcode == OP_INVALIDOPCODE))
-                return false;
             if (opcode == OP_RETURN) // Anything beyond the op return is not executed
                 return true;
-            first = false;
         }
         return true;
     }

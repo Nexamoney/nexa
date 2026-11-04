@@ -717,9 +717,40 @@ BOOST_FIXTURE_TEST_CASE(pushdata_recut_does_not_deserialize, RecutBlockSetup)
     auto raw = [](const std::vector<uint8_t> &bytes) { return CScript(bytes.begin(), bytes.end()); };
     BOOST_CHECK(CScript().IsWellFormed());
     BOOST_CHECK(!raw({0x02, 0x01}).IsWellFormed()); // push runs past the end
-    BOOST_CHECK(!raw({OP_INVALIDOPCODE, OP_1}).IsWellFormed());
+    BOOST_CHECK(raw({OP_INVALIDOPCODE, OP_1}).IsWellFormed());
     BOOST_CHECK(raw({OP_1, OP_INVALIDOPCODE}).IsWellFormed());
     BOOST_CHECK(raw({OP_1, OP_RETURN, 0x02}).IsWellFormed()); // not parsed after OP_RETURN
+}
+
+BOOST_FIXTURE_TEST_CASE(valid_template_block_deserializes, TestChain100Setup)
+{
+    const CScript emptyTemplate = CScript(ScriptType::TEMPLATE) << OP_0 << VchHash160(VchType()) << OP_0;
+    CMutableTransaction funding;
+    funding.vin.push_back(coinbaseTxns[0].SpendOutput(0));
+    funding.vout.emplace_back(10000, emptyTemplate);
+    funding.vin[0].scriptSig = SignCoinbaseSpend(funding, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
+    const CBlock fundingBlock = CreateAndProcessBlock({funding}, coinbaseLockingScript);
+    BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == fundingBlock.GetHash());
+
+    CMutableTransaction spending;
+    spending.vin.push_back(CTransaction(funding).SpendOutput(0));
+    spending.vin[0].scriptSig << OP_INVALIDOPCODE;
+    spending.vout.emplace_back(9000, coinbaseLockingScript);
+    const CBlock block = CreateAndProcessBlock({spending}, coinbaseLockingScript);
+    BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == block.GetHash());
+
+    // A block accepted by consensus must also survive network and disk deserialization.
+    for (int type : {SER_NETWORK, SER_DISK})
+    {
+        CDataStream stream(type, PROTOCOL_VERSION);
+        stream << block;
+        CBlock decoded;
+        BOOST_REQUIRE_NO_THROW(stream >> decoded);
+        BOOST_CHECK(stream.empty());
+        BOOST_CHECK(decoded.GetHash() == block.GetHash());
+        BOOST_REQUIRE_EQUAL(decoded.vtx.size(), 2U);
+        BOOST_CHECK(decoded.vtx[1]->GetId() == spending.GetId());
+    }
 }
 
 BOOST_FIXTURE_TEST_CASE(block_body_recut_blames_its_sender, RecutBlockSetup)
