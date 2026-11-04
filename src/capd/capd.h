@@ -33,6 +33,7 @@ class CapdProtocol;
 extern const uint64_t CAPD_MAX_INV_TO_SEND;
 extern const uint64_t CAPD_MAX_MSG_TO_REQUEST;
 extern const uint64_t CAPD_MAX_MSG_TO_SEND;
+extern uint64_t CAPD_MAX_SEND_CHUNK_BYTES;
 extern const uint64_t CAPD_MAX_NOTIFICATIONS;
 
 extern bool StartCapd();
@@ -208,6 +209,9 @@ protected:
 
 public:
     static const uint8_t CURRENT_VERSION = 0;
+    //! By spec, a message's nonce must be between MIN_NONCE_SIZE and MAX_NONCE_SIZE bytes inclusive
+    static const size_t MIN_NONCE_SIZE = 1;
+    static const size_t MAX_NONCE_SIZE = 8;
 
     // TODO version in CDataStream could replace this
     uint8_t version; //!< (not network serialized) The expected serialization version
@@ -294,6 +298,10 @@ public:
             READWRITE(createTime);
             READWRITE(difficultyBits);
             READWRITE(nonce);
+            // Allow serialization and deserialization of 0 sized nonces because that may be useful for unsolved
+            // messages.
+            if (nonce.size() > MAX_NONCE_SIZE)
+                throw std::ios_base::failure("CAPD nonce size too large");
             if (fields & Fields::EXPIRATION)
                 READWRITE(expiration);
             if (fields & Fields::RESCINDHASH)
@@ -321,7 +329,11 @@ public:
             return cachedHash;
         return CalcHash();
     }
-    /** Verify that the proof of work matches the difficulty claimed in the message */
+    /** Return true if the nonce length is within the spec's bounds (MIN_NONCE_SIZE..MAX_NONCE_SIZE inclusive) */
+    bool IsNonceSizeValid() const { return nonce.size() >= MIN_NONCE_SIZE && nonce.size() <= MAX_NONCE_SIZE; }
+
+    /** Verify that the proof of work matches the difficulty claimed in the message.
+        A message whose nonce length is outside the spec's bounds never meets its target. */
     bool DoesPowMeetTarget() const;
 
     /** Returns this message's advertised difficulty.

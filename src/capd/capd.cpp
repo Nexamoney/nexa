@@ -7,6 +7,7 @@
 // Counterparty and protocol discovery
 #include <limits>
 #include <queue>
+#include <set>
 
 #include "arith_uint256.h"
 #include "capd.h"
@@ -32,6 +33,10 @@ uint64_t msgpoolMaxSize = CapdMsgPool::DEFAULT_MSG_POOL_MAX_SIZE;
 const uint64_t CAPD_MAX_INV_TO_SEND = 20000;
 const uint64_t CAPD_MAX_MSG_TO_REQUEST = 10000;
 const uint64_t CAPD_MAX_MSG_TO_SEND = 5000;
+// Approximate maximum bytes of messages placed in a single CAPDMSG.  Bounds the serialization buffer FlushMessages
+// builds, so many queued requests for large messages are not all serialized into one CAPDMSG.  Not const so tests can
+// lower it.
+uint64_t CAPD_MAX_SEND_CHUNK_BYTES = 100 * 1000 * 1000;
 // Bounds a peer's notification memory and the CAPDREMOVENOTIFY scan
 const uint64_t CAPD_MAX_NOTIFICATIONS = 1024;
 
@@ -565,9 +570,17 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
             return error(CAPD, "Capd drop: Received message with too many (%d) capd message requests\n", msgIds.size());
         }
 
+        // Each message is sent at most once per request, so a peer cannot multiply our memory use by repeating an id.
+        // A peer that really wants multiple copies must send separate requests.
+        std::set<uint256> requested;
         for (auto id : msgIds)
         {
             LOG(CAPD, "received GetMsg %s", id.GetHex());
+            if (!requested.insert(id).second)
+            {
+                LOG(CAPD, "Capd drop: message %s requested more than once\n", id.GetHex());
+                continue;
+            }
             auto msg = pool->find(id);
             if (msg == nullptr)
             {
@@ -588,13 +601,33 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
     {
         std::vector<CapdMsg> msgs; // TODO deserialize as CapdMsgRefs
         std::vector<CapdMsgRef> goodMsgs;
-        vRecv >> msgs;
+        try
+        {
+            vRecv >> msgs;
+        }
+        catch (const std::ios_base::failure &e)
+        {
+            // Malformed CAPD messages (including nonces longer than the spec allows) should be punished.
+            // (currently honest nodes can send them by accidentally relaying over-long nonces, uncomment in 2027)
+            // dosMan.Misbehaving(pfrom, 10, BanReasonInvalidObject);
+            // Rethrow so the generic network handler still replies with a REJECT and logs the failure.
+            LOG(CAPD, "Capd drop: failed to deserialize messages from %s: %s\n", pfrom->GetLogName(), e.what());
+            throw;
+        }
         LOG(CAPD, "Capd: Received %d messages", msgs.size());
         for (const CapdMsg &msg : msgs)
         {
             auto msgRef = MakeMsgRef(CapdMsg(msg));
             uint256 hash = msgRef->GetHash();
             LOG(CAPD, "received Msg %s\n", hash.GetHex());
+            if (!msgRef->IsNonceSizeValid())
+            {
+                // An honest node can never produce or relay such a message
+                // (currently they can by accidental relay, uncomment in 2027)
+                // dosMan.Misbehaving(pfrom, 10, BanReasonInvalidSize);
+                LOG(CAPD, "Capd drop: message %s has invalid nonce size %d\n", hash.GetHex(), msgRef->nonce.size());
+                continue;
+            }
             if (msgRef->createTime > (uint64_t)GetTime())
             {
                 // Only penalise beyond clock skew between us and the creator
@@ -776,28 +809,36 @@ bool CapdNode::FlushMessages()
 
     if (!sendMsgs.empty())
     {
-        unsigned int offset = 0;
-        // Send all messages that didn't provide a reply cookie in a few large chunks
-        std::vector<CapdMsg> unreplyMessages;
-        for (auto m : sendMsgs)
+        // Send all messages that didn't provide a reply cookie in chunks of approximately CAPD_MAX_SEND_CHUNK_BYTES
+        // (and at most CAPD_MAX_MSG_TO_SEND messages).  Each chunk is pushed as soon as it is full, so only one chunk
+        // is serialized at a time.  A chunk may exceed the byte limit by up to one message.
+        // The chunk holds raw pointers, which is safe because sendMsgs keeps every message alive until it is cleared
+        // below.  PtrVectorSpan serializes them exactly like a vector of the messages, so nothing is copied.
+        std::vector<const CapdMsg *> chunk;
+        uint64_t chunkBytes = 0;
+        for (const auto &m : sendMsgs)
         {
-            if ((m.second & 0xFFFF0000) == 0)
-                unreplyMessages.push_back(*(m.first));
+            if ((m.second & 0xFFFF0000) != 0)
+                continue;
+            chunk.push_back(m.first.get());
+            chunkBytes += m.first->RamSize();
+            if (chunkBytes >= CAPD_MAX_SEND_CHUNK_BYTES || chunk.size() >= CAPD_MAX_MSG_TO_SEND)
+            {
+                node->PushMessage(NetMsgType::CAPDMSG, PtrVectorSpan<const CapdMsg *>(chunk, 0, chunk.size()));
+                chunk.clear();
+                chunkBytes = 0;
+            }
         }
-        do
-        {
-            node->PushMessage(NetMsgType::CAPDMSG, VectorSpan<CapdMsg>(unreplyMessages, offset, CAPD_MAX_MSG_TO_SEND));
-            offset += CAPD_MAX_MSG_TO_SEND;
-        } while (offset < unreplyMessages.size());
+        if (!chunk.empty())
+            node->PushMessage(NetMsgType::CAPDMSG, PtrVectorSpan<const CapdMsg *>(chunk, 0, chunk.size()));
 
         // Now send the messages that need a reply cookie
-        for (auto it : sendMsgs)
+        for (const auto &it : sendMsgs)
         {
             if ((it.second & 0xFFFF0000) != 0)
             {
-                std::vector<CapdMsg> oneMsg(1);
-                oneMsg[0] = *it.first;
-                node->PushMessageWithCookie(NetMsgType::CAPDMSG, it.second, oneMsg);
+                node->PushMessageWithCookie(
+                    NetMsgType::CAPDMSG, it.second, PtrVectorOf1<const CapdMsg *>(it.first.get()));
             }
         }
 
