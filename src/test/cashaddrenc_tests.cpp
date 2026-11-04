@@ -112,6 +112,69 @@ BOOST_AUTO_TEST_CASE(check_packaddr_throws)
     }
 }
 
+BOOST_AUTO_TEST_CASE(hash_destination_sizes)
+{
+    for (auto net : GetNetworks())
+    {
+        const CChainParams &params = Params(net);
+        for (CashAddrType type : {PUBKEY_TYPE, SCRIPT_TYPE})
+        {
+            for (auto ps : valid_sizes)
+            {
+                const CashAddrContent content = {type, std::vector<uint8_t>(ps.second, 0x42)};
+                const std::string address = EncodeCashAddr(content.hash, type, params);
+                const CashAddrContent decoded = DecodeCashAddrContent(address, params);
+                BOOST_REQUIRE(decoded.type == type);
+                BOOST_REQUIRE(decoded.hash == content.hash);
+
+                CTxDestination expected = CNoDestination{};
+                if (ps.second == 20)
+                {
+                    const uint160 hash(content.hash);
+                    if (type == PUBKEY_TYPE)
+                        expected = CKeyID(hash);
+                    else
+                        expected = CScriptID(hash);
+                }
+                BOOST_CHECK(DecodeCashAddr(address, params) == expected);
+                BOOST_CHECK(DecodeCashAddrDestination(content) == expected);
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(hash_destination_invalid_lengths)
+{
+    for (CashAddrType type : {PUBKEY_TYPE, SCRIPT_TYPE})
+    {
+        for (size_t size : {0, 1, 19, 21})
+        {
+            const CashAddrContent content = {type, std::vector<uint8_t>(size, 0x42)};
+            BOOST_CHECK(DecodeCashAddrDestination(content) == CTxDestination(CNoDestination{}));
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(long_template_destination)
+{
+    for (auto net : GetNetworks())
+    {
+        const CChainParams &params = Params(net);
+        for (size_t size : {80, 256, 1024})
+        {
+            const CScript output = CScript(ScriptType::TEMPLATE)
+                                   << OP_0 << VchType(32, 0x42) << OP_0 << VchType(size, 0x43);
+            const CTxDestination destination = ScriptTemplateDestination(output);
+            const std::string address = EncodeCashAddr(destination, params);
+            const CashAddrContent content = DecodeCashAddrContent(address, params);
+            BOOST_REQUIRE(content.type == SCRIPT_TEMPLATE_TYPE);
+            BOOST_REQUIRE(content.hash.size() > 64);
+            BOOST_CHECK(DecodeCashAddrDestination(content) == destination);
+            BOOST_CHECK(DecodeCashAddr(address, params) == destination);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(encode_decode)
 {
     std::vector<CTxDestination> toTest = {
