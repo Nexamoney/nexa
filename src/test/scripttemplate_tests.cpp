@@ -107,6 +107,60 @@ static uint256 hash256(const CScript &script) { return Hash(script.begin(), scri
 
 std::vector<unsigned char> vch(const CScript &script) { return ToByteVector(script); }
 
+BOOST_AUTO_TEST_CASE(template_leading_invalid_opcode_deserializes)
+{
+    QuickAddress owner;
+    for (const VchType &emptyHash : {VchHash160(VchType()), ToByteVector(hash256(CScript()))})
+    {
+        for (bool hiddenArgs : {false, true})
+        {
+            CScript prevScript(ScriptType::TEMPLATE);
+            if (hiddenArgs)
+                prevScript << OP_0 << P2PKT_ID << emptyHash << ToByteVector(owner.pubkey);
+            else
+                prevScript << OP_0 << emptyHash << OP_0;
+
+            CMutableTransaction tx;
+            tx.vin.emplace_back(COutPoint(InsecureRand256()), 1000);
+            tx.vout.emplace_back(900, prevScript);
+            tx.vin[0].scriptSig << OP_INVALIDOPCODE;
+            if (hiddenArgs)
+            {
+                VchType sig;
+                const uint256 sighash = SignatureHash(p2pkt, CTransaction(tx), 0, defaultSigHashType, 1000, 0);
+                BOOST_REQUIRE(owner.secret.SignSchnorr(sighash, sig));
+                defaultSigHashType.appendToSig(sig);
+                tx.vin[0].scriptSig << sig;
+            }
+
+            // The leading opcode supplies empty template/argument bytes; it is not executed.
+            for (unsigned int flags : {MANDATORY_SCRIPT_VERIFY_FLAGS, STANDARD_SCRIPT_VERIFY_FLAGS})
+            {
+                ScriptImportedStateSig sis(&tx, 0, 1000, flags);
+                ScriptError error;
+                ScriptMachineResourceTracker tracker;
+                BOOST_REQUIRE(VerifyScript(tx.vin[0].scriptSig, prevScript, flags, sis, &error, &tracker));
+
+                CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+                stream << tx;
+                CMutableTransaction decoded;
+                BOOST_REQUIRE_NO_THROW(stream >> decoded);
+                BOOST_CHECK(stream.empty());
+                BOOST_CHECK(decoded.GetId() == tx.GetId());
+                BOOST_CHECK(decoded.vin[0].scriptSig == tx.vin[0].scriptSig);
+                ScriptImportedStateSig decodedSis(&decoded, 0, 1000, flags);
+                ScriptMachineResourceTracker decodedTracker;
+                BOOST_CHECK(
+                    VerifyScript(decoded.vin[0].scriptSig, prevScript, flags, decodedSis, &error, &decodedTracker));
+
+                ScriptMachineResourceTracker legacyTracker;
+                BOOST_CHECK(
+                    !VerifyScript(tx.vin[0].scriptSig, CScript() << OP_TRUE, flags, sis, &error, &legacyTracker));
+            }
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(verifywellknown)
 {
     auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS; // upgrade 1 retroactively applied to entire blockchain

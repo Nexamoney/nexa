@@ -970,7 +970,7 @@ class RecutBlockBodyTest(BitcoinTestFramework):
         # Scenario 2: the same txid forged a different way, so an invalid opcode appears as the first
         # instruction in the scriptSig
         self.run_scenario(node, failures, "bare opcode", lambda a, b: self.run_recovery(
-            node, a, b, *make_parseable_pair(node), malformed=True, label="bare-opcode"))
+            node, a, b, *make_parseable_pair(node), malformed=False, label="bare-opcode"))
 
         # Scenario 3: the same collision again, but the donated 0xff lands in the
         # middle of a scriptSig, so neither altered scriptSig begins with 0xff.
