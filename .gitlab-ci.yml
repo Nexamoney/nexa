@@ -236,7 +236,7 @@ build-ubuntu-tests-nodeps:
           artifacts: true
     cache: {}
     script:
-        - (cd build/src; ./test/test_nexa)
+        - (cd build/src; ./test/test_nexa --log_level=test_suite)
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -298,7 +298,7 @@ build-ubuntu-tests-nodeps-nowallet:
           artifacts: true
     cache: {}
     script:
-        - (cd build/src; ./test/test_nexa;)
+        - (cd build/src; ./test/test_nexa --log_level=test_suite)
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -479,7 +479,7 @@ build-ubuntu-tests:
           artifacts: true
     cache: []
     script:
-        - (cd build/src; ./test/test_nexa)
+        - (cd build/src; ./test/test_nexa --log_level=test_suite)
     artifacts:
         when: on_failure
         paths:
@@ -646,7 +646,7 @@ build-ubuntu-tests-clang:
           artifacts: true
     cache: {}
     script:
-        - (cd build/src; ./test/test_nexa)
+        - (cd build/src; ./test/test_nexa --log_level=test_suite)
     artifacts:
         when: on_failure
         paths:
