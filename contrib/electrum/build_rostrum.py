@@ -8,8 +8,8 @@ PROJECT_NAME = "rostrum"
 GIT_REPO = "https://gitlab.com/nexa/{}.git".format(PROJECT_NAME)
 # Set EXPECT_HEAD to None to build the latest GIT_BRANCH revision.
 # CI archives the same revision for the functional tests.
-GIT_BRANCH = "master"
-EXPECT_HEAD = None
+GIT_BRANCH = "v15.0.0"
+EXPECT_HEAD = "ddb60f80e6fb9329ad219851ae8071ac822c26d1"
 
 ROOT_DIR = os.path.realpath(
         os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
