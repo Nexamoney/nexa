@@ -12,6 +12,7 @@
 #include "arith_uint256.h"
 #include "capd.h"
 #include "clientversion.h"
+#include "consensus/consensus.h"
 #include "dosman.h"
 #include "init.h"
 #include "net.h"
@@ -27,6 +28,13 @@
 #include <univalue.h>
 
 const CapdMsgRef nullmsgref = CapdMsgRef();
+extern uint64_t nMaxSendBufferSize;
+
+static uint64_t CapdReplyBytes(const CapdMsg &msg)
+{
+    // Reserve the maximum vector prefix so batching cannot exceed the reserved bytes.
+    return GetSerializeSize(msg, SER_NETWORK, PROTOCOL_VERSION) + 9 + CMessageHeader::HEADER_SIZE;
+}
 
 uint64_t msgpoolMaxSize = CapdMsgPool::DEFAULT_MSG_POOL_MAX_SIZE;
 
@@ -594,7 +602,12 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
                 continue;
             }
 
-            cn->sendMsg(msg, msgCookie | 0xFFFF);
+            if (!cn->sendMsg(msg, msgCookie | 0xFFFF))
+            {
+                cn->clear();
+                pfrom->CloseSocketDisconnect("CAPD send budget exceeded");
+                return false;
+            }
         }
     }
     else if (command == NetMsgType::CAPDMSG)
@@ -761,6 +774,22 @@ void CapdProtocol::FlushGossipMessagesToNodes()
     }
 }
 
+bool CapdNode::sendMsg(const CapdMsgRef m, uint32_t msgCookie)
+{
+    LOCK(csCapdNode);
+    const uint64_t bytes = CapdReplyBytes(*m);
+    if (bytes - CMessageHeader::HEADER_SIZE > GetMaxAllowedNetMessage())
+        return false;
+    const uint64_t queued = node->nSendSize.load();
+    if (nMaxSendBufferSize != 0 &&
+        (queued >= nMaxSendBufferSize || bytes > nMaxSendBufferSize - queued ||
+            pendingSendBytes > nMaxSendBufferSize - queued - bytes))
+        return false;
+    sendMsgs.emplace_back(m, msgCookie);
+    pendingSendBytes += bytes;
+    return true;
+}
+
 void CapdNode::clear()
 {
     LOCK(csCapdNode);
@@ -768,6 +797,7 @@ void CapdNode::clear()
     invMsgs.clear();
     requestMsgs.clear();
     sendMsgs.clear();
+    pendingSendBytes = 0;
     notifications.clear();
 }
 
@@ -809,6 +839,11 @@ bool CapdNode::FlushMessages()
 
     if (!sendMsgs.empty())
     {
+        const uint64_t queued = node->nSendSize.load();
+        if (nMaxSendBufferSize != 0 &&
+            (queued > nMaxSendBufferSize || pendingSendBytes > nMaxSendBufferSize - queued))
+            return false;
+
         // Send all messages that didn't provide a reply cookie in chunks of approximately CAPD_MAX_SEND_CHUNK_BYTES
         // (and at most CAPD_MAX_MSG_TO_SEND messages).  Each chunk is pushed as soon as it is full, so only one chunk
         // is serialized at a time.  A chunk may exceed the byte limit by up to one message.
@@ -816,17 +851,28 @@ bool CapdNode::FlushMessages()
         // below.  PtrVectorSpan serializes them exactly like a vector of the messages, so nothing is copied.
         std::vector<const CapdMsg *> chunk;
         uint64_t chunkBytes = 0;
+        uint64_t chunkWireBytes = 0;
         for (const auto &m : sendMsgs)
         {
             if ((m.second & 0xFFFF0000) != 0)
                 continue;
+            const uint64_t wireBytes = CapdReplyBytes(*m.first) - CMessageHeader::HEADER_SIZE;
+            if (!chunk.empty() && chunkWireBytes + wireBytes > GetMaxAllowedNetMessage())
+            {
+                node->PushMessage(NetMsgType::CAPDMSG, PtrVectorSpan<const CapdMsg *>(chunk, 0, chunk.size()));
+                chunk.clear();
+                chunkBytes = 0;
+                chunkWireBytes = 0;
+            }
             chunk.push_back(m.first.get());
             chunkBytes += m.first->RamSize();
+            chunkWireBytes += wireBytes;
             if (chunkBytes >= CAPD_MAX_SEND_CHUNK_BYTES || chunk.size() >= CAPD_MAX_MSG_TO_SEND)
             {
                 node->PushMessage(NetMsgType::CAPDMSG, PtrVectorSpan<const CapdMsg *>(chunk, 0, chunk.size()));
                 chunk.clear();
                 chunkBytes = 0;
+                chunkWireBytes = 0;
             }
         }
         if (!chunk.empty())
@@ -843,6 +889,7 @@ bool CapdNode::FlushMessages()
         }
 
         sendMsgs.clear();
+        pendingSendBytes = 0;
     }
 
     return true;

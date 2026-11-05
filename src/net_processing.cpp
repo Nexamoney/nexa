@@ -4256,8 +4256,12 @@ bool SendMessages(CNode *pto)
         }
 
         // Send any CAPD communication that might be pending
-        if (pto->capd)
-            pto->capd->FlushMessages();
+        if (pto->capd && !pto->capd->FlushMessages())
+        {
+            pto->capd->clear();
+            pto->CloseSocketDisconnect("CAPD send budget exceeded");
+            return false;
+        }
 
         // If the chain is not entirely sync'd then look for new blocks to download.
         //
