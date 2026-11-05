@@ -209,6 +209,14 @@ class MempoolPersistTest(BitcoinTestFramework):
 
         connect_nodes_full(self.nodes)
         self.sync_blocks()
+        # connect_nodes only waits for the version message.  CAPD is enabled on a connection later, when the peer's
+        # extversion arrives, and a message sent before then is never relayed to that peer.  So wait until each node
+        # sees the other as CAPD capable.
+        CAPD_XVERSION_STR = '000000020000000e'
+        def capdConnected(node):
+            peers = node.getpeerinfo()
+            return len(peers) > 0 and all(CAPD_XVERSION_STR in p.get("extversion_map", {}) for p in peers)
+        waitFor(waitTime, lambda: capdConnected(self.nodes[0]) and capdConnected(self.nodes[1]))
 
         logging.info("Send 5 transactions from node2 (to its own address)")
         for i in range(5):
