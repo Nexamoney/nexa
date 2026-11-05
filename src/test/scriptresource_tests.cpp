@@ -214,11 +214,10 @@ BOOST_AUTO_TEST_CASE(TestOpExecSharedStackBudget)
 
     // Parent keeps 20 bytes while the child runs: 20 + 80 == 100, exactly at the limit.
     // (code, paramQty and returnedParamQty are popped before the child starts; OP_0 is 0 bytes anyway)
-    CHECK_BUDGET(CScript() << VchType(20, 0x11) << Serialize(child80) << 0 << 0 << OP_EXEC, limit, SCRIPT_ERR_OK,
-        100);
+    CHECK_BUDGET(CScript() << VchType(20, 0x11) << Serialize(child80) << 0 << 0 << OP_EXEC, limit, SCRIPT_ERR_OK, 100);
     // One more parent byte leaves the child only 79 bytes, so the child's 4th 20 byte item fails
-    CHECK_BUDGET(CScript() << VchType(21, 0x11) << Serialize(child80) << 0 << 0 << OP_EXEC, limit,
-        SCRIPT_ERR_STACK_BYTES, 0);
+    CHECK_BUDGET(
+        CScript() << VchType(21, 0x11) << Serialize(child80) << 0 << 0 << OP_EXEC, limit, SCRIPT_ERR_STACK_BYTES, 0);
 
     // Parameters move from the parent to the child, so they stop counting against the parent and start
     // counting against the child: parent keeps 20, child holds the 20 byte param plus 3 copies == 80.
@@ -230,23 +229,23 @@ BOOST_AUTO_TEST_CASE(TestOpExecSharedStackBudget)
 
     // Returned items are pushed back onto the parent once the child exits, and count against the parent:
     // parent 20 + one returned 20 byte item == 40, then 3 more copies reaches exactly 100, a 4th exceeds it.
-    CHECK_BUDGET(CScript() << VchType(20, 0x11) << Serialize(child80) << 0 << 1 << OP_EXEC << OP_DUP << OP_DUP
+    CHECK_BUDGET(
+        CScript() << VchType(20, 0x11) << Serialize(child80) << 0 << 1 << OP_EXEC << OP_DUP << OP_DUP << OP_DUP, limit,
+        SCRIPT_ERR_OK, 100);
+    CHECK_BUDGET(CScript() << VchType(20, 0x11) << Serialize(child80) << 0 << 1 << OP_EXEC << OP_DUP << OP_DUP << OP_DUP
                            << OP_DUP,
-        limit, SCRIPT_ERR_OK, 100);
-    CHECK_BUDGET(CScript() << VchType(20, 0x11) << Serialize(child80) << 0 << 1 << OP_EXEC << OP_DUP << OP_DUP
-                           << OP_DUP << OP_DUP,
         limit, SCRIPT_ERR_STACK_BYTES, 0);
 
     // Nested OP_EXEC: the parent keeps 10 bytes and the child keeps 10 bytes while the grandchild uses 80.
     // 10 + 10 + 80 == 100 fits exactly.
     {
-        const CScript child =
-            CScript() << VchType(10, 0x33) << Serialize(child80) << 0 << 0 << OP_EXEC; // child holds 10 bytes
-        CHECK_BUDGET(CScript() << VchType(10, 0x11) << Serialize(child) << 0 << 0 << OP_EXEC, limit, SCRIPT_ERR_OK,
-            100);
+        const CScript child = CScript() << VchType(10, 0x33) << Serialize(child80) << 0 << 0
+                                        << OP_EXEC; // child holds 10 bytes
+        CHECK_BUDGET(
+            CScript() << VchType(10, 0x11) << Serialize(child) << 0 << 0 << OP_EXEC, limit, SCRIPT_ERR_OK, 100);
         // One extra byte in the parent leaves the grandchild 79 bytes
-        CHECK_BUDGET(CScript() << VchType(11, 0x11) << Serialize(child) << 0 << 0 << OP_EXEC, limit,
-            SCRIPT_ERR_STACK_BYTES, 0);
+        CHECK_BUDGET(
+            CScript() << VchType(11, 0x11) << Serialize(child) << 0 << 0 << OP_EXEC, limit, SCRIPT_ERR_STACK_BYTES, 0);
     }
     {
         // One extra byte in the middle (child) machine also leaves the grandchild 79 bytes
