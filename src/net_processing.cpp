@@ -4328,7 +4328,7 @@ bool HandleHeaderPathMessage(CDataStream &vRecv, CNode *pfrom, uint32_t msgCooki
 
         if (toHeight == std::numeric_limits<uint32_t>::max())
             to = chainActive.Tip();
-        else if (toHeight != 0 || fromHash == uint256())
+        else if (toHeight != 0 || toHash == uint256())
             to = chainActive._idx(toHeight); // returns nullptr if too big
         else
             to = chainActive._lookup(toHash);
