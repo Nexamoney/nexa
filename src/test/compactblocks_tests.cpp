@@ -196,7 +196,10 @@ BOOST_AUTO_TEST_CASE(reconstruct_state_released_after_handoff)
     }
     handling.get();
     thinrelay.ClearAllBlockData(&node, hash);
-    PV->WaitForAllValidationThreadsToStop();
+    // The detached validation worker holds a node reference before it registers with PV.
+    // Wait for that reference so fixture teardown cannot overtake the worker.
+    while (node.GetRefCount() != 0)
+        MilliSleep(10);
 
     BOOST_REQUIRE(handlerCompleted);
     BOOST_REQUIRE(firstAccepted);
