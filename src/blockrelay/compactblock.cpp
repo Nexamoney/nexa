@@ -572,6 +572,14 @@ static bool ReconstructBlock(CNode *pfrom,
     int &unnecessaryCount,
     std::shared_ptr<CBlockThinRelay> pblock)
 {
+    // An attacker may attempt to send us a duplicate thintype block and trigger a second
+    // reconstruction on the same dataset. This can cause a block to become invalidated
+    // and so must not be allowed to happen.
+    if (!pblock->vtx.empty())
+    {
+        return error("WARNING: a block reconstruction is already in progress, peer=%s", pfrom->GetLogName());
+    }
+
     // We must have all the full tx hashes by this point.  We first check for any duplicate
     // transaction ids.  This is a possible attack vector and has been used in the past.
     {
