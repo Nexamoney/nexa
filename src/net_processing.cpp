@@ -71,6 +71,15 @@ static size_t MaxTailstormFallbackHeaders() { return MaxTailstormSubblockHeaders
 
 static size_t MaxTailstormFallbackHeadersPerPeer() { return Params().GetConsensus().tailstorm_k; }
 
+// Bytes queued for a peer, including CAPD replies that are reserved but not yet serialized
+static uint64_t SendBacklog(CNode *pnode)
+{
+    uint64_t backlog = pnode->nSendSize.load();
+    if (pnode->capd)
+        backlog += pnode->capd->pendingSendBytes.load();
+    return backlog;
+}
+
 static bool WithinBudget(CNode *pfrom, size_t nAdditionalRequests)
 {
     LOCK(pfrom->csRecvGetData);
@@ -3469,7 +3478,7 @@ bool ProcessMessages(CNode *pfrom)
     // Don't bother if send buffer is too full to respond anyway
     CNode *pfrom_original = pfrom;
     std::deque<std::pair<CNodeRef, CNetMessage> > vPriorityRecvQ_delay;
-    while ((!pfrom->fDisconnect) && (pfrom->nSendSize < nMaxSendBufferSize) && (shutdown_threads.load() == false))
+    while ((!pfrom->fDisconnect) && (SendBacklog(pfrom) < nMaxSendBufferSize) && (shutdown_threads.load() == false))
     {
         CNodeRef noderef;
         bool fIsPriority = false;
@@ -4256,12 +4265,8 @@ bool SendMessages(CNode *pto)
         }
 
         // Send any CAPD communication that might be pending
-        if (pto->capd && !pto->capd->FlushMessages())
-        {
-            pto->capd->clear();
-            pto->CloseSocketDisconnect("CAPD send budget exceeded");
-            return false;
-        }
+        if (pto->capd)
+            pto->capd->FlushMessages();
 
         // If the chain is not entirely sync'd then look for new blocks to download.
         //

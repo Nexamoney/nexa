@@ -8,6 +8,7 @@
 
 // Counterparty and protocol discovery
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <queue>
@@ -732,7 +733,8 @@ public:
     std::vector<uint256> invMsgs;
     std::vector<uint256> requestMsgs;
     std::vector<std::pair<CapdMsgRef, uint32_t> > sendMsgs;
-    uint64_t pendingSendBytes = 0;
+    //! Bytes reserved for replies in sendMsgs, counted against the peer's send buffer
+    std::atomic<uint64_t> pendingSendBytes{0};
     CNode *node = nullptr; // The associated node.
 
     // Track all notifications
@@ -766,11 +768,12 @@ public:
             requestMsgs.push_back(inv.hash);
     }
 
+    //! Queue a reply; return false if it does not fit in the peer's send budget or a network message
     bool sendMsg(const CapdMsgRef m, uint32_t msgCookie);
 
     void clear(void);
 
-    //! Send any enqueued messages. Return false if the peer send budget is exceeded.
+    //! Send any enqueued messages; replies wait while the peer's send buffer has no room for them
     bool FlushMessages();
 
     //! Remember a request to notify this node about incoming matching messages.

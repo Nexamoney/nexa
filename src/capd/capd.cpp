@@ -604,9 +604,8 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
 
             if (!cn->sendMsg(msg, msgCookie | 0xFFFF))
             {
-                cn->clear();
-                pfrom->CloseSocketDisconnect("CAPD send budget exceeded");
-                return false;
+                LOG(CAPD, "Capd drop: no room to send message %s to %s\n", id.GetHex(), pfrom->GetLogName());
+                continue;
             }
         }
     }
@@ -839,10 +838,11 @@ bool CapdNode::FlushMessages()
 
     if (!sendMsgs.empty())
     {
+        // Other replies may have filled the buffer since these were reserved; send them once it drains
         const uint64_t queued = node->nSendSize.load();
         if (nMaxSendBufferSize != 0 &&
             (queued > nMaxSendBufferSize || pendingSendBytes > nMaxSendBufferSize - queued))
-            return false;
+            return true;
 
         // Send all messages that didn't provide a reply cookie in chunks of approximately CAPD_MAX_SEND_CHUNK_BYTES
         // (and at most CAPD_MAX_MSG_TO_SEND messages).  Each chunk is pushed as soon as it is full, so only one chunk
