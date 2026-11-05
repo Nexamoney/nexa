@@ -3,15 +3,24 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include "blockrelay/blockrelay_common.h"
 #include "blockrelay/compactblock.h"
 #include "chainparams.h"
 #include "consensus/merkle.h"
 #include "daa.h"
+#include "main.h"
+#include "miner.h"
+#include "net.h"
+#include "protocol.h"
 #include "random.h"
+#include "validation/parallel.h"
 
 #include "test/test_nexa.h"
+#include "test/testutil.h"
 
 #include <boost/test/unit_test.hpp>
+#include <chrono>
+#include <future>
 
 class HasReason
 {
@@ -128,6 +137,76 @@ BOOST_AUTO_TEST_CASE(validate_compact_block)
     f.shorttxids.clear();
     f.prefilledtxn.clear();
     BOOST_CHECK_THROW(validateCompactBlock(std::make_shared<CompactBlock>(f)), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(reconstruct_state_released_after_handoff)
+{
+    BOOST_REQUIRE(PV->Enabled());
+
+    CKey key;
+    key.MakeNewKey(true);
+    CBlockRef block = BlockAssembler(Params()).CreateNewBlock(p2pkh(key.GetPubKey().GetID()))->block;
+    block->nonce.resize(3);
+    BOOST_REQUIRE(MineBlock(*block, 1 << 23, Params().GetConsensus()));
+    const uint256 hash = block->GetHash();
+    CompactBlock compact(*block);
+
+    CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c0f2, 10000)), "", true);
+    SetConnected(node);
+    BOOST_REQUIRE(thinrelay.AddBlockInFlight(&node, hash, NetMsgType::CMPCTBLOCK));
+    std::shared_ptr<CBlockThinRelay> handedOff = thinrelay.SetBlockToReconstruct(&node, hash);
+    BOOST_REQUIRE(handedOff != nullptr);
+
+    bool firstAccepted = false;
+    bool replayAccepted = false;
+    bool replayChecked = false;
+    bool stillInFlight = false;
+    bool sameCompactData = true;
+    bool retainedReconstruction = false;
+    size_t firstTxCount = 0;
+    size_t replayTxCount = 0;
+    std::future<void> handling;
+    bool handlerCompleted = false;
+    {
+        // Keep validation behind cs_main while the handler processes the repeat message.
+        LOCK(cs_main);
+        handling = std::async(std::launch::async, [&]() {
+            CDataStream first(SER_NETWORK, PROTOCOL_VERSION);
+            first << compact;
+            firstAccepted = CompactBlock::HandleMessage(first, 0, &node);
+            if (firstAccepted)
+            {
+                firstTxCount = handedOff->vtx.size();
+                replayTxCount = firstTxCount;
+                stillInFlight = thinrelay.IsBlockInFlight(&node, NetMsgType::CMPCTBLOCK, hash);
+                retainedReconstruction = thinrelay.GetBlockToReconstruct(&node, hash) != nullptr;
+                if (!stillInFlight && !retainedReconstruction)
+                {
+                    const auto originalCompact = handedOff->cmpctblock;
+                    CDataStream replay(SER_NETWORK, PROTOCOL_VERSION);
+                    replay << compact;
+                    replayChecked = true;
+                    replayAccepted = CompactBlock::HandleMessage(replay, 0, &node);
+                    sameCompactData = handedOff->cmpctblock == originalCompact;
+                    replayTxCount = handedOff->vtx.size();
+                }
+            }
+        });
+        handlerCompleted = handling.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    }
+    handling.get();
+    thinrelay.ClearAllBlockData(&node, hash);
+    PV->WaitForAllValidationThreadsToStop();
+
+    BOOST_REQUIRE(handlerCompleted);
+    BOOST_REQUIRE(firstAccepted);
+    BOOST_CHECK_EQUAL(firstTxCount, block->vtx.size());
+    BOOST_CHECK(!stillInFlight);
+    BOOST_CHECK(!retainedReconstruction);
+    BOOST_CHECK(replayChecked);
+    BOOST_CHECK(!replayAccepted);
+    BOOST_CHECK(sameCompactData);
+    BOOST_CHECK_EQUAL(replayTxCount, firstTxCount);
 }
 
 
