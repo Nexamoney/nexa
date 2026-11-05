@@ -3416,17 +3416,18 @@ bool ProcessMessages(CNode *pfrom)
     // Check getdata requests first if there are no priority messages waiting.
     if (!fPriorityRecvMsg.load() && !pfrom->pauseGetDataForTest.load())
     {
-        if (!pfrom->vRecvGetData.empty())
+        // Other handler threads append to these queues, so only read them under the lock
+        std::deque<std::pair<CInv, uint32_t> > invDeque;
+        std::deque<std::pair<CInv2, uint32_t> > invDeque2;
+        std::deque<std::pair<CExtInv, uint32_t> > extInvDeque;
         {
-            std::deque<std::pair<CInv, uint32_t> > invDeque;
-            {
-                // Quickly lock and swap
-                LOCK(pfrom->csRecvGetData);
-                if (!pfrom->vRecvGetData.empty())
-                {
-                    pfrom->vRecvGetData.swap(invDeque);
-                }
-            }
+            LOCK(pfrom->csRecvGetData);
+            pfrom->vRecvGetData.swap(invDeque);
+            pfrom->vRecvGetData2.swap(invDeque2);
+            pfrom->vRecvExtGetData.swap(extInvDeque);
+        }
+        if (!invDeque.empty())
+        {
             ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
             if (!invDeque.empty())
             {
@@ -3437,45 +3438,28 @@ bool ProcessMessages(CNode *pfrom)
                 }
             }
         }
-        if (!pfrom->vRecvGetData2.empty())
+        if (!invDeque2.empty())
         {
-            std::deque<std::pair<CInv2, uint32_t> > invDeque;
-            {
-                // Quickly lock and swap
-                LOCK(pfrom->csRecvGetData);
-                if (!pfrom->vRecvGetData2.empty())
-                {
-                    pfrom->vRecvGetData2.swap(invDeque);
-                }
-            }
-            ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
-            if (!invDeque.empty())
+            ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque2);
+            if (!invDeque2.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                if (WithinBudget(pfrom, invDeque.size()))
+                if (WithinBudget(pfrom, invDeque2.size()))
                 {
-                    pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.begin(), invDeque.begin(), invDeque.end());
+                    pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.begin(), invDeque2.begin(), invDeque2.end());
                 }
             }
         }
-        if (!pfrom->vRecvExtGetData.empty())
+        if (!extInvDeque.empty())
         {
-            std::deque<std::pair<CExtInv, uint32_t> > invDeque;
-            {
-                // Quickly lock and swap
-                LOCK(pfrom->csRecvGetData);
-                if (!pfrom->vRecvExtGetData.empty())
-                {
-                    pfrom->vRecvExtGetData.swap(invDeque);
-                }
-            }
-            ProcessExtGetData(pfrom, chainparams.GetConsensus(), invDeque);
-            if (!invDeque.empty())
+            ProcessExtGetData(pfrom, chainparams.GetConsensus(), extInvDeque);
+            if (!extInvDeque.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                if (WithinBudget(pfrom, invDeque.size()))
+                if (WithinBudget(pfrom, extInvDeque.size()))
                 {
-                    pfrom->vRecvExtGetData.insert(pfrom->vRecvExtGetData.begin(), invDeque.begin(), invDeque.end());
+                    pfrom->vRecvExtGetData.insert(
+                        pfrom->vRecvExtGetData.begin(), extInvDeque.begin(), extInvDeque.end());
                 }
             }
         }
