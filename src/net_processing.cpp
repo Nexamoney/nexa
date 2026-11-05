@@ -1903,6 +1903,11 @@ bool ProcessMessage(CNode *pfrom,
                 dosMan.Misbehaving(pfrom, 20, BanReasonInvalidInventory);
                 return error("message extinv invalid type = %u", inv.type);
             }
+            if (!inv.HasValidHashSize())
+            {
+                dosMan.Misbehaving(pfrom, 20, BanReasonInvalidInventory);
+                return error("message extinv invalid id length %u for type %u", inv.hash.size(), inv.type);
+            }
 
             invDeque.push_back(std::pair<CExtInv, uint32_t>(inv, msgCookie));
         }
