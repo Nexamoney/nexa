@@ -462,12 +462,12 @@ build-ubuntu-rostrum:
         # remove cache file to see if it catch new CXX and CC env
         - ../configure --prefix=$PWD/../depends/x86_64-linux-gnu > /dev/null
         - make rostrum
-        - git -C ../rostrum archive --format=tar.gz --prefix=rostrum-master/ --output="$CI_PROJECT_DIR/build/rostrum-master.tar.gz" HEAD
+        - git -C ../rostrum archive --format=tar.gz --prefix=rostrum-v15.0.0/ --output="$CI_PROJECT_DIR/build/rostrum-v15.0.0.tar.gz" HEAD
 
     artifacts:
         paths:
             - ./build/src/rostrum
-            - ./build/rostrum-master.tar.gz
+            - ./build/rostrum-v15.0.0.tar.gz
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -583,10 +583,10 @@ test-ubuntu-qa-rostrum:
 
         - export NODE_PATH=`pwd`/build/src/nexad
         - export ROSTRUM_PATH=`pwd`/build/src/rostrum
-        - tar -zxf build/rostrum-master.tar.gz
-        - python3 ci/shard-rostrum-tests.py rostrum-master/test/functional --index "$((CI_NODE_INDEX - 1))" --count "$CI_NODE_TOTAL"
+        - tar -zxf build/rostrum-v15.0.0.tar.gz
+        - python3 ci/shard-rostrum-tests.py rostrum-v15.0.0/test/functional --index "$((CI_NODE_INDEX - 1))" --count "$CI_NODE_TOTAL"
         # Keep tests within each isolated shard serial because some require exact txpool contents.
-        - ./rostrum-master/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab -parallel=1
+        - ./rostrum-v15.0.0/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab -parallel=1
     artifacts:
         when: on_failure
         paths:
