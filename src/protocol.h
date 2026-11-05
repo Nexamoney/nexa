@@ -657,6 +657,8 @@ public:
 
     /// returns true if this extinv is one of any of the extinv types ever used.
     bool IsKnownType() const;
+    /// returns true if the id length is valid for this extinv's type
+    bool HasValidHashSize() const;
     const char *GetCommand() const;
     std::string ToString() const;
 
