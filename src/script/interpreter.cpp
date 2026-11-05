@@ -2680,7 +2680,7 @@ bool ScriptMachine::Step()
                         break;
                     }
 
-                    if (!withinStackWidth(size))
+                    if (size > std::numeric_limits<unsigned int>::max() || !withinStackWidth((unsigned int)size))
                     {
                         return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     }

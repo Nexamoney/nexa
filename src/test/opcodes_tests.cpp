@@ -760,4 +760,11 @@ BOOST_AUTO_TEST_CASE(div_and_mod_opcode_tests_64_bit_integers)
 }
 
 
+BOOST_AUTO_TEST_CASE(num2bin_size_above_32_bits_is_rejected)
+{
+    // A size whose low 32 bits are small must not slip past the stack width check
+    const int64_t hugeSize = (int64_t(1) << 32) + 2;
+    CheckErrorForAllFlags({{0x01}}, CScript() << hugeSize << OP_NUM2BIN, SCRIPT_ERR_PUSH_SIZE);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
