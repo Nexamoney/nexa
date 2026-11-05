@@ -733,7 +733,7 @@ public:
     std::vector<uint256> invMsgs;
     std::vector<uint256> requestMsgs;
     std::vector<std::pair<CapdMsgRef, uint32_t> > sendMsgs;
-    //! Bytes reserved for replies in sendMsgs, counted against the peer's send buffer
+    //! Bytes of the replies in sendMsgs, counted as part of the peer's send backlog
     std::atomic<uint64_t> pendingSendBytes{0};
     CNode *node = nullptr; // The associated node.
 
@@ -768,12 +768,12 @@ public:
             requestMsgs.push_back(inv.hash);
     }
 
-    //! Queue a reply; return false if it does not fit in the peer's send budget or a network message
+    //! Queue a reply; return false if it does not fit in a network message
     bool sendMsg(const CapdMsgRef m, uint32_t msgCookie);
 
     void clear(void);
 
-    //! Send any enqueued messages; replies wait while the peer's send buffer has no room for them
+    //! Send any enqueued messages; replies are sent while the peer's send buffer has room, the rest wait
     bool FlushMessages();
 
     //! Remember a request to notify this node about incoming matching messages.
