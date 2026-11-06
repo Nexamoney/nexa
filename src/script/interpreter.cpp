@@ -1774,9 +1774,9 @@ bool ScriptMachine::Step()
                     }
                     else
                     {
-                        StackItem bn1 = stackItemAt(-3);
-                        StackItem bn2 = stackItemAt(-2);
-                        StackItem bn3 = stackItemAt(-1);
+                        StackItem bn1 = stackItemAt(-3); // x
+                        StackItem bn2 = stackItemAt(-2); // min
+                        StackItem bn3 = stackItemAt(-1); // max
                         fValue = bn1.within(bn2, bn3, bigNumModulo);
                     }
                     PopStack();
