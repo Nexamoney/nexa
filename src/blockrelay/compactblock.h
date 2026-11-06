@@ -121,10 +121,17 @@ public:
         blockhash = block.GetHash();
         if (indexes.size() > block.vtx.size())
             throw std::invalid_argument("request more transactions than are in a block");
+        bool first = true;
+        uint32_t prev = 0;
         for (uint32_t i : indexes)
         {
             if (i >= block.vtx.size())
                 throw std::invalid_argument("out of bound tx in rerequest");
+            // Honest requests list each index once in increasing order. Repeats would multiply the response size.
+            if (!first && i <= prev)
+                throw std::invalid_argument("repeated or unordered tx index in rerequest");
+            first = false;
+            prev = i;
             txn.push_back(*block.vtx.at(i));
         }
     }

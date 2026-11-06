@@ -196,7 +196,10 @@ BOOST_AUTO_TEST_CASE(reconstruct_state_released_after_handoff)
     }
     handling.get();
     thinrelay.ClearAllBlockData(&node, hash);
-    PV->WaitForAllValidationThreadsToStop();
+    // The detached validation worker holds a node reference before it registers with PV.
+    // Wait for that reference so fixture teardown cannot overtake the worker.
+    while (node.GetRefCount() != 0)
+        MilliSleep(10);
 
     BOOST_REQUIRE(handlerCompleted);
     BOOST_REQUIRE(firstAccepted);
@@ -209,5 +212,22 @@ BOOST_AUTO_TEST_CASE(reconstruct_state_released_after_handoff)
     BOOST_CHECK_EQUAL(replayTxCount, firstTxCount);
 }
 
+
+BOOST_AUTO_TEST_CASE(getblocktxn_rejects_repeated_indexes)
+{
+    // A GETBLOCKTXN may name each transaction once. Repeating the index of the largest transaction up to
+    // vtx.size() times made the response (built in memory, then copied to the send buffer) vtx.size() times
+    // that transaction's size, from a request of 4 bytes per index.
+    CBlock block = TestBlock();
+    std::vector<uint32_t> repeated(block.vtx.size(), 2);
+    BOOST_CHECK_EXCEPTION(CompactReReqResponse(block, repeated), std::invalid_argument, HasReason("index"));
+
+    std::vector<uint32_t> descending = {2, 1};
+    BOOST_CHECK_EXCEPTION(CompactReReqResponse(block, descending), std::invalid_argument, HasReason("index"));
+
+    // Honest requests are strictly increasing, and still work.
+    CompactReReqResponse ok(block, {0, 1, 2});
+    BOOST_CHECK_EQUAL(ok.txn.size(), 3);
+}
 
 BOOST_AUTO_TEST_SUITE_END()
