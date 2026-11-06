@@ -12,6 +12,7 @@
 #include "arith_uint256.h"
 #include "capd.h"
 #include "clientversion.h"
+#include "consensus/consensus.h"
 #include "dosman.h"
 #include "init.h"
 #include "net.h"
@@ -27,6 +28,13 @@
 #include <univalue.h>
 
 const CapdMsgRef nullmsgref = CapdMsgRef();
+extern uint64_t nMaxSendBufferSize;
+
+static uint64_t CapdReplyBytes(const CapdMsg &msg)
+{
+    // Count the maximum vector prefix and a header per reply, so batching never sends more than is counted
+    return GetSerializeSize(msg, SER_NETWORK, PROTOCOL_VERSION) + 9 + CMessageHeader::HEADER_SIZE;
+}
 
 uint64_t msgpoolMaxSize = CapdMsgPool::DEFAULT_MSG_POOL_MAX_SIZE;
 
@@ -594,7 +602,11 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
                 continue;
             }
 
-            cn->sendMsg(msg, msgCookie | 0xFFFF);
+            if (!cn->sendMsg(msg, msgCookie | 0xFFFF))
+            {
+                LOG(CAPD, "Capd drop: message %s does not fit in a network message\n", id.GetHex());
+                continue;
+            }
         }
     }
     else if (command == NetMsgType::CAPDMSG)
@@ -761,6 +773,17 @@ void CapdProtocol::FlushGossipMessagesToNodes()
     }
 }
 
+bool CapdNode::sendMsg(const CapdMsgRef m, uint32_t msgCookie)
+{
+    LOCK(csCapdNode);
+    const uint64_t bytes = CapdReplyBytes(*m);
+    if (bytes - CMessageHeader::HEADER_SIZE > GetMaxAllowedNetMessage())
+        return false;
+    sendMsgs.emplace_back(m, msgCookie);
+    pendingSendBytes += bytes;
+    return true;
+}
+
 void CapdNode::clear()
 {
     LOCK(csCapdNode);
@@ -768,6 +791,7 @@ void CapdNode::clear()
     invMsgs.clear();
     requestMsgs.clear();
     sendMsgs.clear();
+    pendingSendBytes = 0;
     notifications.clear();
 }
 
@@ -807,43 +831,46 @@ bool CapdNode::FlushMessages()
         requestMsgs.clear();
     }
 
-    if (!sendMsgs.empty())
+    // Send replies in request order while the peer's send buffer has room, like deferred GETDATA requests, and keep
+    // the rest for a later call.  Each CAPDMSG holds one reply with a reply cookie, or a batch of replies without one
+    // of approximately CAPD_MAX_SEND_CHUNK_BYTES (at most CAPD_MAX_MSG_TO_SEND messages, and within the network
+    // message limit).  A batch may exceed the byte target by up to one message.
+    // The batch holds raw pointers, which is safe because sendMsgs keeps every message alive until it is erased
+    // below.  PtrVectorSpan serializes them exactly like a vector of the messages, so nothing is copied.
+    size_t i = 0;
+    while (i < sendMsgs.size() && (nMaxSendBufferSize == 0 || node->nSendSize.load() < nMaxSendBufferSize))
     {
-        // Send all messages that didn't provide a reply cookie in chunks of approximately CAPD_MAX_SEND_CHUNK_BYTES
-        // (and at most CAPD_MAX_MSG_TO_SEND messages).  Each chunk is pushed as soon as it is full, so only one chunk
-        // is serialized at a time.  A chunk may exceed the byte limit by up to one message.
-        // The chunk holds raw pointers, which is safe because sendMsgs keeps every message alive until it is cleared
-        // below.  PtrVectorSpan serializes them exactly like a vector of the messages, so nothing is copied.
+        const auto &first = sendMsgs[i];
+        if ((first.second & 0xFFFF0000) != 0)
+        {
+            node->PushMessageWithCookie(
+                NetMsgType::CAPDMSG, first.second, PtrVectorOf1<const CapdMsg *>(first.first.get()));
+            pendingSendBytes -= CapdReplyBytes(*first.first);
+            i++;
+            continue;
+        }
+
         std::vector<const CapdMsg *> chunk;
         uint64_t chunkBytes = 0;
-        for (const auto &m : sendMsgs)
+        uint64_t chunkWireBytes = 0;
+        uint64_t reserved = 0;
+        while (i < sendMsgs.size() && (sendMsgs[i].second & 0xFFFF0000) == 0)
         {
-            if ((m.second & 0xFFFF0000) != 0)
-                continue;
-            chunk.push_back(m.first.get());
-            chunkBytes += m.first->RamSize();
-            if (chunkBytes >= CAPD_MAX_SEND_CHUNK_BYTES || chunk.size() >= CAPD_MAX_MSG_TO_SEND)
-            {
-                node->PushMessage(NetMsgType::CAPDMSG, PtrVectorSpan<const CapdMsg *>(chunk, 0, chunk.size()));
-                chunk.clear();
-                chunkBytes = 0;
-            }
+            const CapdMsg &m = *sendMsgs[i].first;
+            const uint64_t bytes = CapdReplyBytes(m);
+            if (!chunk.empty() && (chunkBytes >= CAPD_MAX_SEND_CHUNK_BYTES || chunk.size() >= CAPD_MAX_MSG_TO_SEND ||
+                                      chunkWireBytes + bytes - CMessageHeader::HEADER_SIZE > GetMaxAllowedNetMessage()))
+                break;
+            chunk.push_back(&m);
+            chunkBytes += m.RamSize();
+            chunkWireBytes += bytes - CMessageHeader::HEADER_SIZE;
+            reserved += bytes;
+            i++;
         }
-        if (!chunk.empty())
-            node->PushMessage(NetMsgType::CAPDMSG, PtrVectorSpan<const CapdMsg *>(chunk, 0, chunk.size()));
-
-        // Now send the messages that need a reply cookie
-        for (const auto &it : sendMsgs)
-        {
-            if ((it.second & 0xFFFF0000) != 0)
-            {
-                node->PushMessageWithCookie(
-                    NetMsgType::CAPDMSG, it.second, PtrVectorOf1<const CapdMsg *>(it.first.get()));
-            }
-        }
-
-        sendMsgs.clear();
+        node->PushMessage(NetMsgType::CAPDMSG, PtrVectorSpan<const CapdMsg *>(chunk, 0, chunk.size()));
+        pendingSendBytes -= reserved;
     }
+    sendMsgs.erase(sendMsgs.begin(), sendMsgs.begin() + i);
 
     return true;
 }

@@ -71,6 +71,9 @@ static size_t MaxTailstormFallbackHeaders() { return MaxTailstormSubblockHeaders
 
 static size_t MaxTailstormFallbackHeadersPerPeer() { return Params().GetConsensus().tailstorm_k; }
 
+// Bytes of CAPD replies queued for a peer but not yet serialized into its send queue
+static uint64_t PendingCapdBytes(CNode *pnode) { return pnode->capd ? pnode->capd->pendingSendBytes.load() : 0; }
+
 static bool WithinBudget(CNode *pfrom, size_t nAdditionalRequests)
 {
     LOCK(pfrom->csRecvGetData);
@@ -3469,7 +3472,8 @@ bool ProcessMessages(CNode *pfrom)
     // Don't bother if send buffer is too full to respond anyway
     CNode *pfrom_original = pfrom;
     std::deque<std::pair<CNodeRef, CNetMessage> > vPriorityRecvQ_delay;
-    while ((!pfrom->fDisconnect) && (pfrom->nSendSize < nMaxSendBufferSize) && (shutdown_threads.load() == false))
+    while ((!pfrom->fDisconnect) && (pfrom->nSendSize + PendingCapdBytes(pfrom) < nMaxSendBufferSize) &&
+           (shutdown_threads.load() == false))
     {
         CNodeRef noderef;
         bool fIsPriority = false;
