@@ -220,7 +220,7 @@ class MempoolPersistTest(BitcoinTestFramework):
 
         logging.info("Send 5 transactions from node2 (to its own address)")
         for i in range(5):
-            self.nodes[1].capd("send", "this is the message")
+            self.nodes[1].capd("send", "this is the message %d" % i)
 
         logging.info("Verify that node0 and node1 have 5 transactions in their msgpools")
         waitFor(waitTime, lambda: self.nodes[0].capd("info")["count"] == 5)
