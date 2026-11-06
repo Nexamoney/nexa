@@ -196,10 +196,7 @@ BOOST_AUTO_TEST_CASE(reconstruct_state_released_after_handoff)
     }
     handling.get();
     thinrelay.ClearAllBlockData(&node, hash);
-    // The detached validation worker holds a node reference before it registers with PV.
-    // Wait for that reference so fixture teardown cannot overtake the worker.
-    while (node.GetRefCount() != 0)
-        MilliSleep(10);
+    PV->WaitForAllValidationThreadsToStop();
 
     BOOST_REQUIRE(handlerCompleted);
     BOOST_REQUIRE(firstAccepted);
@@ -210,6 +207,29 @@ BOOST_AUTO_TEST_CASE(reconstruct_state_released_after_handoff)
     BOOST_CHECK(!replayAccepted);
     BOOST_CHECK(sameCompactData);
     BOOST_CHECK_EQUAL(replayTxCount, firstTxCount);
+}
+
+BOOST_AUTO_TEST_CASE(wait_covers_unregistered_validation_thread)
+{
+    BOOST_REQUIRE(PV->Enabled());
+
+    CKey key;
+    key.MakeNewKey(true);
+    CBlockRef block = BlockAssembler(Params()).CreateNewBlock(p2pkh(key.GetPubKey().GetID()))->block;
+    block->nonce.resize(3);
+    BOOST_REQUIRE(MineBlock(*block, 1 << 23, Params().GetConsensus()));
+
+    CNode node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c0f3, 10000)), "", true);
+    SetConnected(node);
+
+    // The worker may not have registered yet when the wait starts; it holds a node reference until it is done
+    PV->HandleBlockMessage(&node, NetMsgType::BLOCK, block);
+    PV->WaitForAllValidationThreadsToStop();
+    BOOST_CHECK_EQUAL(node.GetRefCount(), 0);
+
+    // Do not let teardown overtake the worker if the wait returned early
+    while (node.GetRefCount() != 0)
+        MilliSleep(10);
 }
 
 

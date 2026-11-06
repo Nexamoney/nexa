@@ -148,6 +148,8 @@ private:
     CSemaphore semThreadCount;
     /** The number of threads currently being used for block validation */
     std::atomic<unsigned int> numBlocksValidating{0};
+    /** Detached validation threads launched and not yet finished, including those not yet registered */
+    std::atomic<unsigned int> numLaunchedThreads{0};
 
     struct CHandleBlockMsgThreads
     {
