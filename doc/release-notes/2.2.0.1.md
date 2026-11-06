@@ -27,11 +27,14 @@ Main changes in 2.2.0.1
   Builds and CI tests use the same source revision, pinned to the release tag and exact commit.
 - Bound P2P request queues, transaction request shares, header requests and Graphene decoding work.
   Disconnect peers that exceed GETDATA queue limits, and time out incomplete handshakes.
+- Reject GETBLOCKTXN requests with repeated or unordered indexes and EXTGETDATA ids whose length
+  does not fit their type. Select the end block of a GETHEADERPATH request from its stop hash.
 - Release thin-type block reconstruction state before validation and reject repeated reconstruction,
   preventing duplicate compact-block messages from modifying a block already handed to validation.
 - Improve recovery when a received block body may have been altered, and prevent affected transaction
   rejects from suppressing valid copies. Preserve deserialization of valid template spends.
-- Improve concurrency safety in parallel validation and block index header access.
+- Improve concurrency safety in parallel validation, block index header access and the deferred
+  GETDATA queues. Wait for block validation threads that have only just started before shutting down.
 - Fix Graphene, fast filter, Merkle proof and script parsing bounds and undefined behavior.
 - Fix fixed-size cashaddr destination decoding and libnexa Merkle-result buffer handling.
 - Harden token description parsing, update token indexes only when blocks connect, and correct
@@ -40,6 +43,12 @@ Main changes in 2.2.0.1
   storage and avoid penalizing honest peers for proofs whose validity is not yet known or that expire.
 - Correct CAPD message priority and eviction ordering, refuse future-dated messages and invalid nonce
   sizes, limit notifications, and reduce memory use when answering repeated message requests.
+  Messages created with `capd send` get enough extra priority to stay relayable while they propagate.
+  Count pending CAPD replies in a peer's send backlog, so they are sent as its send buffer drains
+  instead of exceeding the buffer limit, and keep each CAPD message within the network message limit.
+- Fail scripts whose OP_NUM2BIN size does not fit in 32 bits instead of truncating the size, which
+  could make the result depend on the node's available memory. Track script stack use with signed
+  64-bit counts.
 - Require group creation transactions to spend their first input for mempool admission.
   Consensus enforcement of that rule remains gated on Hard Fork 2.
 - Add the `hashAncestor` and `chainWork` fields to `getblocktemplate` results.
@@ -70,12 +79,39 @@ little-endian sequence number for each topic. Subscribers should accept this
 frame and can use sequence gaps to detect missed notifications. If a publisher
 is disabled after a send failure, restart the node to restore it.
 
+Scripts that use OP_NUM2BIN with a size that does not fit in 32 bits now
+always fail. Older nodes could evaluate such scripts differently depending on
+available memory, so all nodes should upgrade.
+
 The minimum accepted P2P protocol version remains 80003 for compatibility with
 existing light clients.
 
 Commit details
 --------------
 
+- `c870db3968` Wait for validation threads that have not registered yet (Andrea Suisani)
+- `f2c4912486` Test that the validation wait covers unregistered workers (Andrea Suisani)
+- `c739c7dbeb` Count pending CAPD replies separately in the receive gate (Andrea Suisani)
+- `65b5ad0f71` Queue every CAPD reply and send it as the buffer drains (Andrea Suisani)
+- `09ac5cde3f` Wait for send budget instead of disconnecting CAPD peers (Andrea Suisani)
+- `28c12bddd6` Bound CAPD responses by peer send budget (Andrea Suisani)
+- `a79a590535` fix intermittent test due to message priority time reduction (Andrew Stone)
+- `364a70f7a1` Connect the test no-UI handler once (Andrea Suisani)
+- `4373f9e508` Collect CI cores from both migration paths (Andrea Suisani)
+- `7ad9aed3ee` Use distinct CAPD messages in persistence test (Andrea Suisani)
+- `80e63a0551` fix unrelated test flakiness (Andrew Stone)
+- `7523dd4540` fix another unrelated intermittent issue (Andrew Stone)
+- `4036dc6c99` make a more extensive test of NUM2BIN possibilities, log what unit test is running in case of crashes (Andrew Stone)
+- `91b2d46b6b` fix an unrelated capd test timing issue, except that it triggered on this MR (Andrew Stone)
+- `c0a2d37924` add checks for stack shrinking and for op_exec resource totals (Andrew Stone)
+- `e25c30e415` fix size counting to use int64_t (Andrew Stone)
+- `3153eb6dea` script: reject OP_NUM2BIN sizes above 32 bits instead of truncating them (Jørgen S. Notland)
+- `c1c91f4fed` Reject EXTGETDATA ids whose length does not fit their type (Andrea Suisani)
+- `48538c17e9` Test that EXTGETDATA rejects ids of the wrong length (Andrea Suisani)
+- `a2f01bc387` Read the deferred getdata queues only under their lock (Andrea Suisani)
+- `7ca2fa8a3a` Wait for compact-block validation worker in test (Andrea Suisani)
+- `1d6c99070a` net: GETHEADERPATH must test toHash, not fromHash, when selecting the end block (Jørgen S. Notland)
+- `6f4c6ec7b2` Reject repeated or unordered GETBLOCKTXN indexes (Jørgen S. Notland)
 - `8ff4f5cdd2` Pin Rostrum builds and CI tests to v15.0.0 (Andrea Suisani)
 - `8683664220` Test compact-block replay after reconstruction (Andrea Suisani)
 - `f36afccf22` Clean up thinblock data right after the block is successfully reconstructed (Peter Tschipper)
