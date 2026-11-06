@@ -361,7 +361,7 @@ void CParallelValidation::WaitForAllValidationThreadsToStop()
         // that are quitting can grab the lock and cleanup
         {
             LOCK(cs_blockvalidationthread);
-            if (mapBlockValidationThreads.size() == 0)
+            if (mapBlockValidationThreads.size() == 0 && numLaunchedThreads == 0)
                 break;
         }
         MilliSleep(100);
@@ -680,7 +680,17 @@ bool CParallelValidation::HandleBlockMessageHelper(CNode *pfrom, const string &s
     // only launch block validation in a separate thread if PV is enabled.
     if (PV->Enabled() && !ShutdownRequested())
     {
-        boost::thread thread(boost::bind(&HandleBlockMessageThread, noderef, strCommand, pblock));
+        // Counted from launch, because the thread registers in mapBlockValidationThreads only once it runs
+        numLaunchedThreads++;
+        boost::thread thread(
+            [this, noderef, strCommand, pblock]() mutable
+            {
+                HandleBlockMessageThread(noderef, strCommand, pblock);
+                // Release the node and block before a waiter can see this thread as finished
+                noderef = nullptr;
+                pblock.reset();
+                numLaunchedThreads--;
+            });
         thread.detach();
     }
     else
