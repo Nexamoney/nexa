@@ -909,6 +909,10 @@ BOOST_AUTO_TEST_CASE(capd_getmsg_dedup)
     node1.isCapdEnabled = true;
     node1.capd = &capdNode1;
 
+    // The message is solved exactly at the relay minimum, so it decays below the MIN_RELAY_PRIORITY this test requests
+    // as soon as the wall clock ticks over a second.  Freeze time so the CAPDGETMSG priority filter never drops it.
+    SetMockTime(GetTime());
+
     msgpool.clear();
     CapdMsg msg1("dedup test");
     msg1.SetPowTarget(msgpool.GetRelayPowTarget());
@@ -967,6 +971,7 @@ BOOST_AUTO_TEST_CASE(capd_getmsg_dedup)
 
     msgpool.clear();
     node1.capd = nullptr;
+    SetMockTime(0);
 }
 
 // FlushMessages splits uncookied messages into CAPDMSGs of approximately CAPD_MAX_SEND_CHUNK_BYTES each
