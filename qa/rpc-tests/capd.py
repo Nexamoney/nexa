@@ -542,8 +542,11 @@ class MyTest (BitcoinTestFramework):
 
 
 if __name__ == '__main__':
-    logging.getLogger().setLevel(logging.ERROR)
-    MyTest ().main ()
+    logging.getLogger().setLevel(logging.INFO)
+    bitcoinConf = {
+        "debug": ["capd", "net"],
+    }
+    MyTest ().main (None, bitcoinConf)
 
 # Create a convenient function for an interactive python debugging session
 def Test():

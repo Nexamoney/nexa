@@ -340,7 +340,7 @@ void ScriptMachine::PopStack()
         throw script_error(SCRIPT_ERR_STACK_BYTES, "ScriptMachine.PopStack: stack empty");
     }
     StackItem &item = stack.at(stack.size() - 1);
-    assert(stackSize >= item.size());
+    assert(stackSize >= (int64_t)item.size());
     stackSize -= item.size();
     stack.pop_back();
 }
@@ -355,31 +355,34 @@ void ScriptMachine::EraseStackItemAt(int idx)
     // StackItem &item = stack.at(stack.size() + idx);
     auto iter = stack.end() + idx;
     StackItem &item = *iter;
-    assert(stackSize >= item.size());
+    assert(stackSize >= (int64_t)item.size());
     stackSize -= item.size();
     stack.erase(iter);
 }
 
 /* Push an item to the main stack */
-void ScriptMachine::CheckAndUpdateStackSize(int itemSize)
+void ScriptMachine::CheckAndUpdateStackSize(int64_t sizeChange)
 {
-    int currentTotal = altStackSize + stackSize + itemSize;
-    if (currentTotal < 0)
+    // These sizes count bytes in allocated stack items, so they cannot approach int64_t overflow
+    int64_t newStackSize = stackSize + sizeChange;
+    if (newStackSize < 0)
         throw script_error(SCRIPT_ERR_STACK_BYTES, "ScriptMachine: stack memory underflow");
-    if ((unsigned int)currentTotal > maxStackUse)
+    int64_t currentTotal = altStackSize + newStackSize;
+    if (currentTotal > maxStackUse)
     {
         throw script_error(SCRIPT_ERR_STACK_BYTES, "ScriptMachine: stack memory exceeded");
     }
-    if ((unsigned int)currentTotal > stats.maxStackBytes)
-        stats.maxStackBytes = currentTotal;
-    stackSize += itemSize;
+    // currentTotal <= maxStackUse <= UINT_MAX (OP_EXEC clamps child limits), so this narrowing cannot truncate
+    if (currentTotal > stats.maxStackBytes)
+        stats.maxStackBytes = (unsigned int)currentTotal;
+    stackSize = newStackSize;
 }
 
 
 /* Push an item to the main stack */
 void ScriptMachine::PushStack(const StackItem &item)
 {
-    unsigned int itemSize = item.size();
+    int64_t itemSize = item.size();
     CheckAndUpdateStackSize(itemSize);
     stack.push_back(item);
 }
@@ -387,7 +390,7 @@ void ScriptMachine::PushStack(const StackItem &item)
 /* Push an item to the main stack */
 void ScriptMachine::PushStack(const unsigned char *begin, const unsigned char *end)
 {
-    unsigned int itemSize = end - begin;
+    int64_t itemSize = end - begin;
     CheckAndUpdateStackSize(itemSize);
     stack.emplace_back(begin, end);
 }
@@ -395,7 +398,7 @@ void ScriptMachine::PushStack(const unsigned char *begin, const unsigned char *e
 /* Push an item to the main stack */
 void ScriptMachine::PushStack(const CScript::const_iterator &begin, const CScript::const_iterator &end)
 {
-    unsigned int itemSize = end - begin;
+    int64_t itemSize = end - begin;
     CheckAndUpdateStackSize(itemSize);
     stack.emplace_back(begin, end);
 }
@@ -440,7 +443,7 @@ void ScriptMachine::PopAltStack()
         throw script_error(SCRIPT_ERR_STACK_BYTES, "ScriptMachine.PopAltStack: altstack empty");
     }
     StackItem &item = altstack.at(altstack.size() - 1);
-    assert(altStackSize >= item.size());
+    assert(altStackSize >= (int64_t)item.size());
     altStackSize -= item.size();
     altstack.pop_back();
 }
@@ -448,14 +451,15 @@ void ScriptMachine::PopAltStack()
 /** Push an item to the altstack */
 void ScriptMachine::PushAltStack(const StackItem &item)
 {
-    unsigned int itemSize = item.size();
-    unsigned int currentTotal = altStackSize + stackSize + itemSize;
+    int64_t itemSize = item.size();
+    int64_t currentTotal = altStackSize + stackSize + itemSize;
     if (currentTotal > maxStackUse)
     {
         throw script_error(SCRIPT_ERR_STACK_BYTES, "ScriptMachine.PushAltStack: stack memory exceeded");
     }
+    // currentTotal <= maxStackUse <= UINT_MAX, so this narrowing cannot truncate
     if (currentTotal > stats.maxStackBytes)
-        stats.maxStackBytes = currentTotal;
+        stats.maxStackBytes = (unsigned int)currentTotal;
     altStackSize += itemSize;
     altstack.push_back(item);
 }
@@ -833,8 +837,8 @@ bool ScriptMachine::Step()
                     PopStack(); // remove code
 
                     // The maximum stack usage of the child execution is the max use of the parent
-                    // minus what the parent is currently using
-                    sm.maxStackUse = maxStackUse - (stackSize + altStackSize);
+                    // minus what the parent is currently using (clamped so it cannot wrap around)
+                    sm.maxStackUse = std::max<int64_t>(0, maxStackUse - (stackSize + altStackSize));
                     stats.nOpExec++;
                     sm.Eval(CScript(code.begin(), code.end()));
                     stats.update(sm.stats, stackSize + altStackSize);
@@ -2680,7 +2684,7 @@ bool ScriptMachine::Step()
                         break;
                     }
 
-                    if (!withinStackWidth(size))
+                    if (size > std::numeric_limits<unsigned int>::max() || !withinStackWidth((unsigned int)size))
                     {
                         return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     }
@@ -3158,12 +3162,12 @@ bool VerifyScript(const CScript &scriptSig,
 void ScriptMachine::DbgConsistencyCheck()
 {
 #ifdef DEBUG
-    unsigned int size = 0;
+    int64_t size = 0;
     for (auto &s : stack)
     {
         size += s.size();
     }
-    unsigned int altsize = 0;
+    int64_t altsize = 0;
     for (auto &s : altstack)
     {
         altsize += s.size();

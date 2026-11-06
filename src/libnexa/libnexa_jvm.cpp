@@ -1958,7 +1958,10 @@ extern "C" JNIEXPORT void JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_setR
     if (maxSignatureChecks >= 0)
         smd->sm->maxConsensusSigOps = maxSignatureChecks;
     if (maxStackUse >= 0)
-        smd->sm->maxStackUse = maxStackUse;
+    {
+        // Stack accounting assumes the limit fits in 32 bits (stats.maxStackBytes is unsigned int)
+        smd->sm->maxStackUse = std::min<int64_t>(maxStackUse, std::numeric_limits<unsigned int>::max());
+    }
     if (maxStackItems >= 0)
         smd->sm->maxStackItems = maxStackItems;
     if (maxOpExec >= 0)

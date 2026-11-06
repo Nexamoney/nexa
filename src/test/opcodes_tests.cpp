@@ -11,6 +11,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include <array>
+#include <limits>
+#include <vector>
 
 typedef StackItem valtype;
 typedef Stack stacktype;
@@ -759,5 +761,98 @@ BOOST_AUTO_TEST_CASE(div_and_mod_opcode_tests_64_bit_integers)
     div_and_mod_opcode_helper(CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT);
 }
 
+
+// Run <0x01> <size> OP_NUM2BIN under every flag set and check the outcome expected for that size.
+// Every flag set enforces SCRIPT_RELAX_STACK_WIDTH | SCRIPT_ENFORCE_STACK_TOTAL, so the widest allowed result is
+// MAX_SCRIPT_STACK_SIZE bytes.
+static void CheckNum2BinSize(int64_t size)
+{
+    BOOST_TEST_CONTEXT("OP_NUM2BIN size " << size)
+    {
+        const stacktype original{valtype(VchType{0x01})};
+        const CScript script = CScript() << size << OP_NUM2BIN;
+        if (size < 0)
+        {
+            // A negative size cannot be converted to an unsigned size
+            CheckErrorForAllFlags(original, script, SCRIPT_ERR_BAD_OPERATION_ON_TYPE);
+        }
+        else if (size == 0)
+        {
+            // 0x01 needs at least 1 byte
+            CheckErrorForAllFlags(original, script, SCRIPT_ERR_IMPOSSIBLE_ENCODING);
+        }
+        else if (size <= (int64_t)MAX_SCRIPT_STACK_SIZE)
+        {
+            // 0x01 padded with zeros (positive, so the sign byte is 0) to exactly size bytes
+            VchType expected(size, 0x00);
+            expected[0] = 0x01;
+            CheckTestResultForAllFlags(original, script, {valtype(expected)});
+        }
+        else
+        {
+            // Too wide, including sizes above 32 bits whose low 32 bits alone would be an acceptable width
+            CheckErrorForAllFlags(original, script, SCRIPT_ERR_PUSH_SIZE);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(num2bin_size_above_32_bits_is_rejected)
+{
+    const int64_t two32 = int64_t(1) << 32;
+    const int64_t maxWidth = MAX_SCRIPT_STACK_SIZE;
+    const int64_t int64Max = std::numeric_limits<int64_t>::max();
+
+    // Extreme and boundary values.  INT64_MIN is skipped because its magnitude needs 9 bytes as a ScriptNum, so it
+    // cannot be pushed as a NUM2BIN size at all; -INT64_MAX is the most negative pushable value.
+    const std::vector<int64_t> fixedSizes = {
+        0,
+        1,
+        2,
+        -1,
+        -2,
+        -maxWidth,
+        -two32,
+        -two32 - 2,
+        -int64Max,
+        maxWidth - 1,
+        maxWidth,
+        maxWidth + 1,
+        std::numeric_limits<int32_t>::max(),
+        int64_t(std::numeric_limits<int32_t>::max()) + 1,
+        std::numeric_limits<uint32_t>::max(),
+        two32, // low 32 bits are 0
+        two32 + 1, // low 32 bits are 1, the existing size of the input
+        two32 + 2, // low 32 bits are a valid padded width
+        two32 + maxWidth, // low 32 bits are the widest valid width
+        two32 + maxWidth + 1,
+        (int64_t(0x7FFFFFFF) << 32) + 2, // largest high word with a small low word
+        int64Max,
+        int64Max - 1,
+    };
+    for (int64_t size : fixedSizes)
+        CheckNum2BinSize(size);
+
+    // Random sizes that would trigger 32 bit truncation: any nonzero high word, low word a valid width (or 0)
+    for (int i = 0; i < 200; i++)
+    {
+        int64_t high = 1 + InsecureRandRange(0x7FFFFFFF); // 1 .. 0x7FFFFFFF, so the result stays positive
+        int64_t low = InsecureRandRange(maxWidth + 1); // 0 .. maxWidth
+        CheckNum2BinSize((high << 32) + low);
+    }
+
+    // Random sizes that do not involve truncation
+    for (int i = 0; i < 50; i++)
+    {
+        // valid widths
+        CheckNum2BinSize(1 + InsecureRandRange(maxWidth));
+    }
+    for (int i = 0; i < 200; i++)
+    {
+        // too wide but fits in 32 bits
+        CheckNum2BinSize(maxWidth + 1 + InsecureRandRange(std::numeric_limits<uint32_t>::max() - maxWidth));
+        // negative, anywhere in the pushable range
+        CheckNum2BinSize(-1 - (int64_t)InsecureRandRange(int64Max));
+    }
+}
 
 BOOST_AUTO_TEST_SUITE_END()
