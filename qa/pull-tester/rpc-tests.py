@@ -627,19 +627,22 @@ class RPCTestHandler:
                 if retval is not None:
 
                     coreOutputs = []
+                    coreDirs = ["/tmp/cores"]
                     if inGitLabCI():
-                        coreDir = os.path.join(os.environ.get("CI_PROJECT_DIR", None), "cores")
-                    else:
-                        coreDir = "/tmp/cores"
-                    try:
-                        cores = os.listdir(coreDir)
-                    except Exception as e:
-                        print("Exception trying to list core files in " + coreDir + " :" + str(e))
-                        cores = []
+                        coreDirs.insert(0, os.path.join(os.environ["CI_PROJECT_DIR"], "cores"))
+                    cores = []
+                    for coreDir in coreDirs:
+                        try:
+                            for core in os.listdir(coreDir):
+                                fullCoreFile = os.path.join(coreDir, core)
+                                if os.path.isfile(fullCoreFile):
+                                    cores.append(fullCoreFile)
+                        except Exception as e:
+                            print("Exception trying to list core files in " + coreDir + " :" + str(e))
 
-                    for core in cores:
+                    for fullCoreFile in cores:
+                        core = os.path.basename(fullCoreFile)
                         print("Trying to analyze core file: " + str(core))
-                        fullCoreFile = os.path.join(coreDir, core)
                         try:
                             nexadBin = os.environ["NEXAD"]
                             if os.path.isfile(CORE_ANALYSIS_SCRIPT):

@@ -236,7 +236,14 @@ build-ubuntu-tests-nodeps:
           artifacts: true
     cache: {}
     script:
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
         - (cd build/src; ./test/test_nexa --log_level=test_suite)
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
+    artifacts:
+        when: on_failure
+        paths:
+            - ./cores/
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -298,7 +305,14 @@ build-ubuntu-tests-nodeps-nowallet:
           artifacts: true
     cache: {}
     script:
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
         - (cd build/src; ./test/test_nexa --log_level=test_suite)
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
+    artifacts:
+        when: on_failure
+        paths:
+            - ./cores/
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -310,7 +324,14 @@ build-ubuntu-tests-nodeps-nowallet-qt:
           artifacts: true
     cache: {}
     script:
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
         - (cd build/src; ./qt/test/test_nexa-qt)
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
+    artifacts:
+        when: on_failure
+        paths:
+            - ./cores/
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -479,10 +500,14 @@ build-ubuntu-tests:
           artifacts: true
     cache: []
     script:
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
         - (cd build/src; ./test/test_nexa --log_level=test_suite)
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
     artifacts:
         when: on_failure
         paths:
+            - ./cores/
             - ./build/src/test/
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
@@ -496,18 +521,16 @@ test-ubuntu-qa:
         - job: build-ubuntu
           artifacts: true
     script:
-        - mkdir -p $CI_PROJECT_DIR/cores
-        - mkdir -p $CI_PROJECT_DIR/saved-cores
-        - |
-            CORE_PATTERN="$CI_PROJECT_DIR/cores/core.%e.%p.%h.%t"
-            if ! printf '%s\n' "$CORE_PATTERN" > /proc/sys/kernel/core_pattern; then
-                echo "WARNING: runner does not permit configuring core dumps"
-            fi
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
+        - mkdir -p "$CI_PROJECT_DIR/saved-cores"
         - cd build;
         - ./qa/pull-tester/rpc-tests.py -shard="$CI_NODE_INDEX/$CI_NODE_TOTAL" --coverage --no-ipv6-rpc-listen --gitlab
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
     artifacts:
         when: on_failure
         paths:
+            - ./cores/
             - ./qa/qa_tests/
             - $CI_PROJECT_DIR/saved-cores
             - ./build/src/nexad
@@ -523,18 +546,16 @@ test-ubuntu-qa-extended:
         - job: build-ubuntu
           artifacts: true
     script:
-        - mkdir -p $CI_PROJECT_DIR/cores
-        - mkdir -p $CI_PROJECT_DIR/saved-cores
-        - |
-            CORE_PATTERN="$CI_PROJECT_DIR/cores/core.%e.%p.%h.%t"
-            if ! printf '%s\n' "$CORE_PATTERN" > /proc/sys/kernel/core_pattern; then
-                echo "WARNING: runner does not permit configuring core dumps"
-            fi
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
+        - mkdir -p "$CI_PROJECT_DIR/saved-cores"
         - cd build;
         - ./qa/pull-tester/rpc-tests.py --coverage --no-ipv6-rpc-listen --gitlab --extended-only
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
     artifacts:
         when: on_failure
         paths:
+            - ./cores/
             - ./qa/qa_tests/
             - $CI_PROJECT_DIR/saved-cores
             - ./build/src/nexad
@@ -573,13 +594,8 @@ test-ubuntu-qa-rostrum:
     before_script:
         - pip install -q psutil
     script:
-        - mkdir -p $CI_PROJECT_DIR/cores
-        - mkdir -p $CI_PROJECT_DIR/saved-cores
-        - |
-            CORE_PATTERN="$CI_PROJECT_DIR/cores/core.%e.%p.%h.%t"
-            if ! printf '%s\n' "$CORE_PATTERN" > /proc/sys/kernel/core_pattern; then
-                echo "WARNING: runner does not permit configuring core dumps"
-            fi
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
+        - mkdir -p "$CI_PROJECT_DIR/saved-cores"
 
         - export NODE_PATH=`pwd`/build/src/nexad
         - export ROSTRUM_PATH=`pwd`/build/src/rostrum
@@ -587,9 +603,12 @@ test-ubuntu-qa-rostrum:
         - python3 ci/shard-rostrum-tests.py rostrum-v15.0.0/test/functional --index "$((CI_NODE_INDEX - 1))" --count "$CI_NODE_TOTAL"
         # Keep tests within each isolated shard serial because some require exact txpool contents.
         - ./rostrum-v15.0.0/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab -parallel=1
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
     artifacts:
         when: on_failure
         paths:
+            - ./cores/
             - ./qa/qa_tests/
             - $CI_PROJECT_DIR/saved-cores
             - ./build/src/nexad
@@ -646,10 +665,14 @@ build-ubuntu-tests-clang:
           artifacts: true
     cache: {}
     script:
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
         - (cd build/src; ./test/test_nexa --log_level=test_suite)
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
     artifacts:
         when: on_failure
         paths:
+            - ./cores/
             - ./build/src/test/
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
@@ -672,6 +695,7 @@ build-ubuntu-tests-ubsan:
         - mkdir build; cd build
         - ../configure --with-gui=no --disable-bench
         - make -j"$CPUS" -C src test/test_nexa
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
         - |
             # UBSan recovers, so the run reports every finding instead of stopping at the first
             mkdir -p ubsan
@@ -685,9 +709,12 @@ build-ubuntu-tests-ubsan:
                 status=1
             fi
             exit $status
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
     artifacts:
         when: on_failure
         paths:
+            - ./cores/
             - ./build/config.log
             - ./build/src/test/test_nexa
             - ./build/ubsan/
