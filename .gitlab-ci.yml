@@ -675,7 +675,6 @@ build-arm-depends-64:
             - depends/built
             - depends/aarch64-linux-gnu
     script:
-        - make -C depends HOST=aarch64-linux-gnu clean
         - cd depends
         - make HOST=aarch64-linux-gnu NO_QT=1 -j$CPUS NO_RUST=1
     artifacts:
@@ -725,7 +724,6 @@ build-arm-depends-32:
             - depends/built
             - depends/arm-linux-gnueabihf
     script:
-        - make -C depends HOST=arm-linux-gnueabihf clean
         - cd depends
         - make HOST=arm-linux-gnueabihf NO_QT=1 -j$CPUS NO_RUST=1
     artifacts:
@@ -776,7 +774,6 @@ build-riscv-depends-64:
             - depends/built
             - depends/riscv64-linux-gnu
     script:
-        - make -C depends HOST=riscv64-linux-gnu clean
         - cd depends
         - make HOST=riscv64-linux-gnu QT=1 -j$CPUS NO_RUST=1
     artifacts:
