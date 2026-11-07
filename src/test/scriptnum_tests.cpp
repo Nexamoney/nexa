@@ -863,6 +863,31 @@ void bignumscript(uint32_t flags, bool upgrade1, bool upgrade2)
                   << OP_NEGATE << OP_WITHIN,
         upgrade1);
 
+    // WITHIN cases where x != min (the tests above all have x == min, where x <= min and x >= min agree)
+    // x strictly inside: 15 in [10,20) -> true
+    testScriptU(upgrade1, CScript() << 15 << OP_BIN2BIGNUM << OP_10 << 20 << OP_WITHIN, upgrade1);
+    testScriptU(upgrade1,
+        CScript() << 15 << OP_BIN2BIGNUM << OP_10 << OP_BIN2BIGNUM << 20 << OP_BIN2BIGNUM << OP_WITHIN, upgrade1);
+    testScriptU(upgrade1, CScript() << 15 << OP_10 << OP_BIN2BIGNUM << 20 << OP_WITHIN, upgrade1);
+    // x below min: 5 in [10,20) -> false
+    testScriptU(upgrade1, CScript() << OP_5 << OP_BIN2BIGNUM << OP_10 << 20 << OP_WITHIN, false);
+    testScriptU(upgrade1,
+        CScript() << OP_5 << OP_BIN2BIGNUM << OP_10 << OP_BIN2BIGNUM << 20 << OP_BIN2BIGNUM << OP_WITHIN, false);
+    testScriptU(upgrade1, CScript() << OP_5 << OP_10 << 20 << OP_BIN2BIGNUM << OP_WITHIN, false);
+    // x == max: 20 in [10,20) -> false
+    testScriptU(upgrade1, CScript() << 20 << OP_BIN2BIGNUM << OP_10 << 20 << OP_WITHIN, false);
+    // x above max: 25 in [10,20) -> false
+    testScriptU(upgrade1, CScript() << 25 << OP_BIN2BIGNUM << OP_10 << 20 << OP_WITHIN, false);
+    // negatives, x strictly inside: -5 in [-10,-1) -> true
+    testScriptU(upgrade1,
+        CScript() << OP_5 << OP_BIN2BIGNUM << OP_NEGATE << OP_10 << OP_NEGATE << OP_1NEGATE << OP_WITHIN, upgrade1);
+    // negatives, x below min: -15 in [-10,-1) -> false
+    testScriptU(upgrade1,
+        CScript() << 15 << OP_BIN2BIGNUM << OP_NEGATE << OP_10 << OP_NEGATE << OP_1NEGATE << OP_WITHIN, false);
+    // range spanning zero: 0 in [-10,10) -> true; -11 in [-10,10) -> false
+    testScriptU(upgrade1, CScript() << OP_0 << OP_BIN2BIGNUM << -10 << OP_10 << OP_WITHIN, upgrade1);
+    testScriptU(upgrade1, CScript() << -11 << OP_BIN2BIGNUM << -10 << OP_10 << OP_WITHIN, false);
+
     // Check operation order for all non-commutative ops and verify consistency with int operations
     // check SUB
     testScript(CScript() << OP_10 << OP_4 << OP_SUB << OP_6 << OP_NUMEQUAL, true);
