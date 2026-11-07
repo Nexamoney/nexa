@@ -137,6 +137,24 @@ static valtype to_bitpattern(const char *str)
 }
 
 // test the bitpattern function
+// The checks in these tests compare stack items, so equality must compare contents, not truthiness
+BOOST_AUTO_TEST_CASE(stackitem_equality)
+{
+    BOOST_CHECK(valtype({0x01, 0x02}) == valtype({0x01, 0x02}));
+    BOOST_CHECK(!(valtype({0x01}) == valtype({0x02})));
+    BOOST_CHECK(valtype({0x01}) != valtype({0x01, 0x00}));
+    BOOST_CHECK(valtype() != valtype({0x00}));
+    BOOST_CHECK(valtype({0x80}) != valtype({0x00}));
+
+    BOOST_CHECK(StackItem(BigNum(5)) == StackItem(BigNum(5)));
+    BOOST_CHECK(StackItem(BigNum(5)) != StackItem(BigNum(6)));
+    // A bignum and a byte vector are different stack items even when they hold the same number
+    BOOST_CHECK(StackItem(BigNum(1)) != valtype({0x01}));
+
+    BOOST_CHECK(stacktype{valtype({0x01})} != stacktype{valtype({0x02})});
+    BOOST_CHECK(stacktype{valtype({0x01})} == stacktype{valtype({0x01})});
+}
+
 BOOST_AUTO_TEST_CASE(self_bitpattern_test)
 {
     BOOST_CHECK(valtype({0x01}) == to_bitpattern("00000001"));
