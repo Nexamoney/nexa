@@ -4486,7 +4486,7 @@ BOOST_AUTO_TEST_CASE(script_registers)
     CheckPass(flags, {}, store_and_load_from_register, {{10}});
     // storing the multibyte value to a register then loading it from that register should
     // leave the stack with the multiple byte value on it
-    CheckPass(flags, {}, store_and_load_from_register_multibyte, {{0x4f, 0x5a}});
+    CheckPass(flags, {}, store_and_load_from_register_multibyte, {{0x5a, 0x4f, 0x02, 0x4c}});
 }
 
 BOOST_AUTO_TEST_SUITE_END()
