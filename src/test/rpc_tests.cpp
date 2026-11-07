@@ -7,6 +7,8 @@
 #include "rpc/server.h"
 
 #include "base58.h"
+#include "coins.h"
+#include "main.h"
 #include "net.h"
 #include "netbase.h"
 #include "rpc/blockchain.h"
@@ -436,6 +438,29 @@ BOOST_AUTO_TEST_CASE(rpc_help)
     size_t p = s.find("== Mining ==");
     BOOST_CHECK(p != string::npos);
     BOOST_CHECK(s.substr(p + 1).find("== Mining ==") == string::npos);
+}
+
+BOOST_FIXTURE_TEST_CASE(rpc_gettxout_spent_in_cache, TestChain100Setup)
+{
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0] = coinbaseTxns[0].SpendOutput(0);
+    tx.vout.resize(1);
+    tx.vout[0].nValue = 11 * CENT;
+    tx.vout[0].scriptPubKey = coinbaseLockingScript;
+    tx.vin[0].scriptSig = SignCoinbaseSpend(tx, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
+    const COutPoint outpoint = tx.vin[0].prevout;
+    BOOST_CHECK(!CallRPC("gettxout " + outpoint.GetHex() + " -1 false").isNull());
+
+    // A coin also on disk leaves a spent entry in the cache when a block spends it
+    BOOST_REQUIRE(pcoinsTip->Flush());
+    CBlock block = CreateAndProcessBlock({tx}, coinbaseLockingScript);
+    BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == block.GetHash());
+    Coin coin;
+    BOOST_REQUIRE(pcoinsTip->GetCoin(outpoint, coin) && coin.IsSpent());
+
+    BOOST_CHECK(CallRPC("gettxout " + outpoint.GetHex() + " -1 false").isNull());
+    BOOST_CHECK(CallRPC("gettxout " + outpoint.GetHex() + " -1 true").isNull());
 }
 
 BOOST_AUTO_TEST_CASE(rpc_setlog)
