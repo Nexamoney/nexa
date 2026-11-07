@@ -116,6 +116,19 @@ public:
     // Converts this stack item to a boolean as per the consensus rules around "true" stack script return values.
     operator bool() const;
 
+    // Without these, a comparison would convert both items to bool
+    // Match the equality rules of OP_EQUAL: compare byte vectors by bytes, bignums by value, and unlike types
+    // as unequal. OP_EQUAL performs its own comparison; this operator does not change its behavior
+    bool operator==(const StackItem &other) const
+    {
+        if (type != other.type)
+            return false;
+        if (type == StackElementType::BIGNUM)
+            return n == other.n;
+        return vch == other.vch;
+    }
+    bool operator!=(const StackItem &other) const { return !(*this == other); }
+
     // operator CScript();
 
     const VchType &data() const
