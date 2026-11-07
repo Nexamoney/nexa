@@ -717,7 +717,7 @@ BOOST_AUTO_TEST_CASE(bignum_test)
     BOOST_CHECK(biggest.serialize(buf, 10) == -513); // Check correct requested size error
 }
 
-std::vector<unsigned char> bns(long int i, size_t pad = 8) { return BigNum(i).serialize(pad); }
+std::vector<unsigned char> bns(int64_t i, size_t pad = 8) { return BigNum(i).serialize(pad); }
 
 static uint32_t testScriptFlags = MANDATORY_SCRIPT_VERIFY_FLAGS;
 
@@ -907,6 +907,44 @@ void bignumscript(uint32_t flags, bool upgrade1, bool upgrade2)
     testScript(CScript() << OP_10 << OP_3 << OP_BIN2BIGNUM << OP_MOD << OP_1 << OP_NUMEQUAL, upgrade2);
     testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_MOD << OP_1 << OP_NUMEQUAL, upgrade2);
 
+    // MOD with negative operands: integer MOD truncates (remainder takes the sign of the dividend), but bignum MOD
+    // is intentionally different: the result is always non-negative and the sign of the divisor is ignored.
+    // integer: -7 % 3 == -1, -7 % -3 == -1, 7 % -3 == 1
+    testScript(CScript() << -7 << OP_3 << OP_MOD << OP_1NEGATE << OP_NUMEQUAL, true);
+    testScript(CScript() << -7 << -3 << OP_MOD << OP_1NEGATE << OP_NUMEQUAL, true);
+    testScript(CScript() << OP_7 << -3 << OP_MOD << OP_1 << OP_NUMEQUAL, true);
+    // bignum: -7 % 3 == 2, -7 % -3 == 2, 7 % -3 == 1, -6 % 3 == 0, -1 % 5 == 4
+    // Before upgrade2 the bignum operands are reversed, so push them in the opposite order to compute the same thing.
+    auto bnMod = [upgrade2](const CScript &dividend, const CScript &divisor)
+    {
+        CScript s;
+        if (upgrade2)
+            s = dividend + divisor;
+        else
+            s = divisor + dividend;
+        return s << OP_MOD;
+    };
+    const CScript n7 = CScript() << -7 << OP_BIN2BIGNUM;
+    const CScript p7 = CScript() << OP_7 << OP_BIN2BIGNUM;
+    const CScript n6 = CScript() << -6 << OP_BIN2BIGNUM;
+    const CScript n1 = CScript() << OP_1NEGATE << OP_BIN2BIGNUM;
+    const CScript p3 = CScript() << OP_3 << OP_BIN2BIGNUM;
+    const CScript n3 = CScript() << -3 << OP_BIN2BIGNUM;
+    const CScript p5 = CScript() << OP_5 << OP_BIN2BIGNUM;
+    testScript(bnMod(n7, p3) << OP_2 << OP_BIN2BIGNUM << OP_NUMEQUAL, true);
+    testScript(bnMod(n7, n3) << OP_2 << OP_BIN2BIGNUM << OP_NUMEQUAL, true);
+    testScript(bnMod(p7, n3) << OP_1 << OP_BIN2BIGNUM << OP_NUMEQUAL, true);
+    testScript(bnMod(n6, p3) << OP_0 << OP_BIN2BIGNUM << OP_NUMEQUAL, true);
+    testScript(bnMod(n1, p5) << OP_4 << OP_BIN2BIGNUM << OP_NUMEQUAL, true);
+    // A single bignum operand makes it a bignum operation, so the same non-negative result is produced
+    if (upgrade2)
+    {
+        testScript(CScript() << -7 << OP_BIN2BIGNUM << OP_3 << OP_MOD << OP_2 << OP_NUMEQUAL, true);
+        testScript(CScript() << -7 << OP_3 << OP_BIN2BIGNUM << OP_MOD << OP_2 << OP_NUMEQUAL, true);
+    }
+    // The result differs from the integer result
+    testScript(bnMod(n7, p3) << OP_1NEGATE << OP_NUMEQUAL, false);
+
     // check GREATERTHAN
     testScript(CScript() << OP_10 << OP_3 << OP_GREATERTHAN, true);
     testScript(CScript() << OP_10 << OP_BIN2BIGNUM << OP_3 << OP_BIN2BIGNUM << OP_GREATERTHAN, upgrade2);
@@ -1090,6 +1128,137 @@ BOOST_AUTO_TEST_CASE(bignumscript_test)
 {
     bignumscript(MANDATORY_SCRIPT_VERIFY_FLAGS, true, false);
     bignumscript(POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS, true, true);
+}
+
+// Fork1 (SCRIPT_FORK1_OPCODES) rewrote the following opcodes so they could also accept bignums:
+//   OP_IF, OP_NOTIF, OP_VERIFY, OP_IFDUP, OP_AND, OP_OR, OP_XOR, OP_1ADD, OP_1SUB, OP_NEGATE, OP_ABS, OP_NOT,
+//   OP_0NOTEQUAL, OP_WITHIN
+// The intent was only to add bignum support, so their behavior on ordinary (non-bignum) script numbers and byte
+// vectors must be identical before fork1, after fork1, and after upgrade2.  bignumscript() only exercises bignum
+// inputs, and script_tests.json does not run these opcodes with SCRIPT_FORK1_OPCODES set, which is how the OP_WITHIN
+// regression went unnoticed.  So check every script here against an explicit expected result under every fork.
+// Note: non-minimally encoded numeric operands are intentionally accepted by some opcodes after fork1, so none are
+// used here.
+BOOST_AUTO_TEST_CASE(fork1_bignum_extended_opcodes_integer_semantics)
+{
+    const uint32_t forkFlags[] = {MANDATORY_SCRIPT_VERIFY_FLAGS & ~SCRIPT_FORK1_OPCODES, MANDATORY_SCRIPT_VERIFY_FLAGS,
+        POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS};
+    typedef std::vector<unsigned char> V;
+
+    for (uint32_t f : forkFlags)
+    {
+        testScriptFlags = f;
+
+        // OP_IF / OP_NOTIF truthiness of byte vectors, including negative zero and non-minimal zero
+        testScript(CScript() << OP_1 << OP_IF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF, true);
+        testScript(CScript() << OP_0 << OP_IF << OP_0 << OP_ELSE << OP_1 << OP_ENDIF, true);
+        testScript(CScript() << OP_1NEGATE << OP_IF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF, true);
+        testScript(CScript() << V{0x80} << OP_IF << OP_0 << OP_ELSE << OP_1 << OP_ENDIF, true); // -0 is false
+        testScript(CScript() << V{0x00, 0x80} << OP_IF << OP_0 << OP_ELSE << OP_1 << OP_ENDIF, true); // -0 is false
+        testScript(CScript() << V{0x00, 0x00} << OP_IF << OP_0 << OP_ELSE << OP_1 << OP_ENDIF, true); // 0 is false
+        testScript(CScript() << V{0x00, 0x01} << OP_IF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF, true);
+        testScript(CScript() << V{0x80, 0x00} << OP_IF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF, true);
+        testScript(CScript() << OP_1 << OP_NOTIF << OP_0 << OP_ELSE << OP_1 << OP_ENDIF, true);
+        testScript(CScript() << OP_0 << OP_NOTIF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF, true);
+        testScript(CScript() << V{0x80} << OP_NOTIF << OP_1 << OP_ELSE << OP_0 << OP_ENDIF, true);
+        testScript(CScript() << V{0x00, 0x01} << OP_NOTIF << OP_0 << OP_ELSE << OP_1 << OP_ENDIF, true);
+
+        // OP_VERIFY
+        testScript(CScript() << OP_1 << OP_VERIFY << OP_1, true);
+        testScript(CScript() << OP_1NEGATE << OP_VERIFY << OP_1, true);
+        testScript(CScript() << V{0x00, 0x01} << OP_VERIFY << OP_1, true);
+        testScript(CScript() << OP_0 << OP_VERIFY << OP_1, SCRIPT_ERR_VERIFY);
+        testScript(CScript() << V{0x80} << OP_VERIFY << OP_1, SCRIPT_ERR_VERIFY);
+        testScript(CScript() << V{0x00, 0x00} << OP_VERIFY << OP_1, SCRIPT_ERR_VERIFY);
+
+        // OP_IFDUP: duplicates only true items, and the duplicate is byte-identical
+        testScript(CScript() << OP_5 << OP_IFDUP << OP_DEPTH << OP_2 << OP_NUMEQUALVERIFY << OP_NUMEQUAL, true);
+        testScript(CScript() << V{0x00, 0x01} << OP_IFDUP << OP_EQUAL, true);
+        testScript(CScript() << OP_0 << OP_IFDUP << OP_DEPTH << OP_1 << OP_NUMEQUAL << OP_NIP, true);
+        testScript(CScript() << V{0x80} << OP_IFDUP << OP_DEPTH << OP_1 << OP_NUMEQUAL << OP_NIP, true);
+        testScript(CScript() << V{0x00, 0x00} << OP_IFDUP << OP_DEPTH << OP_1 << OP_NUMEQUAL << OP_NIP, true);
+
+        // OP_1ADD / OP_1SUB, including the 64 bit range limits
+        testScript(CScript() << OP_5 << OP_1ADD << OP_6 << OP_EQUAL, true);
+        testScript(CScript() << OP_1NEGATE << OP_1ADD << OP_0 << OP_EQUAL, true);
+        testScript(CScript() << OP_0 << OP_1SUB << OP_1NEGATE << OP_EQUAL, true);
+        testScript(CScript() << -127 << OP_1SUB << -128 << OP_EQUAL, true);
+        testScript(CScript() << 127 << OP_1ADD << 128 << OP_EQUAL, true);
+        testScript(CScript() << (int64_t_max - 1) << OP_1ADD << int64_t_max << OP_EQUAL, true);
+        testScript(CScript() << int64_t_max << OP_1ADD, SCRIPT_ERR_INVALID_NUMBER_RANGE);
+        testScript(CScript() << int64_t_min_8_bytes << OP_1SUB, SCRIPT_ERR_INVALID_NUMBER_RANGE);
+
+        // OP_NEGATE / OP_ABS
+        testScript(CScript() << OP_5 << OP_NEGATE << -5 << OP_EQUAL, true);
+        testScript(CScript() << -5 << OP_NEGATE << OP_5 << OP_EQUAL, true);
+        testScript(CScript() << OP_0 << OP_NEGATE << OP_0 << OP_EQUAL, true);
+        testScript(CScript() << int64_t_max << OP_NEGATE << int64_t_min_8_bytes << OP_EQUAL, true);
+        testScript(CScript() << -7 << OP_ABS << OP_7 << OP_EQUAL, true);
+        testScript(CScript() << OP_7 << OP_ABS << OP_7 << OP_EQUAL, true);
+        testScript(CScript() << OP_0 << OP_ABS << OP_0 << OP_EQUAL, true);
+        testScript(CScript() << int64_t_min_8_bytes << OP_ABS << int64_t_max << OP_EQUAL, true);
+
+        // OP_NOT / OP_0NOTEQUAL produce exactly the minimal encodings of 1 and 0
+        testScript(CScript() << OP_0 << OP_NOT << OP_1 << OP_EQUAL, true);
+        testScript(CScript() << OP_5 << OP_NOT << OP_0 << OP_EQUAL, true);
+        testScript(CScript() << OP_1NEGATE << OP_NOT << OP_0 << OP_EQUAL, true);
+        testScript(CScript() << OP_0 << OP_0NOTEQUAL << OP_0 << OP_EQUAL, true);
+        testScript(CScript() << -3 << OP_0NOTEQUAL << OP_1 << OP_EQUAL, true);
+        testScript(CScript() << 1000 << OP_0NOTEQUAL << OP_1 << OP_EQUAL, true);
+
+        // OP_AND / OP_OR / OP_XOR are bytewise on equal length byte vectors (no numeric interpretation)
+        testScript(CScript() << OP_10 << OP_9 << OP_AND << OP_8 << OP_EQUAL, true);
+        testScript(CScript() << OP_10 << OP_9 << OP_OR << OP_11 << OP_EQUAL, true);
+        testScript(CScript() << OP_10 << OP_9 << OP_XOR << OP_3 << OP_EQUAL, true);
+        testScript(CScript() << V{0xff} << OP_15 << OP_AND << OP_15 << OP_EQUAL, true);
+        testScript(CScript() << V{0x80} << OP_1 << OP_OR << OP_1NEGATE << OP_EQUAL, true); // 1NEGATE pushes 0x81
+        testScript(CScript() << V{0xff, 0x00} << V{0x0f, 0x80} << OP_XOR << V{0xf0, 0x80} << OP_EQUAL, true);
+        testScript(CScript() << OP_1 << V{0x01, 0x00} << OP_AND, SCRIPT_ERR_INVALID_OPERAND_SIZE);
+        testScript(CScript() << V{0x01, 0x00} << OP_1 << OP_OR, SCRIPT_ERR_INVALID_OPERAND_SIZE);
+        testScript(CScript() << OP_1 << V{0x01, 0x00} << OP_XOR, SCRIPT_ERR_INVALID_OPERAND_SIZE);
+
+        // OP_WITHIN: x min max -> min <= x < max
+        testScript(CScript() << OP_0 << OP_0 << OP_1 << OP_WITHIN, true);
+        testScript(CScript() << OP_1 << OP_0 << OP_2 << OP_WITHIN, true); // x > min (broken by fork1)
+        testScript(CScript() << OP_1 << OP_0 << OP_1 << OP_WITHIN, false); // x == max
+        testScript(CScript() << OP_1NEGATE << OP_0 << OP_1 << OP_WITHIN, false); // x < min
+        testScript(CScript() << 15 << OP_10 << 20 << OP_WITHIN, true);
+        testScript(CScript() << OP_5 << OP_10 << 20 << OP_WITHIN, false);
+        testScript(CScript() << 19 << OP_10 << 20 << OP_WITHIN, true);
+        testScript(CScript() << 20 << OP_10 << 20 << OP_WITHIN, false);
+        testScript(CScript() << 25 << OP_10 << 20 << OP_WITHIN, false);
+        testScript(CScript() << -5 << -10 << OP_1NEGATE << OP_WITHIN, true);
+        testScript(CScript() << -15 << -10 << OP_1NEGATE << OP_WITHIN, false);
+        testScript(CScript() << OP_0 << -10 << OP_10 << OP_WITHIN, true);
+        testScript(CScript() << OP_10 << OP_10 << OP_10 << OP_WITHIN, false); // empty range
+        testScript(CScript() << OP_5 << OP_10 << OP_0 << OP_WITHIN, false); // inverted range
+        testScript(CScript() << (int64_t_max - 1) << OP_0 << int64_t_max << OP_WITHIN, true);
+        testScript(CScript() << int64_t_max << OP_0 << int64_t_max << OP_WITHIN, false);
+        testScript(CScript() << int64_t_min_8_bytes << int64_t_min_8_bytes << OP_0 << OP_WITHIN, true);
+        testScript(CScript() << OP_1 << OP_1 << OP_WITHIN, SCRIPT_ERR_INVALID_STACK_OPERATION);
+    }
+
+    // Before fork1, bignum operands to these opcodes must fail (bignumscript() is never run without fork1)
+    testScriptFlags = MANDATORY_SCRIPT_VERIFY_FLAGS & ~SCRIPT_FORK1_OPCODES;
+    const ScriptError e = SCRIPT_ERR_BAD_OPERATION_ON_TYPE;
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_IF << OP_1 << OP_ELSE << OP_1 << OP_ENDIF, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_NOTIF << OP_1 << OP_ELSE << OP_1 << OP_ENDIF, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_VERIFY << OP_1, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_IFDUP << OP_2DROP << OP_1, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_1ADD, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_1SUB, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_NEGATE, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_ABS, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_NOT, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_0NOTEQUAL, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_1 << OP_AND, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_1 << OP_OR, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_1 << OP_XOR, e);
+    testScript(CScript() << bns(1) << OP_BIN2BIGNUM << OP_0 << OP_2 << OP_WITHIN, e);
+    testScript(CScript() << OP_1 << OP_0 << OP_BIN2BIGNUM << OP_2 << OP_WITHIN, e);
+    testScript(CScript() << OP_1 << OP_0 << OP_2 << OP_BIN2BIGNUM << OP_WITHIN, e);
+
+    testScriptFlags = MANDATORY_SCRIPT_VERIFY_FLAGS;
 }
 
 BOOST_AUTO_TEST_CASE(abs_test)
