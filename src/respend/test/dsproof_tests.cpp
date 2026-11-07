@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include "coins.h"
 #include "consensus/validation.h"
 #include "key.h"
 #include "keystore.h"
@@ -100,6 +101,45 @@ BOOST_FIXTURE_TEST_CASE(dsproof_serialization_roundtrip_p2pkh, TestChain100Setup
     CMutableTransaction tx1, tx2;
     MakeP2pkhDoubleSpends(*this, tx1, tx2);
     CheckProofRoundTrip(tx1, tx2);
+}
+
+// Once a block spends the disputed output, the coin cache keeps an entry for it with a null output until the next
+// flush.  The proof can no longer be checked, so validate() must say MissingUTXO: an Invalid verdict would make the
+// orphan rescue penalize the peer that relayed a correct proof.
+BOOST_FIXTURE_TEST_CASE(dsproof_spent_output_is_missing_utxo, TestChain100Setup)
+{
+    CMutableTransaction tx1, tx2;
+    MakeP2pkhDoubleSpends(*this, tx1, tx2);
+    const COutPoint outpoint = tx1.vin[0].prevout;
+
+    CValidationState state;
+    bool fMissingInputs = false;
+    bool accepted = AcceptToMemoryPool(mempool, state, MakeTransactionRef(tx1), false, &fMissingInputs, false);
+    BOOST_REQUIRE_MESSAGE(accepted, "tx1 rejected: " << state.GetRejectReason());
+
+    DoubleSpendProof dsp;
+    {
+        WRITELOCK(mempool.cs_txmempool);
+        dsp = DoubleSpendProof::create(CTransaction(tx1), CTransaction(tx2), mempool);
+        BOOST_REQUIRE_EQUAL(dsp.validate(mempool), DoubleSpendProof::Valid);
+    }
+
+    // Write the coin to the database first: spending a coin the cache only holds as fresh erases the entry, spending
+    // one that is also on disk leaves a spent entry behind, which is the state this test is about.
+    BOOST_REQUIRE(pcoinsTip->Flush());
+    CBlock block = CreateAndProcessBlock({tx1}, coinbaseLockingScript);
+    BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == block.GetHash());
+    Coin coin;
+    BOOST_REQUIRE_MESSAGE(pcoinsTip->GetCoin(outpoint, coin) && coin.IsSpent(),
+        "the coin cache holds no spent entry for the disputed output, so this test does not exercise validate()");
+
+    {
+        READLOCK(mempool.cs_txmempool);
+        // The mined tx1 has left the mempool, so validate() has to look the output up in the coin cache
+        BOOST_REQUIRE(mempool._getTxIdx(outpoint).ptx == nullptr);
+        BOOST_CHECK_EQUAL(dsp.validate(mempool, MakeTransactionRef(tx1)), DoubleSpendProof::MissingUTXO);
+    }
+    mempool.clear();
 }
 
 // outSequence is not covered by the signature.  A proof whose spenders differ only there could be made by
