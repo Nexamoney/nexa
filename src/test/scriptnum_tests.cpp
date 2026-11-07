@@ -1167,6 +1167,10 @@ static bool evalWithin(uint32_t flags, const CScript &s, bool &result)
 
 BOOST_AUTO_TEST_CASE(within_standard_rejects_changed_results)
 {
+    BOOST_CHECK(STANDARD_SCRIPT_VERIFY_FLAGS & SCRIPT_VERIFY_UNAMBIGUOUS_WITHIN);
+    BOOST_CHECK(!(MANDATORY_SCRIPT_VERIFY_FLAGS & SCRIPT_VERIFY_UNAMBIGUOUS_WITHIN));
+    BOOST_CHECK(!(POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS & SCRIPT_VERIFY_UNAMBIGUOUS_WITHIN));
+
     // x min max, and the result under the fixed rule
     const std::vector<std::pair<CScript, bool> > changed = {
         {CScript() << 15 << OP_10 << 20 << OP_WITHIN, true},

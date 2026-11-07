@@ -101,6 +101,9 @@ enum
     // A group creation must spend its first input: the group id commits to that outpoint, and a read-only input
     // is not spent, so the same genesis could be claimed again. Policy before Upgrade2, consensus after.
     SCRIPT_GROUP_GENESIS_SPENDS_INPUT = (1U << 30),
+    // Fail OP_WITHIN when x < max && x != min: before !77 it computed x <= min && x < max, so nodes without the fix
+    // disagree on those results. Policy only, until upgrade2.
+    SCRIPT_VERIFY_UNAMBIGUOUS_WITHIN = (1U << 19),
 };
 
 #endif // NEXA_SCRIPT_SCRIPTFLAGS_H

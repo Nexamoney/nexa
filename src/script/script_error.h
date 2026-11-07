@@ -100,6 +100,7 @@ typedef enum ScriptError_t
     SCRIPT_ERR_PARSE, // Parsing the bytecode provided to op_parse failed
     SCRIPT_ERR_INVALID_JUMP,
     SCRIPT_ERR_INVALID_PARAMETER, // one of the opcode parameters is invalid
+    SCRIPT_ERR_AMBIGUOUS_WITHIN, // OP_WITHIN result changed by !77 (policy)
 
     SCRIPT_ERR_ERROR_COUNT
 } ScriptError;

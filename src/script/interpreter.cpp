@@ -1778,6 +1778,10 @@ bool ScriptMachine::Step()
                         StackItem bn2 = stackItemAt(-2); // min
                         StackItem bn3 = stackItemAt(-1); // max
                         fValue = bn1.within(bn2, bn3, bigNumModulo);
+                        if ((flags & SCRIPT_VERIFY_UNAMBIGUOUS_WITHIN) && bn1.withinChanged(bn2, bn3, bigNumModulo))
+                        {
+                            return set_error(serror, SCRIPT_ERR_AMBIGUOUS_WITHIN);
+                        }
                     }
                     PopStack();
                     PopStack();
