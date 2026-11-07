@@ -1480,7 +1480,8 @@ UniValue gettxout(const UniValue &params, bool fHelp)
     }
     else
     {
-        if (!pcoinsTip->GetCoin(out, coin))
+        // The cache keeps an entry for a coin spent since the last flush
+        if (!pcoinsTip->GetCoin(out, coin) || coin.IsSpent())
         {
             return NullUniValue;
         }
