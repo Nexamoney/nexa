@@ -17,6 +17,7 @@
 #include "pubkey.h"
 #include "random.h"
 #include "requestManager.h"
+#include "script/scripttemplate.h"
 #include "script/sighashtype.h"
 #include "script/standard.h"
 #include "streams.h"
@@ -1114,6 +1115,46 @@ BOOST_FIXTURE_TEST_CASE(tx_admission_round_state_per_tx, TestChain100Setup)
             txOrphanQ.pop();
     }
     dosMan.ClearBanned();
+    mempool.clear();
+}
+
+// !77 changed OP_WITHIN where x < max && x != min.  The mempool refuses those spends, but an old node relays them as
+// valid in either direction, so the relaying peer must not be penalized.
+BOOST_FIXTURE_TEST_CASE(tx_mempool_refuses_changed_within_without_penalty, TestChain100Setup)
+{
+    // {template, accepted by the mempool}
+    const std::vector<std::pair<CScript, bool> > cases = {
+        {CScript() << 15 << OP_10 << 20 << OP_WITHIN << OP_VERIFY, false}, // fixed rule true, old rule false
+        {CScript() << OP_5 << OP_10 << 20 << OP_WITHIN << OP_VERIFY, false}, // fixed rule false, old rule true
+        {CScript() << OP_10 << OP_10 << 20 << OP_WITHIN << OP_VERIFY, true}, // both rules true
+    };
+
+    CMutableTransaction fund;
+    fund.vin.push_back(coinbaseTxns[0].SpendOutput(0));
+    for (const auto &c : cases)
+        fund.vout.push_back(CTxOut(10 * COIN, ScriptTemplateLock(c.first)));
+    fund.vin[0].scriptSig = SignCoinbaseSpend(fund, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
+    CBlock block = CreateAndProcessBlock({fund}, coinbaseLockingScript);
+    BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == block.GetHash());
+
+    const CTransaction funded(fund);
+    for (size_t i = 0; i < cases.size(); i++)
+    {
+        CMutableTransaction spend;
+        spend.vin.push_back(funded.SpendOutput(i, ScriptTemplateUnlock(cases[i].first, CScript())));
+        spend.vout.push_back(CTxOut(9 * COIN, coinbaseLockingScript));
+
+        CValidationState state;
+        bool fMissingInputs = false;
+        bool accepted = AcceptToMemoryPool(mempool, state, MakeTransactionRef(spend), false, &fMissingInputs, false);
+        BOOST_CHECK_MESSAGE(accepted == cases[i].second, "case " << i << ": " << state.GetRejectReason());
+        int nDoS = 0;
+        if (!accepted)
+        {
+            BOOST_CHECK(state.IsInvalid(nDoS));
+            BOOST_CHECK_MESSAGE(nDoS == 0, "case " << i << " penalized " << nDoS << ": " << state.GetRejectReason());
+        }
+    }
     mempool.clear();
 }
 
