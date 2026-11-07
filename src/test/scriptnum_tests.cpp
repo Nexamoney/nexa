@@ -4,6 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "consensus/consensus.h"
+#include "policy/policy.h"
 #include "script/bignum.h"
 #include "script/interpreter.h"
 #include "script/script.h"
@@ -1149,6 +1150,61 @@ BOOST_AUTO_TEST_CASE(abs_test)
         }
         a = next_num;
         // printf("a = %lli \n", a);
+    }
+}
+
+// Mainnet ran OP_WITHIN as x <= min && x < max until !77, so older nodes disagree whenever x < max && x != min.
+// Standardness refuses those scripts until upgrade2, so honest miners do not mine a block that splits them.
+static bool evalWithin(uint32_t flags, const CScript &s, bool &result)
+{
+    ScriptMachine sm(flags, ScriptImportedState(), 0xffffffff, 0xffffffff);
+    if (!sm.Eval(s))
+        return false;
+    BOOST_CHECK(sm.getStack().size() == 1);
+    result = (bool)sm.getStack()[0];
+    return true;
+}
+
+BOOST_AUTO_TEST_CASE(within_standard_rejects_changed_results)
+{
+    // x min max, and the result under the fixed rule
+    const std::vector<std::pair<CScript, bool> > changed = {
+        {CScript() << 15 << OP_10 << 20 << OP_WITHIN, true},
+        {CScript() << OP_5 << OP_10 << 20 << OP_WITHIN, false},
+        {CScript() << -5 << -10 << OP_1NEGATE << OP_WITHIN, true},
+        {CScript() << -15 << -10 << OP_1NEGATE << OP_WITHIN, false},
+        {CScript() << 15 << OP_BIN2BIGNUM << OP_10 << 20 << OP_WITHIN, true},
+        {CScript() << OP_5 << OP_10 << OP_BIN2BIGNUM << 20 << OP_WITHIN, false},
+    };
+    const std::vector<std::pair<CScript, bool> > unchanged = {
+        {CScript() << OP_10 << OP_10 << 20 << OP_WITHIN, true},
+        {CScript() << 20 << OP_10 << 20 << OP_WITHIN, false},
+        {CScript() << 25 << OP_10 << 20 << OP_WITHIN, false},
+        {CScript() << OP_10 << OP_10 << OP_10 << OP_WITHIN, false},
+        {CScript() << OP_10 << OP_BIN2BIGNUM << OP_10 << 20 << OP_WITHIN, true},
+        {CScript() << 25 << OP_10 << 20 << OP_BIN2BIGNUM << OP_WITHIN, false},
+    };
+
+    for (const auto &c : changed)
+    {
+        bool result = !c.second;
+        BOOST_CHECK(!evalWithin(STANDARD_SCRIPT_VERIFY_FLAGS, c.first, result));
+        for (uint32_t flags : {MANDATORY_SCRIPT_VERIFY_FLAGS, POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS})
+        {
+            result = !c.second;
+            BOOST_CHECK(evalWithin(flags, c.first, result));
+            BOOST_CHECK_EQUAL(result, c.second);
+        }
+    }
+    for (const auto &c : unchanged)
+    {
+        for (uint32_t flags :
+            {STANDARD_SCRIPT_VERIFY_FLAGS, MANDATORY_SCRIPT_VERIFY_FLAGS, POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS})
+        {
+            bool result = !c.second;
+            BOOST_CHECK(evalWithin(flags, c.first, result));
+            BOOST_CHECK_EQUAL(result, c.second);
+        }
     }
 }
 
