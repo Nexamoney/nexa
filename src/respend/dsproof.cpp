@@ -268,10 +268,12 @@ DoubleSpendProof::Validity DoubleSpendProof::validate(const CTxMemPool &pool, co
         else // tx is not found in our mempool, look in the UTXO.
         {
             Coin coin;
-            if (!pcoinsTip->GetCoin(m_prevOutpoint, coin))
+            if (!pcoinsTip->GetCoin(m_prevOutpoint, coin) || coin.IsSpent())
             {
                 /* if the output we spend is missing then either the tx just got mined
                  * or, more likely, our mempool just doesn't have it.
+                 * Additionally, GetCoin() still returns the cache's entry for a spent coin,
+                 * with a null output, so a spent coin must not reach the script type check.
                  */
                 return MissingUTXO;
             }
