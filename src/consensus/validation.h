@@ -47,6 +47,22 @@ static const unsigned char REJECT_NONFINAL = 0x50;
 */
 static const unsigned char REJECT_NO_CONTEXT = 0x51;
 
+/** Reject codes greater or equal to this can be returned by AcceptToMemPool
+ * for transactions, to signal internal conditions. They cannot and should not
+ * be sent over the P2P network.
+ */
+static const unsigned int REJECT_INTERNAL = 0x100;
+/** Too high fee. Can not be triggered by P2P transactions */
+static const unsigned int REJECT_HIGHFEE = 0x100;
+/** Transaction is already known (either in mempool or blockchain) */
+static const unsigned int REJECT_ALREADY_KNOWN = 0x101;
+/** Transaction conflicts with a transaction already known */
+static const unsigned int REJECT_CONFLICT = 0x102;
+/** Transaction cannot be committed on my fork */
+static const unsigned int REJECT_WRONG_FORK = 0x103;
+/** Block conflicts with a transaction already known */
+static const unsigned int REJECT_AGAINST_FINALIZED = 0x104;
+
 /** Capture information about block/transaction validation */
 class CValidationState
 {
