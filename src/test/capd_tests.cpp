@@ -1416,4 +1416,55 @@ BOOST_AUTO_TEST_CASE(capd_notification_multiple_matches_soft_budget)
     }
 }
 
+// A CAPDQUERY reply counts against the peer's send budget and fits in one network message
+BOOST_AUTO_TEST_CASE(capd_query_reply_send_budget)
+{
+    struct SendBufferLimit
+    {
+        uint64_t previous = nMaxSendBufferSize;
+        SendBufferLimit() { nMaxSendBufferSize = 1024; }
+        ~SendBufferLimit() { nMaxSendBufferSize = previous; }
+    } sendBufferLimit;
+
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+    CNode node1(INVALID_SOCKET, CAddress(CService(ipv4Addr, 7777), NODE_NETWORK), "", false);
+    node1.isCapdEnabled = true;
+    node1.capd = new CapdNode(&node1); // owned and deleted by node1
+
+    // 200 messages with the same 2 byte prefix, together larger than one network message
+    msgpool.clear();
+    const size_t dataSize = GetMaxAllowedNetMessage() / 100;
+    for (int i = 0; i < CapdProtocol::CAPD_QUERY_MAX_MSGS; i++)
+    {
+        std::vector<uint8_t> data(dataSize, 0);
+        data[0] = '!';
+        data[1] = '!';
+        WriteLE32(&data[2], i);
+        CapdMsg m(data);
+        m.SetPowTargetHarderThanPriority(msgpool.GetLocalPriority() + 1.0);
+        m.Solve();
+        BOOST_REQUIRE_NO_THROW(msgpool.add(MsgRefCopy(m)));
+    }
+    std::vector<unsigned char> prefix = {'!', '!'};
+    BOOST_REQUIRE_EQUAL(msgpool.find(prefix).size(), (size_t)CapdProtocol::CAPD_QUERY_MAX_MSGS);
+
+    // The peer's send buffer is just below full, so ProcessMessages still handles its query
+    node1.nSendSize = nMaxSendBufferSize - 1;
+    CDataStream pkt = MsgMaker(node1, NetMsgType::CAPDQUERY,
+        [&](auto &p)
+        {
+            p << (uint32_t)1 << (uint8_t)CapdProtocol::CAPD_QUERY_TYPE_MSG << (uint32_t)0
+              << (uint32_t)CapdProtocol::CAPD_QUERY_MAX_MSGS << prefix;
+        });
+    BOOST_CHECK(HandleCapdMessage(node1, pkt));
+
+    const uint64_t queued = node1.nSendSize.load() + node1.capd->pendingSendBytes.load() - nMaxSendBufferSize;
+    BOOST_TEST_MESSAGE("CAPDQUERY reply bytes queued past a full send buffer: " << queued);
+    BOOST_CHECK_LE(queued, GetMaxAllowedNetMessage() + CMessageHeader::HEADER_SIZE);
+
+    node1.vLowPrioritySendMsg.clear();
+    msgpool.clear();
+}
+
 BOOST_AUTO_TEST_SUITE_END()
