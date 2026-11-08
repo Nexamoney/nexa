@@ -138,6 +138,8 @@ const char *ScriptErrorString(const ScriptError serror)
         return "JUMP is invalid";
     case SCRIPT_ERR_INVALID_PARAMETER: // one of the opcode parameters is invalid
         return "Invalid parameter";
+    case SCRIPT_ERR_AMBIGUOUS_WITHIN:
+        return "OP_WITHIN result differs between node versions";
 
     case SCRIPT_ERR_UNKNOWN_ERROR:
     case SCRIPT_ERR_ERROR_COUNT:

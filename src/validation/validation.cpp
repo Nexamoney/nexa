@@ -1664,6 +1664,14 @@ bool CheckInputs(const CTransactionRef &tx,
                         if (!check())
                         {
                             ScriptError scriptError = check.GetScriptError();
+                            // Nodes without !77 compute the other OP_WITHIN result, so the relaying peer is not at
+                            // fault even when the fixed rule fails the script
+                            if (scriptError == SCRIPT_ERR_AMBIGUOUS_WITHIN && !debugger)
+                            {
+                                return state.DoS(0, false, REJECT_NONSTANDARD,
+                                    strprintf("non-mandatory-script-verify-flag (%s)", ScriptErrorString(scriptError)),
+                                    true);
+                            }
                             // Compute flags without the optional standardness flags.
                             // This differs from MANDATORY_SCRIPT_VERIFY_FLAGS as it contains
                             // additional upgrade flags (see ParallelAcceptToMemoryPool variable

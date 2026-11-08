@@ -240,6 +240,9 @@ public:
     /** Returns true if this stack item is greater than or equal gte and less than lt.
         This function implements OP_WITHIN */
     bool within(const StackItem &gte, const StackItem &lt, const BigNum &bmd);
+    /** Returns true if this stack item is less than lt and not equal to gte, where OP_WITHIN before !77 gave the
+        opposite result */
+    bool withinChanged(const StackItem &gte, const StackItem &lt, const BigNum &bmd);
 
     void clear(void)
     {
