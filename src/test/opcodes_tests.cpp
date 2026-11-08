@@ -137,6 +137,24 @@ static valtype to_bitpattern(const char *str)
 }
 
 // test the bitpattern function
+// The checks in these tests compare stack items, so equality must compare contents, not truthiness
+BOOST_AUTO_TEST_CASE(stackitem_equality)
+{
+    BOOST_CHECK(valtype({0x01, 0x02}) == valtype({0x01, 0x02}));
+    BOOST_CHECK(!(valtype({0x01}) == valtype({0x02})));
+    BOOST_CHECK(valtype({0x01}) != valtype({0x01, 0x00}));
+    BOOST_CHECK(valtype() != valtype({0x00}));
+    BOOST_CHECK(valtype({0x80}) != valtype({0x00}));
+
+    BOOST_CHECK(StackItem(BigNum(5)) == StackItem(BigNum(5)));
+    BOOST_CHECK(StackItem(BigNum(5)) != StackItem(BigNum(6)));
+    // A bignum and a byte vector are different stack items even when they hold the same number
+    BOOST_CHECK(StackItem(BigNum(1)) != valtype({0x01}));
+
+    BOOST_CHECK(stacktype{valtype({0x01})} != stacktype{valtype({0x02})});
+    BOOST_CHECK(stacktype{valtype({0x01})} == stacktype{valtype({0x01})});
+}
+
 BOOST_AUTO_TEST_CASE(self_bitpattern_test)
 {
     BOOST_CHECK(valtype({0x01}) == to_bitpattern("00000001"));
@@ -543,7 +561,7 @@ static void CheckTypeConversionOp(const valtype &bin, const valtype &num)
     CheckTestResultForAllFlags({bin}, CScript() << OP_BIN2NUM, {num});
 
     // Check NUM2BIN. Negative 0 is rebuilt as regular zero, so we need a tweak.
-    valtype rebuilt_bin{bin};
+    valtype rebuilt_bin(bin);
     if (num.size() == 0 && bin.size() > 0)
     {
         rebuilt_bin[rebuilt_bin.size() - 1] &= 0x7f;
@@ -554,11 +572,20 @@ static void CheckTypeConversionOp(const valtype &bin, const valtype &num)
     // Check roundtrip with NUM2BIN.
     CheckTestResultForAllFlags({bin}, CScript() << OP_BIN2NUM << bin.size() << OP_NUM2BIN, {rebuilt_bin});
 
-    // Grow and shrink back down using NUM2BIN.
-    CheckTestResultForAllFlags(
-        {bin}, CScript() << largeScriptElementSize << OP_NUM2BIN << bin.size() << OP_NUM2BIN, {rebuilt_bin});
-    CheckTestResultForAllFlags(
-        {num}, CScript() << largeScriptElementSize << OP_NUM2BIN << bin.size() << OP_NUM2BIN, {rebuilt_bin});
+    // Grow and shrink back down using NUM2BIN. When the minimal encoding already has the requested size, the padded
+    // number is left as is (nexa/nexa!531).
+    const CScript grow = CScript() << largeScriptElementSize << OP_NUM2BIN;
+    for (const valtype &start : {bin, num})
+    {
+        stacktype expected{rebuilt_bin};
+        if (num.size() == bin.size())
+        {
+            expected = {start};
+            BOOST_REQUIRE(
+                EvalScript(expected, grow, MANDATORY_SCRIPT_VERIFY_FLAGS, MAX_OPS_PER_SCRIPT, ScriptImportedState()));
+        }
+        CheckTestResultForAllFlags({start}, CScript(grow) << bin.size() << OP_NUM2BIN, expected);
+    }
 
     // BIN2NUM is indempotent.
     CheckTestResultForAllFlags({bin}, CScript() << OP_BIN2NUM << OP_BIN2NUM, {num});

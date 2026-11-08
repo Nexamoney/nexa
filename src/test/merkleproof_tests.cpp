@@ -862,7 +862,7 @@ BOOST_AUTO_TEST_CASE(merkleProofScripts)
                 {merkleRootOption(nodeAlg, leafAlg,
                      MerkleRootFlags::HASH_ELEMENTS | MerkleRootFlags::RETURN_ADJACENCY |
                          MerkleRootFlags::RETURN_DEPTH),
-                    {{IntStack, 2}, {IntStack, 1}, halgCalced}},
+                    {{IntStack, 1}, {IntStack, 2}, halgCalced}},
 
                 {merkleRootOption(nodeAlg, leafAlg,
                      MerkleRootFlags::HASH_ELEMENTS | MerkleRootFlags::RETURN_DEPTH | MerkleRootFlags::RETURN_INDEX),
@@ -1027,6 +1027,7 @@ BOOST_AUTO_TEST_CASE(merkleMultiProofScripts)
         a     b
        1 2   3 4
      */
+    // The last element pushed is the first one in the tree
     std::vector<VchType> elems = {two, three};
 
     VchType proof = VchType() << MULTIPROOF_LEFT_SIBLING << one << MULTIPROOF_PUSH << MULTIPROOF_RIGHT_SIBLING << four
@@ -1034,17 +1035,17 @@ BOOST_AUTO_TEST_CASE(merkleMultiProofScripts)
     VchType sha256calced = sha256(sha256(one, two), sha256(three, four));
     VchType hash256calced = hash256(hash256(one, two), hash256(three, four));
     // just the hash
-    CScript s = CScript() << proof << two << one << 2
+    CScript s = CScript() << proof << three << two << 2
                           << merkleRootOption(MerkleRootAlg::SHA256, MerkleRootFlags::MR_NONE) << OP_MERKLEROOT;
     CheckPass(flags, Stack(), s, {sha256calced});
 
-    s = CScript() << proof << two << one << 2 << merkleRootOption(MerkleRootAlg::HASH256, MerkleRootFlags::MR_NONE)
+    s = CScript() << proof << three << two << 2 << merkleRootOption(MerkleRootAlg::HASH256, MerkleRootFlags::MR_NONE)
                   << OP_MERKLEROOT;
     CheckPass(flags, Stack(), s, {hash256calced});
 
     if (true) // everything
     {
-        s = CScript() << proof << two << one << 2
+        s = CScript() << proof << three << two << 2
                       << merkleRootOption(MerkleRootAlg::HASH256, MerkleRootFlags::RETURN_INDEX |
                                                                       MerkleRootFlags::RETURN_DEPTH |
                                                                       MerkleRootFlags::RETURN_ADJACENCY)
@@ -1070,7 +1071,7 @@ BOOST_AUTO_TEST_CASE(merkleMultiProofScripts)
 
     for (const auto &[option, expected] : tv)
     {
-        s = CScript() << proof << two << one << 2 << option << OP_MERKLEROOT;
+        s = CScript() << proof << three << two << 2 << option << OP_MERKLEROOT;
         CheckPass(flags, Stack(), s, expected);
     }
 }
