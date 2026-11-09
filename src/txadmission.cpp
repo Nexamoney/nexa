@@ -880,7 +880,7 @@ bool AcceptToMemoryPool(CTxMemPool &pool,
     return res;
 }
 
-bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
+static bool ParallelAcceptToMemoryPoolImp(CTxMemPool &pool,
     CValidationState &state,
     const CTransactionRef &tx,
     bool fLimitFree,
@@ -894,152 +894,578 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
     DbgAssert(txProcessingCorral.region() == CORRAL_TX_PROCESSING ||
                   txProcessingCorral.region() == CORRAL_TX_COMMITMENT || txProcessingCorral.region() == CORRAL_TX_PAUSE,
         LOGA("Do not have corral during parallelaccepttomemorypool"));
+    const CChainParams &chainparams = Params();
+    CBlockIndex *chainTip = chainActive.Tip();
 
-    try
+    if (isRespend)
+        *isRespend = false;
+    unsigned int nSigOps = 0;
+    ValidationResourceTracker resourceTracker;
+    unsigned int nSize = 0;
+    uint64_t start = GetStopwatch();
+    if (pfMissingInputs)
+        *pfMissingInputs = false;
+
+    if (debugger)
     {
-        const CChainParams &chainparams = Params();
-        CBlockIndex *chainTip = chainActive.Tip();
+        debugger->txid = tx->GetId().ToString();
+    }
 
-        if (isRespend)
-            *isRespend = false;
-        unsigned int nSigOps = 0;
-        ValidationResourceTracker resourceTracker;
-        unsigned int nSize = 0;
-        uint64_t start = GetStopwatch();
-        if (pfMissingInputs)
-            *pfMissingInputs = false;
-
+    if (!CheckTransaction(tx, state) || !ContextualCheckTransaction(tx, state, chainTip, chainparams))
+    {
+        if (state.GetDebugMessage() == "")
+            state.SetDebugMessage("CheckTransaction failed");
         if (debugger)
         {
-            debugger->txid = tx->GetId().ToString();
+            debugger->AddInvalidReason(state.GetRejectReason());
+            state = CValidationState();
+            debugger->mineable = false;
+            // assume a tx that does not pass validation is non standard and not future mineable
+            debugger->futureMineable = false;
+            debugger->standard = false;
         }
-
-        if (!CheckTransaction(tx, state) || !ContextualCheckTransaction(tx, state, chainTip, chainparams))
+        else
         {
-            if (state.GetDebugMessage() == "")
-                state.SetDebugMessage("CheckTransaction failed");
+            return false;
+        }
+    }
+
+    // Coinbase is only valid in a block, not as a loose transaction
+    if (tx->IsCoinBase())
+    {
+        if (debugger)
+        {
+            debugger->AddInvalidReason("Coinbase is only valid in a block, not as a loose transaction");
+            debugger->mineable = false;
+            debugger->futureMineable = false;
+        }
+        else
+        {
+            return state.DoS(100, false, REJECT_INVALID, "coinbase");
+        }
+    }
+
+    // Reject nonstandard transactions if so configured.
+    // (-testnet/-regtest allow nonstandard, and explicit submission via RPC)
+    std::string reason;
+    bool fRequireStandard = chainparams.RequireStandard();
+
+    if (allowedTx == TransactionClass::STANDARD)
+    {
+        fRequireStandard = true;
+    }
+    else if (allowedTx == TransactionClass::NONSTANDARD)
+    {
+        fRequireStandard = false;
+    }
+    if (fRequireStandard && !IsStandardTx(tx, reason))
+    {
+        if (debugger)
+        {
+            debugger->AddInvalidReason(reason);
+            // if we require standard, a non standard tx is not mineable or future mineable
+            debugger->mineable = false;
+            debugger->futureMineable = false;
+            debugger->standard = false;
+        }
+        else
+        {
+            state.SetDebugMessage("IsStandardTx failed");
+            return state.DoS(0, false, REJECT_NONSTANDARD, reason);
+        }
+    }
+
+    uint32_t flags = STANDARD_SCRIPT_VERIFY_FLAGS;
+
+    if (IsUpgrade2Activated(chainTip) || IsUpgrade2Pending(chainTip))
+    {
+        flags = POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS;
+    }
+
+    // Only accept nLockTime-using transactions that can be mined in the next
+    // block; we don't want our mempool filled up with transactions that can't
+    // be mined yet.
+    if (!CheckFinalTx(tx, STANDARD_LOCKTIME_VERIFY_FLAGS))
+    {
+        if (debugger)
+        {
+            debugger->AddInvalidReason("non-final");
+            // non final is not mineable now but may be in the future
+            debugger->mineable = false;
+        }
+        else
+        {
+            return state.DoS(0, false, REJECT_NONFINAL, "non-final");
+        }
+    }
+
+    // Make sure tx size is acceptable
+    {
+        if (tx->GetTxSize() < MIN_TX_SIZE)
+        {
             if (debugger)
             {
-                debugger->AddInvalidReason(state.GetRejectReason());
-                state = CValidationState();
+                debugger->AddInvalidReason("txn-undersize");
                 debugger->mineable = false;
-                // assume a tx that does not pass validation is non standard and not future mineable
                 debugger->futureMineable = false;
-                debugger->standard = false;
             }
             else
             {
-                return false;
+                return state.DoS(0, false, REJECT_INVALID, "txn-undersize");
             }
         }
+    }
 
-        // Coinbase is only valid in a block, not as a loose transaction
-        if (tx->IsCoinBase())
+    // Is it already in the memory pool?
+    const uint256 &id = tx->GetId();
+    const uint256 &idem = tx->GetIdem();
+    if (pool.idemExists(idem))
+    {
+        if (debugger)
         {
-            if (debugger)
+            debugger->AddInvalidReason("txn-already-in-mempool");
+        }
+        else
+        {
+            return state.Invalid(false, REJECT_ALREADY_KNOWN, "txn-already-in-mempool");
+        }
+    }
+
+    // Check for conflicts with in-memory transactions and triggers actions at
+    // end of scope (relay tx, sync wallet, etc)
+    respend::RespendDetector respend(pool, tx);
+    *isRespend = respend.IsRespend();
+
+    if (respend.IsRespend() && !respend.IsInteresting())
+    {
+        if (debugger)
+        {
+            std::string conflicts("txn-txpool-conflict:");
+            for (auto &c : respend.getConflicts())
             {
-                debugger->AddInvalidReason("Coinbase is only valid in a block, not as a loose transaction");
-                debugger->mineable = false;
-                debugger->futureMineable = false;
+                conflicts.append(" ");
+                conflicts.append(c.GetHex());
             }
-            else
+            debugger->AddInvalidReason(conflicts);
+            debugger->mineable = false;
+            debugger->futureMineable = false;
+        }
+        else
+        {
+            // Tx is a respend, and it's not an interesting one (we don't care to
+            // validate it further)
+            return state.Invalid(false, REJECT_CONFLICT, "txn-txpool-conflict");
+        }
+    }
+
+    uint256 coinsBlockHash;
+    int coinsBlockHeight = 0;
+    {
+        // view is used for storing normal coins
+        CCoinsView dummy;
+        CCoinsViewCache view(&dummy);
+
+        // roCoinsTip is used for storing read only inputs
+        CCoinsView dummy2;
+        CCoinsViewCache roCoinsTip(&dummy2);
+
+        CAmount nValueIn = 0;
+        LockPoints lp;
+
+        CAmount nValueOut = 0;
+        CAmount nFees = 0;
+        CAmount nModifiedFees = 0;
+        double dPriority = 0.0;
+        bool fSpendsCoinbase = false;
+        CAmount inChainInputValue;
+        {
+            auto grove = tailstormForest._BestGrove();
+            READLOCK(pool.cs_txmempool);
+            CCoinsViewCache *ptip = fTailstormEnabled ? tailstormForest.bestGroveCoins() : pcoinsTip;
+            assert(ptip);
+            if (fTailstormEnabled)
             {
-                return state.DoS(100, false, REJECT_INVALID, "coinbase");
+                if (grove != nullptr)
+                {
+                    coinsBlockHash = grove->id();
+                    coinsBlockHeight = grove->summaryRootHeight();
+                }
             }
-        }
 
-        // Reject nonstandard transactions if so configured.
-        // (-testnet/-regtest allow nonstandard, and explicit submission via RPC)
-        std::string reason;
-        bool fRequireStandard = chainparams.RequireStandard();
+            CCoinsViewMemPool viewMemPool(ptip, mempool);
+            view.SetBackend(viewMemPool);
+            // Consumed inputs may come from the tailstorm DAG, but read only inputs must be confirmed before being
+            // used.  So roCoinsTip points directly at the coins of the summary block tip.
+            // Recall that every transaction in a summary block is effectively seen as being executed
+            // simultaneously, so in subblocks you can continue to access spent UTXOs **as read only** until the
+            // summary block collapses the DAG.  This allows the behavior of the subblock DAG to mirror that of the
+            // summary block they collapse into.
+            roCoinsTip.SetBackend(*pcoinsTip);
 
-        if (allowedTx == TransactionClass::STANDARD)
-        {
-            fRequireStandard = true;
-        }
-        else if (allowedTx == TransactionClass::NONSTANDARD)
-        {
-            fRequireStandard = false;
-        }
-        if (fRequireStandard && !IsStandardTx(tx, reason))
-        {
-            if (debugger)
+            // do all inputs exist?
+            if (pfMissingInputs)
             {
-                debugger->AddInvalidReason(reason);
-                // if we require standard, a non standard tx is not mineable or future mineable
-                debugger->mineable = false;
-                debugger->futureMineable = false;
-                debugger->standard = false;
+                *pfMissingInputs = false;
+                int inIdx = 0;
+                for (const CTxIn &txin : tx->vin)
+                {
+                    // At this point we begin to collect coins that are potential candidates for uncaching because
+                    // as soon as we make the call below to view.HaveCoin() any missing coins will be pulled into
+                    // cache. Therefore, any coin in this transaction that is not already in cache will be tracked
+                    // here such that if this transaction fails to enter the memory pool, we will then uncache those
+                    // coins that were not already present, unless the transaction is an orphan.
+                    //
+                    // We still want to keep orphantx coins in the event the orphantx is finally accepted into the
+                    // mempool or shows up in a block that is mined.  Therefore if pfMissingInputs returns true then
+                    // any coins in vCoinsToUncache will NOT be uncached.
+
+                    bool fSpent = false;
+                    bool fMissingOrSpent = false;
+                    if (txin.IsReadOnly())
+                    {
+                        if (!roCoinsTip.HaveCoinInCache(txin.prevout, fSpent))
+                        {
+                            // Read-only inputs can only refer to confirmed inputs
+                            // look in coins (utxo of blockchain tip, not mempool tip)
+                            // but ignore whether its spent (read-only spent coins are still accessible in this
+                            // block).
+                            if (!roCoinsTip.GetCoinFromDB(txin.prevout))
+                            {
+                                state.relevantInput = inIdx;
+                                state.relevantTxid = tx->GetId();
+                                fMissingOrSpent = true;
+                                LOG(MEMPOOL, "read-only input-does-not-exist: %d:%s\n", inIdx,
+                                    txin.prevout.hash.ToString());
+                            }
+                        }
+                    }
+                    else
+                    {
+                        vCoinsToUncache.push_back(txin.prevout);
+                        if (!view.HaveCoin(txin.prevout))
+                        {
+                            state.relevantInput = inIdx;
+                            state.relevantTxid = tx->GetId();
+                            fMissingOrSpent = true;
+                            LOG(MEMPOOL, "normal input-does-not-exist: %d:%s\n", inIdx, txin.prevout.hash.ToString());
+                        }
+                    }
+                    if (fSpent || fMissingOrSpent)
+                    {
+                        if (debugger)
+                        {
+                            debugger->AddInvalidReason(
+                                "input-does-not-exist: " + std::to_string(inIdx) + " " + txin.prevout.hash.ToString());
+                            // missing inputs are not mineable now. it may be mineable
+                            // in the future but it is not certain, assume it will not be
+                            debugger->mineable = false;
+                            debugger->futureMineable = false;
+                        }
+                        // fMissingInputs and not state.IsInvalid() is used to detect this condition, don't set
+                        // state.Invalid()
+                        LOG(MEMPOOL, "input-does-not-exist: %d:%s\n", inIdx, txin.prevout.hash.ToString());
+                        *pfMissingInputs = true;
+                        if (debugger == nullptr)
+                        {
+                            break; // There is no point checking any more once one fails, for orphans we will
+                                   // recheck
+                        }
+                    }
+                    inIdx++;
+                }
+                if (*pfMissingInputs == true)
+                {
+                    if (debugger)
+                    {
+                        debugger->AddInvalidReason("inputs-are-missing");
+                        // missing inputs are not mineable now. it may be mineable
+                        // in the future but it is not certain, assume it will not be
+                        debugger->mineable = false;
+                        debugger->futureMineable = false;
+                        return false;
+                    }
+                    else
+                    {
+                        state.SetDebugMessage("inputs-are-missing");
+                        return false; // state.Invalid(false, REJECT_MISSING_INPUTS, "bad-txns-missing-inputs",
+                                      // "Inputs
+                        // unavailable in ParallelAcceptToMemoryPool", false);
+                    }
+                }
             }
-            else
+
+            // Bring the best block into scope
+            view.GetBestBlock();
+            roCoinsTip.GetBestBlock();
+
+            try
             {
-                state.SetDebugMessage("IsStandardTx failed");
-                return state.DoS(0, false, REJECT_NONSTANDARD, reason);
+                nValueIn = tx->GetValueIn();
             }
-        }
-
-        uint32_t flags = STANDARD_SCRIPT_VERIFY_FLAGS;
-
-        if (IsUpgrade2Activated(chainTip) || IsUpgrade2Pending(chainTip))
-        {
-            flags = POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS;
-        }
-
-        // Only accept nLockTime-using transactions that can be mined in the next
-        // block; we don't want our mempool filled up with transactions that can't
-        // be mined yet.
-        if (!CheckFinalTx(tx, STANDARD_LOCKTIME_VERIFY_FLAGS))
-        {
-            if (debugger)
+            catch (const std::runtime_error &)
             {
-                debugger->AddInvalidReason("non-final");
-                // non final is not mineable now but may be in the future
-                debugger->mineable = false;
+                // Declared input amounts come from the peer and are not range checked by CheckTransaction
+                if (debugger)
+                {
+                    debugger->AddInvalidReason("bad-txns-inputvalues-outofrange");
+                    debugger->mineable = false;
+                    debugger->futureMineable = false;
+                    return false;
+                }
+                return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputvalues-outofrange");
             }
-            else
-            {
-                return state.DoS(0, false, REJECT_NONFINAL, "non-final");
-            }
-        }
-
-        // Make sure tx size is acceptable
-        {
-            if (tx->GetTxSize() < MIN_TX_SIZE)
+            // NOTE this view function MUST be executed, so we can cache all inputs, before SetBackend(dummy)
+            CAmount viewValueIn = view.GetValueIn(*tx);
+            if (nValueIn != viewValueIn)
             {
                 if (debugger)
                 {
-                    debugger->AddInvalidReason("txn-undersize");
+                    debugger->AddInvalidReason(
+                        strprintf("inconsistent input value: tx: %d,  UTXO: %d", nValueIn, viewValueIn));
                     debugger->mineable = false;
                     debugger->futureMineable = false;
                 }
                 else
                 {
-                    return state.DoS(0, false, REJECT_INVALID, "txn-undersize");
+                    return state.DoS(1, false, REJECT_INVALID, "inconsistent input value");
+                }
+            }
+            // we have all inputs cached now, so switch back to dummy, so we don't need to keep lock on mempool
+            view.SetBackend(dummy);
+            roCoinsTip.SetBackend(dummy2);
+
+            // Only accept BIP68 sequence locked transactions that can be mined in the next
+            // block; we don't want our mempool filled up with transactions that can't
+            // be mined yet.
+            // Must keep pool.cs for this unless we change CheckSequenceLocks to take a
+            // CoinsViewCache instead of create its own
+            if (!CheckSequenceLocks(tx, STANDARD_LOCKTIME_VERIFY_FLAGS, chainTip, view, roCoinsTip, &lp, false))
+            {
+                if (debugger)
+                {
+                    debugger->AddInvalidReason("non-BIP68-final");
+                    // not mineable now but should be in the future
+                    debugger->mineable = false;
+                }
+                else
+                {
+                    return state.DoS(0, false, REJECT_NONSTANDARD, "non-BIP68-final");
+                }
+            }
+
+            try
+            {
+                nValueOut = tx->GetValueOut();
+            }
+            catch (const std::runtime_error &)
+            {
+                if (debugger)
+                {
+                    debugger->AddInvalidReason("bad-txns-outputvalues-outofrange");
+                    debugger->mineable = false;
+                    debugger->futureMineable = false;
+                    return false;
+                }
+                return state.DoS(100, false, REJECT_INVALID, "bad-txns-outputvalues-outofrange");
+            }
+            nFees = viewValueIn - nValueOut;
+            LOG(MEMPOOL, "Value In: %d  Out: %d  Fees: %d\n", nValueIn, nValueOut, nFees);
+            nModifiedFees = nFees; // nModifiedFees includes any fee deltas from PrioritiseTransaction
+            double nPriorityDummy = 0;
+
+            // Search either id or idem for a user-applied priority modifier
+            pool._ApplyDeltas(id, nPriorityDummy, nModifiedFees);
+            pool._ApplyDeltas(idem, nPriorityDummy, nModifiedFees);
+
+            // Check for non-standard pay-to-script-hash in inputs
+            if (fRequireStandard && !AreInputsStandard(tx, view))
+            {
+                if (debugger)
+                {
+                    debugger->AddInvalidReason("bad-txns-nonstandard-inputs");
+                    debugger->standard = false;
+                    // if we require standard and this tx is not standard, we can not
+                    // mine now or in the future either
+                    debugger->mineable = false;
+                    debugger->futureMineable = false;
+                }
+                else
+                {
+                    return state.Invalid(false, REJECT_NONSTANDARD, "bad-txns-nonstandard-inputs");
+                }
+            }
+
+            // Get the priority
+            //
+            // And, keep track of transactions that spend a coinbase, which we re-scan
+            // during reorgs to ensure COINBASE_MATURITY is still met.
+            dPriority = view.GetPriority(*tx, chainTip->height(), inChainInputValue, fSpendsCoinbase);
+            // Check that input script constraints are satisfied
+            unsigned char sighashType = 0;
+            if (!CheckInputs(tx, state, view, roCoinsTip, true, flags, true, &resourceTracker, chainparams, nullptr,
+                    &sighashType, debugger))
+            {
+                if (state.GetDebugMessage() == "")
+                    state.SetDebugMessage("CheckConsumedInputs failed");
+
+                if (debugger && debugger->InputsCheck1IsValid())
+                {
+                    debugger->AddInvalidReason(state.GetDebugMessage());
+                    debugger->mineable = false;
+                    debugger->futureMineable = false;
+                }
+                else
+                {
+                    LOG(MEMPOOL, "CheckConsumedInputs failed for tx: %s reason: %s\n", id.ToString(),
+                        state.GetDebugMessage());
+                    return false;
                 }
             }
         }
 
-        // Is it already in the memory pool?
-        const uint256 &id = tx->GetId();
-        const uint256 &idem = tx->GetIdem();
-        if (pool.idemExists(idem))
+        // Check that the transaction doesn't have an excessive number of sigops, making it impossible to mine.
+        {
+            nSigOps = resourceTracker.GetConsensusSigChecks();
+            if (nSigOps > MAX_TX_SIGCHECK_COUNT)
+            {
+                if (debugger)
+                {
+                    debugger->AddInvalidReason("bad-txns-too-many-sigchecks");
+                    // not mineable now or in the future under the current ruleset
+                    debugger->mineable = false;
+                    debugger->futureMineable = false;
+                }
+                else
+                {
+                    return state.DoS(
+                        0, false, REJECT_INVALID, "bad-txns-too-many-sigchecks", false, strprintf("%d", nSigOps));
+                }
+            }
+            // Place sigchecks into the mempool sigops field, since these are not cotemporaneous
+            // only show this log for a strange # of sigchecks (typically 1 per input)
+            if (nSigOps != tx->vin.size())
+                LOG(MEMPOOL, "Tx %s has %d sigchecks\n", id.ToString(), nSigOps);
+        }
+
+        // Create a commit data entry
+        CTxMemPoolEntry entry(
+            tx, nFees, GetTime(), dPriority, chainTip->height(), inChainInputValue, fSpendsCoinbase, nSigOps, lp);
+
+        nSize = entry.GetTxSize();
+        if (fRelayPriority && (nModifiedFees < ::minRelayTxFee.GetFee(nSize)) &&
+            (!AllowFree(entry.GetPriority(chainTip->height() + 1))))
         {
             if (debugger)
             {
-                debugger->AddInvalidReason("txn-already-in-mempool");
+                debugger->AddInvalidReason("insufficient-priority");
+                debugger->AddInvalidReason("insufficient-fee: need " + std::to_string(minRelayTxFee.GetFee(nSize)) +
+                                           " was only " + std::to_string(nModifiedFees));
+                debugger->AddInvalidReason("minimum-fee: " + std::to_string(minRelayTxFee.GetFee(nSize)));
+                // fees are not a reason to mark something as not mineable, keep current mineable and futureMineable
+                // values unchanged
+                debugger->standard = false;
             }
             else
             {
-                return state.Invalid(false, REJECT_ALREADY_KNOWN, "txn-already-in-mempool");
+                // Require that free transactions have sufficient priority to be mined in the next block.
+                LOG(MEMPOOL, "Txn fee %lld (%d - %d), priority fee delta was %lld\n", nFees, nValueIn, nValueOut,
+                    nModifiedFees - nFees);
+                return state.DoS(0, false, REJECT_INSUFFICIENTFEE, "insufficient priority");
             }
         }
+        if (debugger)
+        {
+            debugger->txMetadata.emplace("size", std::to_string(nSize));
+            debugger->txMetadata.emplace("txfee", std::to_string(nModifiedFees));
+            debugger->txMetadata.emplace("txfeeneeded", std::to_string(minRelayTxFee.GetFee(nSize)));
+        }
 
-        // Check for conflicts with in-memory transactions and triggers actions at
-        // end of scope (relay tx, sync wallet, etc)
-        respend::RespendDetector respend(pool, tx);
-        *isRespend = respend.IsRespend();
+        /* Continuously rate-limit free (really, very-low-fee) transactions
+         * This mitigates 'penny-flooding' -- sending thousands of free transactions just to
+         * be annoying or make others' transactions take longer to confirm. */
+        static CCriticalSection cs_limiter;
+        {
+            LOCK(cs_limiter);
 
-        if (respend.IsRespend() && !respend.IsInteresting())
+            static int64_t nLastTime = GetTime();
+            int64_t nNow = GetTime();
+            minRelayTxFee = CFeeRate((CAmount)(minRelayFee.Value()));
+
+            // useful but spammy
+            // LOG(MEMPOOL,
+            //    "MempoolBytes:%ld LimitFreeRelay:%d FeesSatoshiPerKB:%ld TxBytes:%d "
+            //    "TxFees:%ld\n",
+            //    pool.GetTotalTxSize(), limitFreeRelay.Value(), nModifiedFees * 1000 / nSize, nSize,
+            //    nModifiedFees);
+            if (fLimitFree && nModifiedFees < ::minRelayTxFee.GetFee(nSize))
+            {
+                static double dFreeCount = 0;
+
+                // Use an exponentially decaying ~10-minute window:
+                dFreeCount *= std::pow(1.0 - 1.0 / 600.0, (double)(nNow - nLastTime));
+                nLastTime = nNow;
+
+                // limitFreeRelay is in KB per minute but we multiply it
+                //  by an extra 10 because we're using a 10 minute decay window.
+                LOG(MEMPOOL, "Rate limit dFreeCount: %g => %g\n", dFreeCount, dFreeCount + nSize);
+                if ((dFreeCount + nSize) >= (limitFreeRelay.Value() * 10 * 1000))
+                {
+                    if (debugger)
+                    {
+                        debugger->AddInvalidReason("rate limited free transaction");
+                        // fees are not a reason to mark something as not mineable, keep current mineable and
+                        // futureMineable values unchanged
+                        debugger->standard = false;
+                    }
+                    else
+                    {
+                        LOG(MEMPOOL, "AcceptToMemoryPool : free transaction %s rejected by rate limiter\n",
+                            id.ToString());
+                        return state.DoS(0, false, REJECT_INSUFFICIENTFEE, "mempool min fee not met");
+                    }
+                }
+                dFreeCount += nSize;
+            }
+            else if (nModifiedFees < ::minRelayTxFee.GetFee(nSize))
+            {
+                if (debugger)
+                {
+                    debugger->AddInvalidReason("txpool min fee not met");
+                    // fees are not a reason to mark something as not mineable, keep current mineable and
+                    // futureMineable values unchanged
+                    debugger->standard = false;
+                }
+                else
+                {
+                    LOG(MEMPOOL, "AcceptToMemoryPool : min fee not met for %s\n", id.ToString());
+                    return state.DoS(0, false, REJECT_INSUFFICIENTFEE, "mempool min fee not met");
+                }
+            }
+        }
+#ifdef ENABLE_WALLET
+        // We calculate the recommended fee by looking at what's in the mempool.  This starts at 0 though for an
+        // empty mempool.  So set the minimum "absurd" fee to 10000 satoshies per byte.  If for some reason fees
+        // rise above that, you can specify up to 100x what other txns are paying in the mempool
+        if (fRejectAbsurdFee && nFees > std::max((int64_t)100L * nSize, maxTxFeeTweak.Value()) * 100)
+        {
+            if (debugger)
+            {
+                debugger->AddInvalidReason("absurdly-high-fee");
+                // fees are not a reason to mark something as not mineable, keep current mineable and futureMineable
+                // values unchanged
+                debugger->standard = false;
+            }
+            else
+            {
+                return state.Invalid(false, REJECT_HIGHFEE, "absurdly-high-fee",
+                    strprintf("%d > %d", nFees, std::max((int64_t)100L * nSize, maxTxFeeTweak.Value()) * 100));
+            }
+        }
+#endif
+
+        // Check for repend before committing the tx to the mempool
+        respend.SetValid(true);
+        if (respend.IsRespend())
         {
             if (debugger)
             {
@@ -1050,471 +1476,58 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                     conflicts.append(c.GetHex());
                 }
                 debugger->AddInvalidReason(conflicts);
-                debugger->mineable = false;
-                debugger->futureMineable = false;
             }
             else
             {
-                // Tx is a respend, and it's not an interesting one (we don't care to
-                // validate it further)
                 return state.Invalid(false, REJECT_CONFLICT, "txn-txpool-conflict");
             }
         }
-
-        uint256 coinsBlockHash;
-        int coinsBlockHeight = 0;
+        else if (debugger == nullptr)
         {
-            // view is used for storing normal coins
-            CCoinsView dummy;
-            CCoinsViewCache view(&dummy);
+            // If it's not a respend it may have a reclaimed orphan associated with it
+            entry.dsproof = respend.GetDsproof();
 
-            // roCoinsTip is used for storing read only inputs
-            CCoinsView dummy2;
-            CCoinsViewCache roCoinsTip(&dummy2);
+            // Add entry to the commit queue
+            CTxCommitData eData;
+            eData.entry = std::move(entry);
+            eData.hash = id;
 
-            CAmount nValueIn = 0;
-            LockPoints lp;
-
-            CAmount nValueOut = 0;
-            CAmount nFees = 0;
-            CAmount nModifiedFees = 0;
-            double dPriority = 0.0;
-            bool fSpendsCoinbase = false;
-            CAmount inChainInputValue;
-            {
-                auto grove = tailstormForest._BestGrove();
-                READLOCK(pool.cs_txmempool);
-                CCoinsViewCache *ptip = fTailstormEnabled ? tailstormForest.bestGroveCoins() : pcoinsTip;
-                assert(ptip);
-                if (fTailstormEnabled)
-                {
-                    if (grove != nullptr)
-                    {
-                        coinsBlockHash = grove->id();
-                        coinsBlockHeight = grove->summaryRootHeight();
-                    }
-                }
-
-                CCoinsViewMemPool viewMemPool(ptip, mempool);
-                view.SetBackend(viewMemPool);
-                // Consumed inputs may come from the tailstorm DAG, but read only inputs must be confirmed before being
-                // used.  So roCoinsTip points directly at the coins of the summary block tip.
-                // Recall that every transaction in a summary block is effectively seen as being executed
-                // simultaneously, so in subblocks you can continue to access spent UTXOs **as read only** until the
-                // summary block collapses the DAG.  This allows the behavior of the subblock DAG to mirror that of the
-                // summary block they collapse into.
-                roCoinsTip.SetBackend(*pcoinsTip);
-
-                // do all inputs exist?
-                if (pfMissingInputs)
-                {
-                    *pfMissingInputs = false;
-                    int inIdx = 0;
-                    for (const CTxIn &txin : tx->vin)
-                    {
-                        // At this point we begin to collect coins that are potential candidates for uncaching because
-                        // as soon as we make the call below to view.HaveCoin() any missing coins will be pulled into
-                        // cache. Therefore, any coin in this transaction that is not already in cache will be tracked
-                        // here such that if this transaction fails to enter the memory pool, we will then uncache those
-                        // coins that were not already present, unless the transaction is an orphan.
-                        //
-                        // We still want to keep orphantx coins in the event the orphantx is finally accepted into the
-                        // mempool or shows up in a block that is mined.  Therefore if pfMissingInputs returns true then
-                        // any coins in vCoinsToUncache will NOT be uncached.
-
-                        bool fSpent = false;
-                        bool fMissingOrSpent = false;
-                        if (txin.IsReadOnly())
-                        {
-                            if (!roCoinsTip.HaveCoinInCache(txin.prevout, fSpent))
-                            {
-                                // Read-only inputs can only refer to confirmed inputs
-                                // look in coins (utxo of blockchain tip, not mempool tip)
-                                // but ignore whether its spent (read-only spent coins are still accessible in this
-                                // block).
-                                if (!roCoinsTip.GetCoinFromDB(txin.prevout))
-                                {
-                                    state.relevantInput = inIdx;
-                                    state.relevantTxid = tx->GetId();
-                                    fMissingOrSpent = true;
-                                    LOG(MEMPOOL, "read-only input-does-not-exist: %d:%s\n", inIdx,
-                                        txin.prevout.hash.ToString());
-                                }
-                            }
-                        }
-                        else
-                        {
-                            vCoinsToUncache.push_back(txin.prevout);
-                            if (!view.HaveCoin(txin.prevout))
-                            {
-                                state.relevantInput = inIdx;
-                                state.relevantTxid = tx->GetId();
-                                fMissingOrSpent = true;
-                                LOG(MEMPOOL, "normal input-does-not-exist: %d:%s\n", inIdx,
-                                    txin.prevout.hash.ToString());
-                            }
-                        }
-                        if (fSpent || fMissingOrSpent)
-                        {
-                            if (debugger)
-                            {
-                                debugger->AddInvalidReason("input-does-not-exist: " + std::to_string(inIdx) + " " +
-                                                           txin.prevout.hash.ToString());
-                                // missing inputs are not mineable now. it may be mineable
-                                // in the future but it is not certain, assume it will not be
-                                debugger->mineable = false;
-                                debugger->futureMineable = false;
-                            }
-                            // fMissingInputs and not state.IsInvalid() is used to detect this condition, don't set
-                            // state.Invalid()
-                            LOG(MEMPOOL, "input-does-not-exist: %d:%s\n", inIdx, txin.prevout.hash.ToString());
-                            *pfMissingInputs = true;
-                            if (debugger == nullptr)
-                            {
-                                break; // There is no point checking any more once one fails, for orphans we will
-                                       // recheck
-                            }
-                        }
-                        inIdx++;
-                    }
-                    if (*pfMissingInputs == true)
-                    {
-                        if (debugger)
-                        {
-                            debugger->AddInvalidReason("inputs-are-missing");
-                            // missing inputs are not mineable now. it may be mineable
-                            // in the future but it is not certain, assume it will not be
-                            debugger->mineable = false;
-                            debugger->futureMineable = false;
-                            return false;
-                        }
-                        else
-                        {
-                            state.SetDebugMessage("inputs-are-missing");
-                            return false; // state.Invalid(false, REJECT_MISSING_INPUTS, "bad-txns-missing-inputs",
-                                          // "Inputs
-                            // unavailable in ParallelAcceptToMemoryPool", false);
-                        }
-                    }
-                }
-
-                // Bring the best block into scope
-                view.GetBestBlock();
-                roCoinsTip.GetBestBlock();
-
-                try
-                {
-                    nValueIn = tx->GetValueIn();
-                }
-                catch (const std::runtime_error &)
-                {
-                    // Declared input amounts come from the peer and are not range checked by CheckTransaction
-                    if (debugger)
-                    {
-                        debugger->AddInvalidReason("bad-txns-inputvalues-outofrange");
-                        debugger->mineable = false;
-                        debugger->futureMineable = false;
-                        return false;
-                    }
-                    return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputvalues-outofrange");
-                }
-                // NOTE this view function MUST be executed, so we can cache all inputs, before SetBackend(dummy)
-                CAmount viewValueIn = view.GetValueIn(*tx);
-                if (nValueIn != viewValueIn)
-                {
-                    if (debugger)
-                    {
-                        debugger->AddInvalidReason(
-                            strprintf("inconsistent input value: tx: %d,  UTXO: %d", nValueIn, viewValueIn));
-                        debugger->mineable = false;
-                        debugger->futureMineable = false;
-                    }
-                    else
-                    {
-                        return state.DoS(1, false, REJECT_INVALID, "inconsistent input value");
-                    }
-                }
-                // we have all inputs cached now, so switch back to dummy, so we don't need to keep lock on mempool
-                view.SetBackend(dummy);
-                roCoinsTip.SetBackend(dummy2);
-
-                // Only accept BIP68 sequence locked transactions that can be mined in the next
-                // block; we don't want our mempool filled up with transactions that can't
-                // be mined yet.
-                // Must keep pool.cs for this unless we change CheckSequenceLocks to take a
-                // CoinsViewCache instead of create its own
-                if (!CheckSequenceLocks(tx, STANDARD_LOCKTIME_VERIFY_FLAGS, chainTip, view, roCoinsTip, &lp, false))
-                {
-                    if (debugger)
-                    {
-                        debugger->AddInvalidReason("non-BIP68-final");
-                        // not mineable now but should be in the future
-                        debugger->mineable = false;
-                    }
-                    else
-                    {
-                        return state.DoS(0, false, REJECT_NONSTANDARD, "non-BIP68-final");
-                    }
-                }
-
-                try
-                {
-                    nValueOut = tx->GetValueOut();
-                }
-                catch (const std::runtime_error &)
-                {
-                    if (debugger)
-                    {
-                        debugger->AddInvalidReason("bad-txns-outputvalues-outofrange");
-                        debugger->mineable = false;
-                        debugger->futureMineable = false;
-                        return false;
-                    }
-                    return state.DoS(100, false, REJECT_INVALID, "bad-txns-outputvalues-outofrange");
-                }
-                nFees = viewValueIn - nValueOut;
-                LOG(MEMPOOL, "Value In: %d  Out: %d  Fees: %d\n", nValueIn, nValueOut, nFees);
-                nModifiedFees = nFees; // nModifiedFees includes any fee deltas from PrioritiseTransaction
-                double nPriorityDummy = 0;
-
-                // Search either id or idem for a user-applied priority modifier
-                pool._ApplyDeltas(id, nPriorityDummy, nModifiedFees);
-                pool._ApplyDeltas(idem, nPriorityDummy, nModifiedFees);
-
-                // Check for non-standard pay-to-script-hash in inputs
-                if (fRequireStandard && !AreInputsStandard(tx, view))
-                {
-                    if (debugger)
-                    {
-                        debugger->AddInvalidReason("bad-txns-nonstandard-inputs");
-                        debugger->standard = false;
-                        // if we require standard and this tx is not standard, we can not
-                        // mine now or in the future either
-                        debugger->mineable = false;
-                        debugger->futureMineable = false;
-                    }
-                    else
-                    {
-                        return state.Invalid(false, REJECT_NONSTANDARD, "bad-txns-nonstandard-inputs");
-                    }
-                }
-
-                // Get the priority
-                //
-                // And, keep track of transactions that spend a coinbase, which we re-scan
-                // during reorgs to ensure COINBASE_MATURITY is still met.
-                dPriority = view.GetPriority(*tx, chainTip->height(), inChainInputValue, fSpendsCoinbase);
-                // Check that input script constraints are satisfied
-                unsigned char sighashType = 0;
-                if (!CheckInputs(tx, state, view, roCoinsTip, true, flags, true, &resourceTracker, chainparams, nullptr,
-                        &sighashType, debugger))
-                {
-                    if (state.GetDebugMessage() == "")
-                        state.SetDebugMessage("CheckConsumedInputs failed");
-
-                    if (debugger && debugger->InputsCheck1IsValid())
-                    {
-                        debugger->AddInvalidReason(state.GetDebugMessage());
-                        debugger->mineable = false;
-                        debugger->futureMineable = false;
-                    }
-                    else
-                    {
-                        LOG(MEMPOOL, "CheckConsumedInputs failed for tx: %s reason: %s\n", id.ToString(),
-                            state.GetDebugMessage());
-                        return false;
-                    }
-                }
-            }
-
-            // Check that the transaction doesn't have an excessive number of sigops, making it impossible to mine.
-            {
-                nSigOps = resourceTracker.GetConsensusSigChecks();
-                if (nSigOps > MAX_TX_SIGCHECK_COUNT)
-                {
-                    if (debugger)
-                    {
-                        debugger->AddInvalidReason("bad-txns-too-many-sigchecks");
-                        // not mineable now or in the future under the current ruleset
-                        debugger->mineable = false;
-                        debugger->futureMineable = false;
-                    }
-                    else
-                    {
-                        return state.DoS(
-                            0, false, REJECT_INVALID, "bad-txns-too-many-sigchecks", false, strprintf("%d", nSigOps));
-                    }
-                }
-                // Place sigchecks into the mempool sigops field, since these are not cotemporaneous
-                // only show this log for a strange # of sigchecks (typically 1 per input)
-                if (nSigOps != tx->vin.size())
-                    LOG(MEMPOOL, "Tx %s has %d sigchecks\n", id.ToString(), nSigOps);
-            }
-
-            // Create a commit data entry
-            CTxMemPoolEntry entry(
-                tx, nFees, GetTime(), dPriority, chainTip->height(), inChainInputValue, fSpendsCoinbase, nSigOps, lp);
-
-            nSize = entry.GetTxSize();
-            if (fRelayPriority && (nModifiedFees < ::minRelayTxFee.GetFee(nSize)) &&
-                (!AllowFree(entry.GetPriority(chainTip->height() + 1))))
-            {
-                if (debugger)
-                {
-                    debugger->AddInvalidReason("insufficient-priority");
-                    debugger->AddInvalidReason("insufficient-fee: need " + std::to_string(minRelayTxFee.GetFee(nSize)) +
-                                               " was only " + std::to_string(nModifiedFees));
-                    debugger->AddInvalidReason("minimum-fee: " + std::to_string(minRelayTxFee.GetFee(nSize)));
-                    // fees are not a reason to mark something as not mineable, keep current mineable and futureMineable
-                    // values unchanged
-                    debugger->standard = false;
-                }
-                else
-                {
-                    // Require that free transactions have sufficient priority to be mined in the next block.
-                    LOG(MEMPOOL, "Txn fee %lld (%d - %d), priority fee delta was %lld\n", nFees, nValueIn, nValueOut,
-                        nModifiedFees - nFees);
-                    return state.DoS(0, false, REJECT_INSUFFICIENTFEE, "insufficient priority");
-                }
-            }
-            if (debugger)
-            {
-                debugger->txMetadata.emplace("size", std::to_string(nSize));
-                debugger->txMetadata.emplace("txfee", std::to_string(nModifiedFees));
-                debugger->txMetadata.emplace("txfeeneeded", std::to_string(minRelayTxFee.GetFee(nSize)));
-            }
-
-            /* Continuously rate-limit free (really, very-low-fee) transactions
-             * This mitigates 'penny-flooding' -- sending thousands of free transactions just to
-             * be annoying or make others' transactions take longer to confirm. */
-            static CCriticalSection cs_limiter;
-            {
-                LOCK(cs_limiter);
-
-                static int64_t nLastTime = GetTime();
-                int64_t nNow = GetTime();
-                minRelayTxFee = CFeeRate((CAmount)(minRelayFee.Value()));
-
-                // useful but spammy
-                // LOG(MEMPOOL,
-                //    "MempoolBytes:%ld LimitFreeRelay:%d FeesSatoshiPerKB:%ld TxBytes:%d "
-                //    "TxFees:%ld\n",
-                //    pool.GetTotalTxSize(), limitFreeRelay.Value(), nModifiedFees * 1000 / nSize, nSize,
-                //    nModifiedFees);
-                if (fLimitFree && nModifiedFees < ::minRelayTxFee.GetFee(nSize))
-                {
-                    static double dFreeCount = 0;
-
-                    // Use an exponentially decaying ~10-minute window:
-                    dFreeCount *= std::pow(1.0 - 1.0 / 600.0, (double)(nNow - nLastTime));
-                    nLastTime = nNow;
-
-                    // limitFreeRelay is in KB per minute but we multiply it
-                    //  by an extra 10 because we're using a 10 minute decay window.
-                    LOG(MEMPOOL, "Rate limit dFreeCount: %g => %g\n", dFreeCount, dFreeCount + nSize);
-                    if ((dFreeCount + nSize) >= (limitFreeRelay.Value() * 10 * 1000))
-                    {
-                        if (debugger)
-                        {
-                            debugger->AddInvalidReason("rate limited free transaction");
-                            // fees are not a reason to mark something as not mineable, keep current mineable and
-                            // futureMineable values unchanged
-                            debugger->standard = false;
-                        }
-                        else
-                        {
-                            LOG(MEMPOOL, "AcceptToMemoryPool : free transaction %s rejected by rate limiter\n",
-                                id.ToString());
-                            return state.DoS(0, false, REJECT_INSUFFICIENTFEE, "mempool min fee not met");
-                        }
-                    }
-                    dFreeCount += nSize;
-                }
-                else if (nModifiedFees < ::minRelayTxFee.GetFee(nSize))
-                {
-                    if (debugger)
-                    {
-                        debugger->AddInvalidReason("txpool min fee not met");
-                        // fees are not a reason to mark something as not mineable, keep current mineable and
-                        // futureMineable values unchanged
-                        debugger->standard = false;
-                    }
-                    else
-                    {
-                        LOG(MEMPOOL, "AcceptToMemoryPool : min fee not met for %s\n", id.ToString());
-                        return state.DoS(0, false, REJECT_INSUFFICIENTFEE, "mempool min fee not met");
-                    }
-                }
-            }
-#ifdef ENABLE_WALLET
-            // We calculate the recommended fee by looking at what's in the mempool.  This starts at 0 though for an
-            // empty mempool.  So set the minimum "absurd" fee to 10000 satoshies per byte.  If for some reason fees
-            // rise above that, you can specify up to 100x what other txns are paying in the mempool
-            if (fRejectAbsurdFee && nFees > std::max((int64_t)100L * nSize, maxTxFeeTweak.Value()) * 100)
-            {
-                if (debugger)
-                {
-                    debugger->AddInvalidReason("absurdly-high-fee");
-                    // fees are not a reason to mark something as not mineable, keep current mineable and futureMineable
-                    // values unchanged
-                    debugger->standard = false;
-                }
-                else
-                {
-                    return state.Invalid(false, REJECT_HIGHFEE, "absurdly-high-fee",
-                        strprintf("%d > %d", nFees, std::max((int64_t)100L * nSize, maxTxFeeTweak.Value()) * 100));
-                }
-            }
-#endif
-
-            // Check for repend before committing the tx to the mempool
-            respend.SetValid(true);
-            if (respend.IsRespend())
-            {
-                if (debugger)
-                {
-                    std::string conflicts("txn-txpool-conflict:");
-                    for (auto &c : respend.getConflicts())
-                    {
-                        conflicts.append(" ");
-                        conflicts.append(c.GetHex());
-                    }
-                    debugger->AddInvalidReason(conflicts);
-                }
-                else
-                {
-                    return state.Invalid(false, REJECT_CONFLICT, "txn-txpool-conflict");
-                }
-            }
-            else if (debugger == nullptr)
-            {
-                // If it's not a respend it may have a reclaimed orphan associated with it
-                entry.dsproof = respend.GetDsproof();
-
-                // Add entry to the commit queue
-                CTxCommitData eData;
-                eData.entry = std::move(entry);
-                eData.hash = id;
-
-                LOCK(cs_commitQ);
-                (*txCommitQ).insert(eData);
-            }
+            LOCK(cs_commitQ);
+            (*txCommitQ).insert(eData);
         }
-        uint64_t interval = (GetStopwatch() - start) / 1000;
-        // typically too much logging, but useful when optimizing tx validation
-        LOG(BENCH,
-            "ValidateTransaction success, time: %d, txid: %s, len: %d, sigops: %u, Vin: "
-            "%llu, Vout: %llu txidem: %s  over block %s:%s\n",
-            interval, tx->GetId().ToString(), nSize, (unsigned int)nSigOps, tx->vin.size(), tx->vout.size(),
-            tx->GetIdem().ToString(), coinsBlockHash.ToString(), coinsBlockHeight);
-        nTxValidationTime << interval;
+    }
+    uint64_t interval = (GetStopwatch() - start) / 1000;
+    // typically too much logging, but useful when optimizing tx validation
+    LOG(BENCH,
+        "ValidateTransaction success, time: %d, txid: %s, len: %d, sigops: %u, Vin: "
+        "%llu, Vout: %llu txidem: %s  over block %s:%s\n",
+        interval, tx->GetId().ToString(), nSize, (unsigned int)nSigOps, tx->vin.size(), tx->vout.size(),
+        tx->GetIdem().ToString(), coinsBlockHash.ToString(), coinsBlockHeight);
+    nTxValidationTime << interval;
 
-        // Update txn per second. We must do it here although technically the txn isn't in the mempool yet but
-        // rather in the CommitQ. However, if we don't do it here then we'll end up with very bursty and not very
-        // realistic processing throughput data.
-        mempool.UpdateTransactionsPerSecond();
+    // Update txn per second. We must do it here although technically the txn isn't in the mempool yet but
+    // rather in the CommitQ. However, if we don't do it here then we'll end up with very bursty and not very
+    // realistic processing throughput data.
+    mempool.UpdateTransactionsPerSecond();
 
-        return true;
+    return true;
+}
+
+bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
+    CValidationState &state,
+    const CTransactionRef &tx,
+    bool fLimitFree,
+    bool *pfMissingInputs,
+    bool fRejectAbsurdFee,
+    TransactionClass allowedTx,
+    std::vector<COutPoint> &vCoinsToUncache,
+    bool *isRespend,
+    CValidationDebugger *debugger)
+{
+    try
+    {
+        return ParallelAcceptToMemoryPoolImp(pool, state, tx, fLimitFree, pfMissingInputs, fRejectAbsurdFee, allowedTx,
+            vCoinsToUncache, isRespend, debugger);
     }
     catch (const std::bad_alloc &)
     {
