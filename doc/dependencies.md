@@ -12,7 +12,7 @@ These are the dependencies currently used by Bitcoin Unlimited. You can find ins
 | FreeType | [2.11.0](http://download.savannah.gnu.org/releases/freetype) |  | No |  |  |
 | GCC |  | [9.1](https://gcc.gnu.org/) | 9.1 |  |  |
 | HarfBuzz-NG |  |  |  |  |  |
-| libevent | [2.1.12-stable](https://github.com/libevent/libevent/releases) | 2.0.22 | No |  |  |
+| libevent | [2.1.13-stable](https://github.com/libevent/libevent/releases) | 2.0.22 | No |  |  |
 | libpng |  |  |  |  | [Yes](https://github.com/bitcoin/bitcoin/blob/master/depends/packages/qt.mk) |
 | libgmp | [6.3.0](https://gmplib.org) | 6.2.1 | |  |  |
 | MiniUPnPc | [2.0.20180203](http://miniupnp.free.fr/files) |  | No |  |  |
