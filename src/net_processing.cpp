@@ -3002,7 +3002,7 @@ bool ProcessMessage(CNode *pfrom,
     }
     else if (strCommand == NetMsgType::MEMPOOL && pfrom->fPeerWantsINV2)
     {
-        if (CNode::OutboundTargetReached(false) && pfrom->fWhitelisted)
+        if (CNode::OutboundTargetReached(false) && !pfrom->fWhitelisted)
         {
             pfrom->CloseSocketDisconnect("txpool request with bandwidth limit reached");
             return true;
