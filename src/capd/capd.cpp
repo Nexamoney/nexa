@@ -504,8 +504,17 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
             if (type == CAPD_QUERY_TYPE_MSG)
             {
                 quantity = std::min<uint32_t>(CAPD_QUERY_MAX_MSGS, quantity);
+                // Stop before the reply outgrows one network message; the total count lets the client page on
+                uint64_t replySize = sizeof(cookie) + sizeof(type) + sizeof(uint32_t) + GetSizeOfCompactSize(quantity);
+                uint32_t count = 0;
+                for (size_t i = start; i < msgs.size() && count < quantity; ++i, ++count)
+                {
+                    replySize += GetSerializeSize(*msgs[i], SER_NETWORK, PROTOCOL_VERSION);
+                    if (replySize > GetMaxAllowedNetMessage())
+                        break;
+                }
                 pfrom->PushMessageWithCookie(NetMsgType::CAPDQUERYREPLY, msgCookie | 0xFFFF, cookie, type,
-                    (uint32_t)msgs.size(), PtrVectorSpan<CapdMsgRef>(msgs, start, quantity));
+                    (uint32_t)msgs.size(), PtrVectorSpan<CapdMsgRef>(msgs, start, count));
             }
             else if (type == CAPD_QUERY_TYPE_MSG_HASH)
             {
