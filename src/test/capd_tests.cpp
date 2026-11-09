@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <boost/test/unit_test.hpp>
+#include <set>
 
+extern CTweak<uint64_t> maxAllowedNetMessage;
 extern uint64_t nMaxSendBufferSize;
 
 BOOST_FIXTURE_TEST_SUITE(capd_tests, BasicTestingSetup)
@@ -1464,6 +1466,72 @@ BOOST_AUTO_TEST_CASE(capd_query_reply_send_budget)
     BOOST_CHECK_LE(queued, GetMaxAllowedNetMessage() + CMessageHeader::HEADER_SIZE);
 
     node1.vLowPrioritySendMsg.clear();
+    msgpool.clear();
+}
+
+// A large CAPDQUERY result is split into pages that each fit in one network message
+BOOST_AUTO_TEST_CASE(capd_query_reply_pages)
+{
+    struct NetMessageLimit
+    {
+        uint64_t previous = maxAllowedNetMessage.Value();
+        NetMessageLimit() { maxAllowedNetMessage.Set(64 * 1024); } // keeps the proof-of-work setup small
+        ~NetMessageLimit() { maxAllowedNetMessage.Set(previous); }
+    } netMessageLimit;
+
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+    CNode node1(INVALID_SOCKET, CAddress(CService(ipv4Addr, 7777), NODE_NETWORK), "", false);
+    node1.isCapdEnabled = true;
+    node1.capd = new CapdNode(&node1); // owned and deleted by node1
+
+    msgpool.clear();
+    const size_t dataSize = GetMaxAllowedNetMessage() / 100;
+    for (int i = 0; i < CapdProtocol::CAPD_QUERY_MAX_MSGS; i++)
+    {
+        std::vector<uint8_t> data(dataSize, 0);
+        data[0] = '!';
+        data[1] = '!';
+        WriteLE32(&data[2], i);
+        CapdMsg m(data);
+        m.SetPowTargetHarderThanPriority(msgpool.GetLocalPriority() + 1.0);
+        m.Solve();
+        BOOST_REQUIRE_NO_THROW(msgpool.add(MsgRefCopy(m)));
+    }
+    std::vector<unsigned char> prefix = {'!', '!'};
+    BOOST_REQUIRE_EQUAL(msgpool.find(prefix).size(), (size_t)CapdProtocol::CAPD_QUERY_MAX_MSGS);
+
+    std::set<uint256> received;
+    for (uint32_t cookie = 1; received.size() < CapdProtocol::CAPD_QUERY_MAX_MSGS; ++cookie)
+    {
+        BOOST_REQUIRE_LE(cookie, (uint32_t)CapdProtocol::CAPD_QUERY_MAX_MSGS);
+        const uint32_t start = received.size();
+        CDataStream pkt = MsgMaker(node1, NetMsgType::CAPDQUERY,
+            [&](auto &p)
+            {
+                p << cookie << (uint8_t)CapdProtocol::CAPD_QUERY_TYPE_MSG << start
+                  << (uint32_t)CapdProtocol::CAPD_QUERY_MAX_MSGS << prefix;
+            });
+        BOOST_REQUIRE(HandleCapdMessage(node1, pkt));
+
+        CSerializeData wire;
+        BOOST_REQUIRE(node1.vLowPrioritySendMsg.pop_front(wire));
+        BOOST_REQUIRE_LE(wire.size(), GetMaxAllowedNetMessage() + CMessageHeader::HEADER_SIZE);
+        CDataStream reply(wire.begin() + CMessageHeader::HEADER_SIZE, wire.end(), SER_NETWORK, PROTOCOL_VERSION);
+        uint32_t replyCookie;
+        uint8_t type;
+        uint32_t total;
+        std::vector<CapdMsg> page;
+        reply >> replyCookie >> type >> total >> page;
+        BOOST_CHECK_EQUAL(replyCookie, cookie);
+        BOOST_CHECK_EQUAL(type, CapdProtocol::CAPD_QUERY_TYPE_MSG);
+        BOOST_CHECK_EQUAL(total, (uint32_t)CapdProtocol::CAPD_QUERY_MAX_MSGS);
+        BOOST_REQUIRE(!page.empty());
+        for (const CapdMsg &m : page)
+            received.insert(m.GetHash());
+    }
+    BOOST_CHECK_EQUAL(received.size(), (size_t)CapdProtocol::CAPD_QUERY_MAX_MSGS);
+
     msgpool.clear();
 }
 
