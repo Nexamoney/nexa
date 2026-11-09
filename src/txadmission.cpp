@@ -1516,6 +1516,10 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
 
         return true;
     }
+    catch (const std::bad_alloc &)
+    {
+        return state.DoS(0, false, REJECT_INVALID, "out-of-memory-while-processing-txn");
+    }
     catch (...)
     {
         if (debugger)
