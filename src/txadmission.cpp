@@ -1520,16 +1520,17 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
     {
         return state.DoS(0, false, REJECT_INVALID, "out-of-memory-while-processing-txn");
     }
-    catch (...)
+    catch (const std::exception &e)
     {
+        std::string message(strprintf("bad-txn-exception-thrown: %s", e.what()));
         if (debugger)
         {
-            debugger->AddInvalidReason("bad-txn-exception-thrown");
+            debugger->AddInvalidReason(message);
             debugger->mineable = false;
             debugger->futureMineable = false;
             return false;
         }
-        return state.DoS(20, false, REJECT_INVALID, "bad-txn-exception-thrown");
+        return state.DoS(20, false, REJECT_INVALID, message);
     }
 }
 
