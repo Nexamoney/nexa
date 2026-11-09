@@ -13,6 +13,7 @@
 #include "test/test_nexa.h"
 #include "uint256.h"
 #include "unlimited.h"
+#include "utiltime.h"
 
 #include <vector>
 
@@ -261,5 +262,26 @@ BOOST_AUTO_TEST_CASE(TestOpExecSharedStackBudget)
         SCRIPT_ERR_STACK_BYTES, 0);
 }
 
+
+// Hashing a near-1 MiB stack item costs the same single op as hashing 1 byte, so one template input
+// can hash about 8 GB within MAX_OPS_PER_SCRIPT_TEMPLATE. Such a script must be rejected.
+BOOST_AUTO_TEST_CASE(TestHashOpCostScalesWithItemSize)
+{
+    CScript script = CScript() << VchType(500, 0xa5);
+    for (int i = 0; i < 10; i++) // 500 << 10 = 512000 bytes; two copies still fit in MAX_SCRIPT_STACK_SIZE
+        script << OP_DUP << OP_CAT;
+    for (int i = 0; i < 16000; i++)
+        script << OP_DUP << OP_SHA256 << OP_DROP;
+    script << OP_DROP;
+    BOOST_CHECK(script.size() <= MAX_SCRIPT_TEMPLATE_SIZE);
+
+    ScriptMachine sm(MANDATORY_SCRIPT_VERIFY_FLAGS, ScriptImportedState(), MAX_OPS_PER_SCRIPT_TEMPLATE, 0xffffffff);
+    sm.maxScriptSize = MAX_SCRIPT_TEMPLATE_SIZE;
+    int64_t start = GetTimeMicros();
+    sm.Eval(script);
+    int64_t elapsed = GetTimeMicros() - start;
+    BOOST_CHECK_MESSAGE(sm.getError() != SCRIPT_ERR_OK,
+        "script hashing 16000 x 512000 bytes was accepted after " << elapsed / 1000 << " ms");
+}
 
 BOOST_AUTO_TEST_SUITE_END()
