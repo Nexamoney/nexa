@@ -1525,7 +1525,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
             debugger->futureMineable = false;
             return false;
         }
-        return state.DoS(100, false, REJECT_INVALID, "bad-txn-exception-thrown");
+        return state.DoS(20, false, REJECT_INVALID, "bad-txn-exception-thrown");
     }
 }
 
