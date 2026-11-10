@@ -36,6 +36,12 @@ static uint64_t CapdReplyBytes(const CapdMsg &msg)
     return GetSerializeSize(msg, SER_NETWORK, PROTOCOL_VERSION) + 9 + CMessageHeader::HEADER_SIZE;
 }
 
+// A pooled message must fit on its own in a CAPDQUERYREPLY: cookie, type, total and a 1 byte vector count
+static bool FitsQueryReply(const CapdMsg &msg)
+{
+    return GetSerializeSize(msg, SER_NETWORK, PROTOCOL_VERSION) + 10 <= GetMaxAllowedNetMessage();
+}
+
 uint64_t msgpoolMaxSize = CapdMsgPool::DEFAULT_MSG_POOL_MAX_SIZE;
 
 const uint64_t CAPD_MAX_INV_TO_SEND = 20000;
@@ -306,6 +312,8 @@ bool CapdMsgPool::LoadMsgPool(void)
         {
             CapdMsg msg;
             file >> msg;
+            if (!FitsQueryReply(msg))
+                continue; // saved before admission checked the size, or under a larger limit
             CapdMsgRef ref = std::make_shared<CapdMsg>(msg);
             {
                 ref->InitialPriority(); // fill the cache under the lock, a lone message is never compared on insert
@@ -402,6 +410,12 @@ bool CapdMsgPool::add(const CapdMsgRef &msg)
         {
             LOG(CAPD, "Message POW inconsistent");
             throw CapdMsgPoolException("Message POW inconsistent");
+        }
+
+        if (!FitsQueryReply(*msg))
+        {
+            LOG(CAPD, "Message too large for a query reply");
+            throw CapdMsgPoolException("Message too large");
         }
 
         // A later creation time buys priority, so creators are expected to backdate their messages
@@ -684,8 +698,7 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
             }
             catch (CapdMsgPoolException &e)
             {
-                // messsage was too low priority, drop it
-                LOG(CAPD, "Capd drop: message priority too low to add");
+                LOG(CAPD, "Capd drop: %s\n", e.what());
             }
         }
 
