@@ -1531,6 +1531,11 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
     }
     catch (const std::bad_alloc &)
     {
+        if (debugger)
+        {
+            debugger->AddInvalidReason("Validation could not complete: out of memory");
+            return false;
+        }
         return state.DoS(0, false, REJECT_INVALID, "out-of-memory-while-processing-txn");
     }
     catch (const std::exception &e)
