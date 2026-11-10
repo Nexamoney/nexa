@@ -1535,4 +1535,61 @@ BOOST_AUTO_TEST_CASE(capd_query_reply_pages)
     msgpool.clear();
 }
 
+// Restores the network message limit tweak when a test ends
+struct NetMessageLimitGuard
+{
+    uint64_t previous = maxAllowedNetMessage.Value();
+    ~NetMessageLimitGuard() { maxAllowedNetMessage.Set(previous); }
+};
+
+static CapdMsgRef MakeSolvedMsg(uint8_t prefix, size_t dataSize)
+{
+    std::vector<uint8_t> data(dataSize, prefix);
+    CapdMsg m(data);
+    m.SetPowTargetHarderThanPriority(msgpool.GetLocalPriority() + 1.0);
+    m.Solve();
+    return MsgRefCopy(m);
+}
+
+// A pooled message must fit on its own in a CAPDQUERYREPLY, which adds 10 bytes of payload to the message
+BOOST_AUTO_TEST_CASE(capd_pool_message_fits_query_reply)
+{
+    NetMessageLimitGuard guard;
+    msgpool.clear();
+    CapdMsgRef msg = MakeSolvedMsg('a', 1000);
+    const uint64_t msgSize = GetSerializeSize(*msg, SER_NETWORK, PROTOCOL_VERSION);
+
+    maxAllowedNetMessage.Set(msgSize + 9);
+    BOOST_CHECK_THROW(msgpool.add(msg), CapdMsgPoolException);
+    BOOST_CHECK_EQUAL(msgpool.Count(), 0U);
+
+    maxAllowedNetMessage.Set(msgSize + 10);
+    BOOST_CHECK_NO_THROW(msgpool.add(msg));
+    BOOST_CHECK_EQUAL(msgpool.Count(), 1U);
+
+    msgpool.clear();
+}
+
+// Loading the pool from disk applies the same size limit as admission
+BOOST_AUTO_TEST_CASE(capd_pool_load_drops_oversized)
+{
+    NetMessageLimitGuard guard;
+    msgpool.clear();
+    CapdMsgRef small = MakeSolvedMsg('s', 100);
+    CapdMsgRef big = MakeSolvedMsg('b', 1000);
+    msgpool.add(small);
+    msgpool.add(big);
+    BOOST_REQUIRE(msgpool.DumpMsgPool());
+    msgpool.clear();
+
+    maxAllowedNetMessage.Set(GetSerializeSize(*big, SER_NETWORK, PROTOCOL_VERSION) + 9);
+    BOOST_REQUIRE(msgpool.LoadMsgPool());
+    BOOST_CHECK_EQUAL(msgpool.Count(), 1U);
+    BOOST_CHECK_EQUAL(msgpool.find(std::vector<uint8_t>(2, 's')).size(), 1U);
+    BOOST_CHECK(msgpool.find(std::vector<uint8_t>(2, 'b')).empty());
+
+    msgpool.clear();
+    fs::remove(GetDataDir() / "msgpool.dat");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
