@@ -263,8 +263,32 @@ BOOST_AUTO_TEST_CASE(TestOpExecSharedStackBudget)
 }
 
 
+static const uint32_t limitedFlags[] = {STANDARD_SCRIPT_VERIFY_FLAGS, POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS};
+
+static ScriptError EvalError(const CScript &script, uint32_t flags, const ScriptImportedState &sis)
+{
+    ScriptMachine sm(flags, sis, MAX_OPS_PER_SCRIPT_TEMPLATE, 0xffffffff);
+    sm.maxScriptSize = MAX_SCRIPT_TEMPLATE_SIZE;
+    sm.Eval(script);
+    return sm.getError();
+}
+
+static ScriptError EvalError(const CScript &script, uint32_t flags)
+{
+    return EvalError(script, flags, ScriptImportedState());
+}
+
+// Runs op on a 500 byte item count times
+static CScript RepeatOnItem(opcodetype op, int count)
+{
+    CScript script = CScript() << VchType(500, 0xa5);
+    for (int i = 0; i < count; i++)
+        script << OP_DUP << op << OP_DROP;
+    return script << OP_DROP;
+}
+
 // Hashing a near-1 MiB stack item costs the same single op as hashing 1 byte, so one template input
-// can hash about 8 GB within MAX_OPS_PER_SCRIPT_TEMPLATE. Such a script must be rejected.
+// can hash about 8 GB within MAX_OPS_PER_SCRIPT_TEMPLATE. Policy, and consensus from upgrade2, must reject it.
 BOOST_AUTO_TEST_CASE(TestHashOpCostScalesWithItemSize)
 {
     CScript script = CScript() << VchType(500, 0xa5);
@@ -275,13 +299,74 @@ BOOST_AUTO_TEST_CASE(TestHashOpCostScalesWithItemSize)
     script << OP_DROP;
     BOOST_CHECK(script.size() <= MAX_SCRIPT_TEMPLATE_SIZE);
 
-    ScriptMachine sm(MANDATORY_SCRIPT_VERIFY_FLAGS, ScriptImportedState(), MAX_OPS_PER_SCRIPT_TEMPLATE, 0xffffffff);
-    sm.maxScriptSize = MAX_SCRIPT_TEMPLATE_SIZE;
-    int64_t start = GetTimeMicros();
-    sm.Eval(script);
-    int64_t elapsed = GetTimeMicros() - start;
-    BOOST_CHECK_MESSAGE(sm.getError() != SCRIPT_ERR_OK,
-        "script hashing 16000 x 512000 bytes was accepted after " << elapsed / 1000 << " ms");
+    for (uint32_t flags : limitedFlags)
+    {
+        int64_t start = GetTimeMicros();
+        ScriptError err = EvalError(script, flags);
+        int64_t elapsed = GetTimeMicros() - start;
+        BOOST_CHECK_MESSAGE(
+            err != SCRIPT_ERR_OK, "script hashing 16000 x 512000 bytes was accepted after " << elapsed / 1000 << " ms");
+    }
+}
+
+// An input may hash, or reverse, 4096 bytes plus twice the length of its scriptSig
+BOOST_AUTO_TEST_CASE(TestHashedBytesLimit)
+{
+    for (opcodetype op : {OP_SHA256, OP_HASH256, OP_HASH160, OP_RIPEMD160, OP_SHA1, OP_REVERSEBYTES})
+    {
+        for (uint32_t flags : limitedFlags)
+        {
+            BOOST_CHECK_MESSAGE(EvalError(RepeatOnItem(op, 8), flags) == SCRIPT_ERR_OK, GetOpName(op));
+            BOOST_CHECK_MESSAGE(EvalError(RepeatOnItem(op, 9), flags) != SCRIPT_ERR_OK, GetOpName(op));
+        }
+        // Not a consensus rule before upgrade2
+        BOOST_CHECK_MESSAGE(
+            EvalError(RepeatOnItem(op, 9), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK, GetOpName(op));
+    }
+
+    // A 1003 byte scriptSig allows 2006 more bytes
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0].scriptSig = CScript() << VchType(1000, 0);
+    ScriptImportedState sis;
+    sis.tx = MakeTransactionRef(tx);
+    sis.nIn = 0;
+    for (uint32_t flags : limitedFlags)
+    {
+        BOOST_CHECK(EvalError(RepeatOnItem(OP_SHA256, 12), flags, sis) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(RepeatOnItem(OP_SHA256, 13), flags, sis) != SCRIPT_ERR_OK);
+    }
+
+    // Scripts run by OP_EXEC share the allowance of the input
+    const CScript code = RepeatOnItem(OP_SHA256, 5);
+    CScript once = CScript() << Serialize(code) << OP_0 << OP_0 << OP_EXEC;
+    CScript twice = once;
+    twice << Serialize(code) << OP_0 << OP_0 << OP_EXEC;
+    for (uint32_t flags : limitedFlags)
+    {
+        BOOST_CHECK(EvalError(once, flags) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(twice, flags) != SCRIPT_ERR_OK);
+    }
+    BOOST_CHECK(EvalError(twice, MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
+}
+
+// A stack item may be 4096 bytes at most
+BOOST_AUTO_TEST_CASE(TestStackItemSizeLimit)
+{
+    const CScript fits = CScript() << VchType(4096, 0xa5);
+    const CScript tooLong = CScript() << VchType(4097, 0xa5);
+    const CScript catFits = CScript() << VchType(4095, 0xa5) << VchType(1, 0xa5) << OP_CAT;
+    const CScript catTooLong = CScript() << VchType(4096, 0xa5) << VchType(1, 0xa5) << OP_CAT;
+    for (uint32_t flags : limitedFlags)
+    {
+        BOOST_CHECK(EvalError(fits, flags) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(tooLong, flags) == SCRIPT_ERR_PUSH_SIZE);
+        BOOST_CHECK(EvalError(catFits, flags) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(catTooLong, flags) == SCRIPT_ERR_PUSH_SIZE);
+    }
+    // Not a consensus rule before upgrade2
+    BOOST_CHECK(EvalError(tooLong, MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
+    BOOST_CHECK(EvalError(catTooLong, MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
