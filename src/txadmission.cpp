@@ -880,7 +880,7 @@ bool AcceptToMemoryPool(CTxMemPool &pool,
     return res;
 }
 
-static bool ParallelAcceptToMemoryPoolImp(CTxMemPool &pool,
+static bool ParallelAcceptToMemoryPoolImpl(CTxMemPool &pool,
     CValidationState &state,
     const CTransactionRef &tx,
     bool fLimitFree,
@@ -1526,7 +1526,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
 {
     try
     {
-        return ParallelAcceptToMemoryPoolImp(pool, state, tx, fLimitFree, pfMissingInputs, fRejectAbsurdFee, allowedTx,
+        return ParallelAcceptToMemoryPoolImpl(pool, state, tx, fLimitFree, pfMissingInputs, fRejectAbsurdFee, allowedTx,
             vCoinsToUncache, isRespend, debugger);
     }
     catch (const std::bad_alloc &)
