@@ -542,19 +542,16 @@ BOOST_AUTO_TEST_CASE(string_opcodes_test)
 
         valtype extraB = b;
         extraB.push_back(0xad);
-        CheckOpError({extraA, b},
-            CScript() << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT
-                      << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP
-                      << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT
-                      << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP
-                      << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT
-                      << OP_DUP,
-            SCRIPT_ERR_STACK_BYTES);
-        CheckOpError({a, extraB},
-            CScript() << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT
-                      << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP
-                      << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT,
-            SCRIPT_ERR_STACK_BYTES);
+        CScript tooManyCats = CScript() << OP_CAT;
+        for (int j = 0; j < 20; j++)
+            tooManyCats << OP_DUP << OP_CAT;
+        for (const stacktype &items : {stacktype{extraA, b}, stacktype{a, extraB}})
+        {
+            CheckError(MANDATORY_SCRIPT_VERIFY_FLAGS, items, tooManyCats, SCRIPT_ERR_STACK_BYTES);
+            // The stack item size limit is reached first
+            CheckError(STANDARD_SCRIPT_VERIFY_FLAGS, items, tooManyCats, SCRIPT_ERR_PUSH_SIZE);
+            CheckError(POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS, items, tooManyCats, SCRIPT_ERR_PUSH_SIZE);
+        }
 
         CheckWorks(MANDATORY_SCRIPT_VERIFY_FLAGS, {extraA, b},
             CScript() << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT << OP_DUP << OP_CAT
@@ -862,6 +859,11 @@ static void CheckNum2BinSize(int64_t size)
             {
                 // From upgrade2 the result has a sign byte after size magnitude bytes
                 const int64_t extra = (flags & SCRIPT_UPGRADE2_OPCODES) ? 1 : 0;
+                if ((flags & SCRIPT_LIMIT_STACK_ITEM_SIZE) && size + extra > (int64_t)MAX_SCRIPT_ELEMENT_SIZE)
+                {
+                    CheckError(flags, original, script, SCRIPT_ERR_PUSH_SIZE);
+                    continue;
+                }
                 if (size <= (int64_t)MAX_SCRIPT_STACK_SIZE - extra)
                 {
                     // 0x01 padded with zeros (positive, so the sign byte is 0)
@@ -897,6 +899,8 @@ BOOST_AUTO_TEST_CASE(num2bin_size_above_32_bits_is_rejected)
         -two32,
         -two32 - 2,
         -int64Max,
+        MAX_SCRIPT_ELEMENT_SIZE,
+        MAX_SCRIPT_ELEMENT_SIZE + 1,
         maxWidth - 1,
         maxWidth,
         maxWidth + 1,

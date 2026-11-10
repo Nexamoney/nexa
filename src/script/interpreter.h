@@ -216,6 +216,9 @@ public:
     /** Maximum number of items in both stacks */
     unsigned int maxStackItems = 0;
 
+    /** Bytes fed to the hash ops and OP_REVERSEBYTES */
+    uint64_t hashedBytes = 0;
+
     ScriptMachineResourceTracker() {}
     /** Combine the results of this tracker and another tracker.
         @param parentsCurrentStackUse: you may provide a baseline of stack use which gets added to the stats to
@@ -226,6 +229,7 @@ public:
         consensusSigCheckCount += stats.consensusSigCheckCount;
         nOpCount += stats.nOpCount;
         nOpExec += stats.nOpExec;
+        hashedBytes += stats.hashedBytes;
         // Update the max used stack bytes if it exceeds ours (plus a baseline use)
         unsigned int totalUse = parentsCurrentStackUse + stats.maxStackBytes;
         if (maxStackBytes < totalUse)
@@ -241,6 +245,7 @@ public:
         nOpExecDepth = 0;
         maxStackBytes = 0;
         maxStackItems = 0;
+        hashedBytes = 0;
     }
 };
 
@@ -359,6 +364,8 @@ public:
     unsigned int maxOps;
     /** Maximum number of 2020-05-15 sigchecks allowed -- script will abort with error if this number is exceeded */
     unsigned int maxConsensusSigOps;
+    /** Maximum number of hashed bytes allowed under SCRIPT_LIMIT_HASHED_BYTES */
+    uint64_t maxHashedBytes = MAX_HASHED_BYTES_BASE;
     /** Maximum combined size of both stacks allowed -- script will abort with error if this number is exceeded */
     int64_t maxStackUse = 0;
     /** Maximum combined number of elements in both stacks -- script will abort with error if this number is exceeded */
@@ -381,6 +388,7 @@ public:
         vfExec = from.vfExec;
         maxOps = from.maxOps;
         maxConsensusSigOps = from.maxConsensusSigOps;
+        maxHashedBytes = from.maxHashedBytes;
         maxStackUse = from.maxStackUse;
         maxStackItems = from.maxStackItems;
         bigNumModulo = from.bigNumModulo;
@@ -402,6 +410,9 @@ public:
             maxStackUse = std::numeric_limits<unsigned int>::max();
             maxStackItems = GENESIS_MAX_STACK_ITEMS;
         }
+        // Like the sigchecks rule, the allowance grows with the scriptSig
+        if (sis.tx && sis.nIn < sis.tx->vin.size())
+            maxHashedBytes += MAX_HASHED_BYTES_PER_SCRIPTSIG_BYTE * sis.tx->vin[sis.nIn].scriptSig.size();
     }
 
     const VchType &stacktop(int i);
@@ -465,6 +476,13 @@ public:
     int setPos(size_t offset);
 
     bool withinStackWidth(unsigned int size) { return ::withinStackWidth(size, flags); }
+
+    /** Count bytes fed to a hash op or OP_REVERSEBYTES. Returns false if the input is over its allowance */
+    bool countHashedBytes(uint64_t size)
+    {
+        stats.hashedBytes += size;
+        return !(flags & SCRIPT_LIMIT_HASHED_BYTES) || stats.hashedBytes <= maxHashedBytes;
+    }
 
     // Returns info about the next instruction to be run:
     // first bool is true if the instruction will be executed (false if this is passing across a not-taken branch)

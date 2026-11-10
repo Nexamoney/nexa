@@ -104,6 +104,11 @@ enum
     // Fail OP_WITHIN when x < max && x != min: before !77 it computed x <= min && x < max, so nodes without the fix
     // disagree on those results. Policy only, until upgrade2.
     SCRIPT_VERIFY_UNAMBIGUOUS_WITHIN = (1U << 19),
+    // Limit the bytes an input feeds to the hash ops and OP_REVERSEBYTES (see MAX_HASHED_BYTES_BASE): their cost
+    // grows with the item, but they count as one op. Policy before Upgrade2, consensus after.
+    SCRIPT_LIMIT_HASHED_BYTES = (1U << 21),
+    // Limit a stack item to MAX_SCRIPT_ELEMENT_SIZE bytes. Policy before Upgrade2, consensus after.
+    SCRIPT_LIMIT_STACK_ITEM_SIZE = (1U << 22),
 };
 
 #endif // NEXA_SCRIPT_SCRIPTFLAGS_H

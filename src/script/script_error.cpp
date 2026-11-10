@@ -140,6 +140,8 @@ const char *ScriptErrorString(const ScriptError serror)
         return "Invalid parameter";
     case SCRIPT_ERR_AMBIGUOUS_WITHIN:
         return "OP_WITHIN result differs between node versions";
+    case SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED:
+        return "Validation resources exceeded (hashed bytes)";
 
     case SCRIPT_ERR_UNKNOWN_ERROR:
     case SCRIPT_ERR_ERROR_COUNT:

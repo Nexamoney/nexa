@@ -828,6 +828,7 @@ bool ScriptMachine::Step()
                     ScriptMachine sm(
                         flags, sis, maxOps - stats.nOpCount, maxConsensusSigOps - stats.consensusSigCheckCount);
                     sm.stats.nOpExecDepth = stats.nOpExecDepth + 1;
+                    sm.maxHashedBytes = maxHashedBytes - std::min(maxHashedBytes, stats.hashedBytes);
                     sm.StackReserve(paramQty);
                     for (int i = 0; i < paramQty; i++)
                     {
@@ -1806,6 +1807,8 @@ bool ScriptMachine::Step()
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     }
                     const valtype &vch = stacktop(-1);
+                    if (!countHashedBytes(vch.size()))
+                        return set_error(serror, SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED);
                     valtype vchHash((opcode == OP_RIPEMD160 || opcode == OP_SHA1 || opcode == OP_HASH160) ? 20 : 32);
                     if (opcode == OP_RIPEMD160)
                     {
@@ -2097,6 +2100,8 @@ bool ScriptMachine::Step()
                     bool fSuccess = false;
                     if (vchSig.size())
                     {
+                        if (!countHashedBytes(vchMessage.size()))
+                            return set_error(serror, SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED);
                         valtype vchHash(32);
                         CSHA256().Write(vchMessage.data(), vchMessage.size()).Finalize(vchHash.data());
                         uint256 messagehash(vchHash);
@@ -2191,6 +2196,8 @@ bool ScriptMachine::Step()
 
                     // The size doesn't change when reversing so we can do it in places
                     valtype &data = mstacktop(-1);
+                    if (!countHashedBytes(data.size()))
+                        return set_error(serror, SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED);
                     std::reverse(data.begin(), data.end());
                 }
                 break;

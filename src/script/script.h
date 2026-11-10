@@ -56,6 +56,13 @@ A max size of 100000 bytes and 50000 non-push opcodes was chosen as an initial l
 // (restriction relaxed in fork, use [withinStackWidth(unsigned int size)] now)
 static const unsigned int GENESIS_MAX_SCRIPT_ELEMENT_SIZE = 520;
 
+// Maximum number of bytes in a stack item under SCRIPT_LIMIT_STACK_ITEM_SIZE
+static const unsigned int MAX_SCRIPT_ELEMENT_SIZE = 4096;
+
+// Under SCRIPT_LIMIT_HASHED_BYTES an input may hash this many bytes, plus this many per byte of its scriptSig
+static const uint64_t MAX_HASHED_BYTES_BASE = 4096;
+static const uint64_t MAX_HASHED_BYTES_PER_SCRIPTSIG_BYTE = 2;
+
 // Maximum number of total bytes allowed in the script stack
 // (restriction added into fork 1)
 static const unsigned int MAX_SCRIPT_STACK_SIZE = 1024 * 1024;

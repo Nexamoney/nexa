@@ -235,6 +235,8 @@ bool ScriptMachine::opMerkleRoot()
         else
         {
             auto tmp = stackItemAt(-1).asVch();
+            if (!countHashedBytes(tmp.size()))
+                return set_error(&error, SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED);
             HashMpLeaf(leafAlg, tmp, elements[i]);
         }
         PopStack();

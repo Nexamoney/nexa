@@ -23,6 +23,8 @@ StackItem::StackItem(IntStackType, uint64_t i) : type(StackElementType::VCH)
 /** Return true if the passed size in bytes is within the allowed sizes for a single stack item */
 bool withinStackWidth(unsigned int size, uint64_t scriptFlags)
 {
+    if ((scriptFlags & SCRIPT_LIMIT_STACK_ITEM_SIZE) && size > MAX_SCRIPT_ELEMENT_SIZE)
+        return false;
     // Ignore stack width if we are choosing to not enforce it
     if (scriptFlags & SCRIPT_RELAX_STACK_WIDTH)
     {
