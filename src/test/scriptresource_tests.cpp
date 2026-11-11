@@ -8,6 +8,7 @@
 #include "key.h"
 #include "policy/policy.h"
 #include "pubkey.h"
+#include "script/merkleproof.h"
 #include "script/script.h"
 #include "script/sighashtype.h"
 #include "script/standard.h"
@@ -350,6 +351,24 @@ BOOST_AUTO_TEST_CASE(TestHashedBytesLimit)
         BOOST_CHECK(EvalError(twice, flags) != SCRIPT_ERR_OK);
     }
     BOOST_CHECK(EvalError(twice, MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
+}
+
+// OP_MERKLEROOT hashes 33 bytes for each level of a proof whose sibling is empty
+BOOST_AUTO_TEST_CASE(TestMerkleRootNodeHashingIsCounted)
+{
+    const auto proofOfDepth = [](int depth)
+    {
+        return CScript() << VchType(depth, MULTIPROOF_RIGHT_IS_EMPTY) << VchType(32, 0xa5) << OP_1 << OP_0
+                         << OP_MERKLEROOT;
+    };
+    // 124 * 33 = 4092 bytes
+    for (uint32_t flags : limitedFlags)
+    {
+        BOOST_CHECK(EvalError(proofOfDepth(124), flags) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(proofOfDepth(125), flags) == SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED);
+    }
+    // Not a consensus rule before upgrade2
+    BOOST_CHECK(EvalError(proofOfDepth(125), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
 }
 
 // Pushes a 500 byte item, then copies it count times
