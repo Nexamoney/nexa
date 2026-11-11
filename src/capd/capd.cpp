@@ -36,10 +36,11 @@ static uint64_t CapdReplyBytes(const CapdMsg &msg)
     return GetSerializeSize(msg, SER_NETWORK, PROTOCOL_VERSION) + 9 + CMessageHeader::HEADER_SIZE;
 }
 
-// A pooled message must fit on its own in a CAPDQUERYREPLY: cookie, type, total and a 1 byte vector count
-static bool FitsQueryReply(const CapdMsg &msg)
+// A pooled message must fit on its own in any P2P message that carries it
+static bool FitsNetMessage(const CapdMsg &msg)
 {
-    return GetSerializeSize(msg, SER_NETWORK, PROTOCOL_VERSION) + 10 <= GetMaxAllowedNetMessage();
+    return GetSerializeSize(msg, SER_NETWORK, PROTOCOL_VERSION) + CAPD_MSG_ENVELOPE_RESERVE <=
+           GetMaxAllowedNetMessage();
 }
 
 uint64_t msgpoolMaxSize = CapdMsgPool::DEFAULT_MSG_POOL_MAX_SIZE;
@@ -312,7 +313,7 @@ bool CapdMsgPool::LoadMsgPool(void)
         {
             CapdMsg msg;
             file >> msg;
-            if (!FitsQueryReply(msg))
+            if (!FitsNetMessage(msg))
                 continue; // saved before admission checked the size, or under a larger limit
             CapdMsgRef ref = std::make_shared<CapdMsg>(msg);
             {
@@ -412,9 +413,9 @@ bool CapdMsgPool::add(const CapdMsgRef &msg)
             throw CapdMsgPoolException("Message POW inconsistent");
         }
 
-        if (!FitsQueryReply(*msg))
+        if (!FitsNetMessage(*msg))
         {
-            LOG(CAPD, "Message too large for a query reply");
+            LOG(CAPD, "Message too large to send");
             throw CapdMsgPoolException("Message too large");
         }
 

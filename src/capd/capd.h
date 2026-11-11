@@ -420,6 +420,10 @@ struct MsgHashExtractor
     result_type operator()(const CapdMsgRef &msg) const { return msg->GetHash(); }
 };
 
+//! Bytes of the network message limit kept for the P2P message that carries a CAPD message (a CAPDQUERYREPLY
+//! adds 10), so the largest CAPD message is that much smaller
+static const uint64_t CAPD_MSG_ENVELOPE_RESERVE = 128;
+
 class CapdMsgPoolException : public std::exception
 {
 public:

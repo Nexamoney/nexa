@@ -10,9 +10,11 @@
 #include <algorithm>
 #include <boost/test/unit_test.hpp>
 #include <set>
+#include <univalue.h>
 
 extern CTweak<uint64_t> maxAllowedNetMessage;
 extern uint64_t nMaxSendBufferSize;
+extern UniValue capdrpc(const UniValue &params, bool fHelp);
 
 BOOST_FIXTURE_TEST_SUITE(capd_tests, BasicTestingSetup)
 
@@ -1551,7 +1553,7 @@ static CapdMsgRef MakeSolvedMsg(uint8_t prefix, size_t dataSize)
     return MsgRefCopy(m);
 }
 
-// A pooled message must fit on its own in a CAPDQUERYREPLY, which adds 10 bytes of payload to the message
+// A pooled message must leave CAPD_MSG_ENVELOPE_RESERVE bytes of the network message limit for its P2P envelope
 BOOST_AUTO_TEST_CASE(capd_pool_message_fits_query_reply)
 {
     NetMessageLimitGuard guard;
@@ -1559,12 +1561,34 @@ BOOST_AUTO_TEST_CASE(capd_pool_message_fits_query_reply)
     CapdMsgRef msg = MakeSolvedMsg('a', 1000);
     const uint64_t msgSize = GetSerializeSize(*msg, SER_NETWORK, PROTOCOL_VERSION);
 
-    maxAllowedNetMessage.Set(msgSize + 9);
+    maxAllowedNetMessage.Set(msgSize + CAPD_MSG_ENVELOPE_RESERVE - 1);
     BOOST_CHECK_THROW(msgpool.add(msg), CapdMsgPoolException);
     BOOST_CHECK_EQUAL(msgpool.Count(), 0U);
 
-    maxAllowedNetMessage.Set(msgSize + 10);
+    maxAllowedNetMessage.Set(msgSize + CAPD_MSG_ENVELOPE_RESERVE);
     BOOST_CHECK_NO_THROW(msgpool.add(msg));
+    BOOST_CHECK_EQUAL(msgpool.Count(), 1U);
+
+    msgpool.clear();
+}
+
+// capd send reports a message that is too large to send, and does not pool it
+BOOST_AUTO_TEST_CASE(capd_send_rpc_refuses_oversized)
+{
+    NetMessageLimitGuard guard;
+    msgpool.clear();
+    maxAllowedNetMessage.Set(1000);
+
+    const auto send = [](size_t dataSize)
+    {
+        UniValue params(UniValue::VARR);
+        params.push_back("send");
+        params.push_back(std::string(2 * dataSize, 'a')); // hex
+        return capdrpc(params, false);
+    };
+    BOOST_CHECK_THROW(send(1000), CapdMsgPoolException);
+    BOOST_CHECK_EQUAL(msgpool.Count(), 0U);
+    BOOST_CHECK_NO_THROW(send(100));
     BOOST_CHECK_EQUAL(msgpool.Count(), 1U);
 
     msgpool.clear();
@@ -1582,7 +1606,7 @@ BOOST_AUTO_TEST_CASE(capd_pool_load_drops_oversized)
     BOOST_REQUIRE(msgpool.DumpMsgPool());
     msgpool.clear();
 
-    maxAllowedNetMessage.Set(GetSerializeSize(*big, SER_NETWORK, PROTOCOL_VERSION) + 9);
+    maxAllowedNetMessage.Set(GetSerializeSize(*big, SER_NETWORK, PROTOCOL_VERSION) + CAPD_MSG_ENVELOPE_RESERVE - 1);
     BOOST_REQUIRE(msgpool.LoadMsgPool());
     BOOST_CHECK_EQUAL(msgpool.Count(), 1U);
     BOOST_CHECK_EQUAL(msgpool.find(std::vector<uint8_t>(2, 's')).size(), 1U);
