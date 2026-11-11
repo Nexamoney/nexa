@@ -216,7 +216,7 @@ public:
     /** Maximum number of items in both stacks */
     unsigned int maxStackItems = 0;
 
-    /** Bytes fed to the hash ops and OP_REVERSEBYTES */
+    /** Bytes fed to the hash ops */
     uint64_t hashedBytes = 0;
 
     /** Bytes of the stack items pushed, copied, moved or rewritten */
@@ -489,7 +489,7 @@ public:
 
     bool withinStackWidth(unsigned int size) { return ::withinStackWidth(size, flags); }
 
-    /** Count bytes fed to a hash op or OP_REVERSEBYTES. Returns false if the input is over its allowance */
+    /** Count bytes fed to a hash op. Returns false if the input is over its allowance */
     bool countHashedBytes(uint64_t size)
     {
         stats.hashedBytes += size;

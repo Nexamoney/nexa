@@ -104,11 +104,11 @@ enum
     // Fail OP_WITHIN when x < max && x != min: before !77 it computed x <= min && x < max, so nodes without the fix
     // disagree on those results. Policy only, until upgrade2.
     SCRIPT_VERIFY_UNAMBIGUOUS_WITHIN = (1U << 19),
-    // Limit the bytes an input feeds to the hash ops and OP_REVERSEBYTES (see MAX_HASHED_BYTES_BASE): their cost
-    // grows with the item, but they count as one op. Policy before Upgrade2, consensus after.
+    // Limit the bytes an input feeds to the hash ops (see MAX_HASHED_BYTES_BASE): their cost grows with the item,
+    // but they count as one op. Policy before Upgrade2, consensus after.
     SCRIPT_LIMIT_HASHED_BYTES = (1U << 21),
-    // Limit the bytes of the stack items an input pushes, copies, moves or rewrites (see MAX_COPIED_BYTES_BASE),
-    // for the same reason. Policy before Upgrade2, consensus after.
+    // Limit the bytes of the stack items an input pushes, copies, moves, rewrites or compares (see
+    // MAX_COPIED_BYTES_BASE), for the same reason. Policy before Upgrade2, consensus after.
     SCRIPT_LIMIT_COPIED_BYTES = (1U << 22),
     // Fail the conversion to a BigNum of a number wider than MAX_BIGNUM_CONVERSION_MAGNITUDE_SIZE: reducing it
     // modulo the BMD costs one op whatever its size. Policy before Upgrade2, consensus after.

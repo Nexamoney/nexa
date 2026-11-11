@@ -1329,6 +1329,7 @@ bool ScriptMachine::Step()
                         return set_error(serror, SCRIPT_ERR_INVALID_REGISTER);
                     }
                     // store the value in the register
+                    countCopiedBytes(register_value.size());
                     arrRegisters[register_num] = register_value;
                     PopStack(); // pop the register number off the stack
                     PopStack(); // pop the stored value off the stack
@@ -1472,6 +1473,8 @@ bool ScriptMachine::Step()
                         {
                             const valtype &vch1 = stacktop(-2);
                             const valtype &vch2 = stacktop(-1);
+                            if (vch1.size() == vch2.size())
+                                countCopiedBytes(vch1.size());
                             fEqual = (vch1 == vch2);
                             /*  Super-useful script debugging printout
                             if (opcode == OP_EQUALVERIFY)
@@ -2210,8 +2213,7 @@ bool ScriptMachine::Step()
 
                     // The size doesn't change when reversing so we can do it in places
                     valtype &data = mstacktop(-1);
-                    if (!countHashedBytes(data.size()))
-                        return set_error(serror, SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED);
+                    countCopiedBytes(data.size());
                     std::reverse(data.begin(), data.end());
                 }
                 break;
