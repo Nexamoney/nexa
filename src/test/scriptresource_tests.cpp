@@ -312,22 +312,22 @@ BOOST_AUTO_TEST_CASE(TestHashOpCostScalesWithItemSize)
     }
 }
 
-// An input may hash 4096 bytes plus twice the length of its scriptSig
+// An input may hash 8192 bytes plus the length of its scriptSig and of the script of the output it spends
 BOOST_AUTO_TEST_CASE(TestHashedBytesLimit)
 {
     for (opcodetype op : {OP_SHA256, OP_HASH256, OP_HASH160, OP_RIPEMD160, OP_SHA1})
     {
         for (uint32_t flags : limitedFlags)
         {
-            BOOST_CHECK_MESSAGE(EvalError(RepeatOnItem(op, 8), flags) == SCRIPT_ERR_OK, GetOpName(op));
-            BOOST_CHECK_MESSAGE(EvalError(RepeatOnItem(op, 9), flags) != SCRIPT_ERR_OK, GetOpName(op));
+            BOOST_CHECK_MESSAGE(EvalError(RepeatOnItem(op, 16), flags) == SCRIPT_ERR_OK, GetOpName(op));
+            BOOST_CHECK_MESSAGE(EvalError(RepeatOnItem(op, 17), flags) != SCRIPT_ERR_OK, GetOpName(op));
         }
         // Not a consensus rule before upgrade2
         BOOST_CHECK_MESSAGE(
-            EvalError(RepeatOnItem(op, 9), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK, GetOpName(op));
+            EvalError(RepeatOnItem(op, 17), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK, GetOpName(op));
     }
 
-    // A 1003 byte scriptSig allows 2006 more bytes
+    // A 1003 byte scriptSig allows 1003 more bytes
     CMutableTransaction tx;
     tx.vin.resize(1);
     tx.vin[0].scriptSig = CScript() << VchType(1000, 0);
@@ -336,12 +336,20 @@ BOOST_AUTO_TEST_CASE(TestHashedBytesLimit)
     sis.nIn = 0;
     for (uint32_t flags : limitedFlags)
     {
-        BOOST_CHECK(EvalError(RepeatOnItem(OP_SHA256, 12), flags, sis) == SCRIPT_ERR_OK);
-        BOOST_CHECK(EvalError(RepeatOnItem(OP_SHA256, 13), flags, sis) != SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(RepeatOnItem(OP_SHA256, 18), flags, sis) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(RepeatOnItem(OP_SHA256, 19), flags, sis) != SCRIPT_ERR_OK);
+    }
+
+    // and a 500 byte script in the spent output 500 more
+    sis.spentCoins.emplace_back(0, CScript() << VchType(497, 0));
+    for (uint32_t flags : limitedFlags)
+    {
+        BOOST_CHECK(EvalError(RepeatOnItem(OP_SHA256, 19), flags, sis) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(RepeatOnItem(OP_SHA256, 20), flags, sis) != SCRIPT_ERR_OK);
     }
 
     // Scripts run by OP_EXEC share the allowance of the input
-    const CScript code = RepeatOnItem(OP_SHA256, 5);
+    const CScript code = RepeatOnItem(OP_SHA256, 9);
     CScript once = CScript() << Serialize(code) << OP_0 << OP_0 << OP_EXEC;
     CScript twice = once;
     twice << Serialize(code) << OP_0 << OP_0 << OP_EXEC;
@@ -361,14 +369,14 @@ BOOST_AUTO_TEST_CASE(TestMerkleRootNodeHashingIsCounted)
         return CScript() << VchType(depth, MULTIPROOF_RIGHT_IS_EMPTY) << VchType(32, 0xa5) << OP_1 << OP_0
                          << OP_MERKLEROOT;
     };
-    // 124 * 33 = 4092 bytes
+    // 248 * 33 = 8184 bytes
     for (uint32_t flags : limitedFlags)
     {
-        BOOST_CHECK(EvalError(proofOfDepth(124), flags) == SCRIPT_ERR_OK);
-        BOOST_CHECK(EvalError(proofOfDepth(125), flags) == SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED);
+        BOOST_CHECK(EvalError(proofOfDepth(248), flags) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(proofOfDepth(249), flags) == SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED);
     }
     // Not a consensus rule before upgrade2
-    BOOST_CHECK(EvalError(proofOfDepth(125), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
+    BOOST_CHECK(EvalError(proofOfDepth(249), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
 }
 
 // Pushes a 500 byte item, then copies it count times

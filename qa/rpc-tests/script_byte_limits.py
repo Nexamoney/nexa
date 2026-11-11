@@ -93,11 +93,12 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
         node.generate(100)
         tip = self.get_best_block(node)
 
-        # An input may hash 4096 bytes plus twice the length of its scriptSig, here about 540 bytes
-        within = hash_item(10)
-        over = hash_item(11)
-        # the same 5500 bytes are allowed once the scriptSig is 200 bytes longer
-        over_padded = hash_item(11, drop_first=True)
+        # An input may hash 8192 bytes plus the length of its scriptSig, here about 560 bytes, and of the script
+        # of the output it spends
+        within = hash_item(17)
+        over = hash_item(18)
+        # the same 9000 bytes are allowed once the scriptSig is 300 bytes longer
+        over_padded = hash_item(18, drop_first=True)
         # An input may copy 2 MiB plus 16 times the length of its scriptSig. Building the 512000 byte item copies
         # 1535000 bytes
         big_item = [b'\xa5' * 500] + [OP_DUP, OP_CAT] * 10
@@ -120,7 +121,7 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
 
         spend_within = self.spend(funds[0], within)
         spend_over = self.spend(funds[1], over)
-        spend_over_padded = self.spend(funds[2], over_padded, [b'\x00' * 200])
+        spend_over_padded = self.spend(funds[2], over_padded, [b'\x00' * 300])
         spend_copy_within = self.spend(funds[3], copy_within)
         spend_copy_over = self.spend(funds[4], copy_over)
         spend_too_wide = self.spend(funds[5], too_wide)
