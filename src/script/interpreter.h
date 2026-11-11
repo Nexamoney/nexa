@@ -219,6 +219,9 @@ public:
     /** Bytes fed to the hash ops and OP_REVERSEBYTES */
     uint64_t hashedBytes = 0;
 
+    /** Bytes of the stack items pushed, copied, moved or rewritten */
+    uint64_t copiedBytes = 0;
+
     ScriptMachineResourceTracker() {}
     /** Combine the results of this tracker and another tracker.
         @param parentsCurrentStackUse: you may provide a baseline of stack use which gets added to the stats to
@@ -230,6 +233,7 @@ public:
         nOpCount += stats.nOpCount;
         nOpExec += stats.nOpExec;
         hashedBytes += stats.hashedBytes;
+        copiedBytes += stats.copiedBytes;
         // Update the max used stack bytes if it exceeds ours (plus a baseline use)
         unsigned int totalUse = parentsCurrentStackUse + stats.maxStackBytes;
         if (maxStackBytes < totalUse)
@@ -246,6 +250,7 @@ public:
         maxStackBytes = 0;
         maxStackItems = 0;
         hashedBytes = 0;
+        copiedBytes = 0;
     }
 };
 
@@ -366,6 +371,8 @@ public:
     unsigned int maxConsensusSigOps;
     /** Maximum number of hashed bytes allowed under SCRIPT_LIMIT_HASHED_BYTES */
     uint64_t maxHashedBytes = MAX_HASHED_BYTES_BASE;
+    /** Maximum number of copied bytes allowed under SCRIPT_LIMIT_COPIED_BYTES */
+    uint64_t maxCopiedBytes = MAX_COPIED_BYTES_BASE;
     /** Maximum combined size of both stacks allowed -- script will abort with error if this number is exceeded */
     int64_t maxStackUse = 0;
     /** Maximum combined number of elements in both stacks -- script will abort with error if this number is exceeded */
@@ -389,6 +396,7 @@ public:
         maxOps = from.maxOps;
         maxConsensusSigOps = from.maxConsensusSigOps;
         maxHashedBytes = from.maxHashedBytes;
+        maxCopiedBytes = from.maxCopiedBytes;
         maxStackUse = from.maxStackUse;
         maxStackItems = from.maxStackItems;
         bigNumModulo = from.bigNumModulo;
@@ -410,9 +418,13 @@ public:
             maxStackUse = std::numeric_limits<unsigned int>::max();
             maxStackItems = GENESIS_MAX_STACK_ITEMS;
         }
-        // Like the sigchecks rule, the allowance grows with the scriptSig
+        // Like the sigchecks rule, the allowances grow with the scriptSig
         if (sis.tx && sis.nIn < sis.tx->vin.size())
-            maxHashedBytes += MAX_HASHED_BYTES_PER_SCRIPTSIG_BYTE * sis.tx->vin[sis.nIn].scriptSig.size();
+        {
+            const uint64_t scriptSigSize = sis.tx->vin[sis.nIn].scriptSig.size();
+            maxHashedBytes += MAX_HASHED_BYTES_PER_SCRIPTSIG_BYTE * scriptSigSize;
+            maxCopiedBytes += MAX_COPIED_BYTES_PER_SCRIPTSIG_BYTE * scriptSigSize;
+        }
     }
 
     const VchType &stacktop(int i);
@@ -482,6 +494,28 @@ public:
     {
         stats.hashedBytes += size;
         return !(flags & SCRIPT_LIMIT_HASHED_BYTES) || stats.hashedBytes <= maxHashedBytes;
+    }
+
+    /** Count the bytes of a stack item that an opcode pushes, copies, moves or rewrites.
+        Throws if the input is over its allowance */
+    void countCopiedBytes(uint64_t size)
+    {
+        stats.copiedBytes += size;
+        if ((flags & SCRIPT_LIMIT_COPIED_BYTES) && stats.copiedBytes > maxCopiedBytes)
+            throw script_error(SCRIPT_ERR_COPIED_BYTES_LIMIT_EXCEEDED, "ScriptMachine: copied bytes exceeded");
+    }
+
+    /** Convert a stack item to a BigNum modulo the BMD.
+        Throws if the item holds a number wider than SCRIPT_LIMIT_BIGNUM_CONVERSION allows */
+    BigNum toBigNum(const StackItem &item)
+    {
+        if (!item.isVch())
+            return item.asBigNum(bigNumModulo);
+        BigNum bn;
+        bn.deserialize(item.data());
+        if ((flags & SCRIPT_LIMIT_BIGNUM_CONVERSION) && bn.magSize() > MAX_BIGNUM_CONVERSION_MAGNITUDE_SIZE)
+            throw script_error(SCRIPT_ERR_BIGNUM_CONVERSION_SIZE, "ScriptMachine: number too wide for a BigNum");
+        return bn.tdiv(bigNumModulo);
     }
 
     // Returns info about the next instruction to be run:

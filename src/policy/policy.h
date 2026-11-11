@@ -49,7 +49,8 @@ static const unsigned int STANDARD_SCRIPT_VERIFY_FLAGS = MANDATORY_SCRIPT_VERIFY
                                                          SCRIPT_GROUP_GENESIS_SPENDS_INPUT |
                                                          SCRIPT_VERIFY_UNAMBIGUOUS_WITHIN |
                                                          SCRIPT_LIMIT_HASHED_BYTES |
-                                                         SCRIPT_LIMIT_STACK_ITEM_SIZE;
+                                                         SCRIPT_LIMIT_COPIED_BYTES |
+                                                         SCRIPT_LIMIT_BIGNUM_CONVERSION;
 /* clang-format on */
 
 /** For convenience, standard but not mandatory verify flags. */

@@ -4,6 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "consensus/tx_verify.h"
+#include "core_io.h"
 #include "key.h"
 #include "policy/policy.h"
 #include "pubkey.h"
@@ -436,6 +437,60 @@ BOOST_AUTO_TEST_CASE(TestBigNumConversionLimit)
         }
         // Not a consensus rule before upgrade2
         BOOST_CHECK(EvalError(convert(tooWide), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
+    }
+}
+
+// Bytes a script counts as copied, with no limit enforced
+static uint64_t CopiedBytes(const CScript &script)
+{
+    ScriptMachine sm(MANDATORY_SCRIPT_VERIFY_FLAGS, ScriptImportedState(), MAX_OPS_PER_SCRIPT_TEMPLATE, 0xffffffff);
+    sm.maxScriptSize = MAX_SCRIPT_TEMPLATE_SIZE;
+    sm.Eval(script);
+    BOOST_CHECK(sm.getError() == SCRIPT_ERR_OK);
+    return sm.getStats().copiedBytes;
+}
+
+// Every byte of a stack item that an opcode pushes, copies, moves or rewrites is counted
+BOOST_AUTO_TEST_CASE(TestCopiedBytesCount)
+{
+    const VchType item(500, 0xa5);
+    const VchType zeros(500, 0);
+    const uint64_t base = CopiedBytes(CScript() << item);
+    BOOST_CHECK_EQUAL(base, 500);
+
+    const std::vector<std::pair<CScript, uint64_t> > tests = {
+        {CScript() << OP_DROP, 0},
+        {CScript() << OP_SIZE, 2},
+        {CScript() << OP_DUP, 500},
+        {CScript() << OP_DUP << OP_2DUP, 500 + 1000},
+        {CScript() << OP_DUP << OP_DUP << OP_3DUP, 1000 + 1500},
+        {CScript() << OP_DUP << OP_OVER, 500 + 500},
+        {CScript() << OP_DUP << OP_TUCK, 500 + 500},
+        {CScript() << OP_DUP << OP_2DUP << OP_2OVER, 1500 + 1000},
+        {CScript() << OP_1 << OP_1 << OP_PICK, 2 + 500},
+        {CScript() << OP_1 << OP_1 << OP_ROLL, 2 + 500},
+        {CScript() << OP_1 << OP_SWAP << OP_1NEGATE << OP_PICK, 2 + 500},
+        {CScript() << OP_1 << OP_SWAP << OP_2 << OP_NEGATE << OP_ROLL, 3 + 500},
+        {CScript() << OP_1 << OP_1 << OP_1 << OP_1 << OP_1 << OP_2ROT, 5 + 501},
+        {CScript() << OP_1 << OP_SWAP, 1},
+        {CScript() << OP_1 << OP_1 << OP_ROT, 2},
+        {CScript() << OP_TOALTSTACK, 500},
+        {CScript() << OP_TOALTSTACK << OP_FROMALTSTACK, 1000},
+        {CScript() << OP_IFDUP, 500 + 500},
+        {CScript() << OP_DROP << zeros << OP_IFDUP, 500 + 500},
+        {CScript() << OP_DUP << OP_CAT, 500 + 1000},
+        {CScript() << 100 << OP_SPLIT, 1 + 500},
+        {CScript() << OP_DUP << OP_AND, 500 + 500},
+        {CScript() << OP_DUP << OP_EQUAL, 500 + 1},
+        {CScript() << OP_DUP << OP_1 << OP_PLACE, 500 + 1 + 500},
+        {CScript() << OP_DROP << OP_1 << 500 << OP_NUM2BIN, 1 + 2 + 1 + 500},
+        {CScript() << OP_DROP << zeros << OP_BIN2NUM, 500 + 500},
+        {CScript() << OP_SHA256, 32},
+    };
+    for (const auto &[ops, expected] : tests)
+    {
+        const uint64_t counted = CopiedBytes((CScript() << item) + ops) - base;
+        BOOST_CHECK_MESSAGE(counted == expected, ScriptToAsmStr(ops) << " counted " << counted);
     }
 }
 

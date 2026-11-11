@@ -107,8 +107,12 @@ enum
     // Limit the bytes an input feeds to the hash ops and OP_REVERSEBYTES (see MAX_HASHED_BYTES_BASE): their cost
     // grows with the item, but they count as one op. Policy before Upgrade2, consensus after.
     SCRIPT_LIMIT_HASHED_BYTES = (1U << 21),
-    // Limit a stack item to MAX_SCRIPT_ELEMENT_SIZE bytes. Policy before Upgrade2, consensus after.
-    SCRIPT_LIMIT_STACK_ITEM_SIZE = (1U << 22),
+    // Limit the bytes of the stack items an input pushes, copies, moves or rewrites (see MAX_COPIED_BYTES_BASE),
+    // for the same reason. Policy before Upgrade2, consensus after.
+    SCRIPT_LIMIT_COPIED_BYTES = (1U << 22),
+    // Fail the conversion to a BigNum of a number wider than MAX_BIGNUM_CONVERSION_MAGNITUDE_SIZE: reducing it
+    // modulo the BMD costs one op whatever its size. Policy before Upgrade2, consensus after.
+    SCRIPT_LIMIT_BIGNUM_CONVERSION = (1U << 23),
 };
 
 #endif // NEXA_SCRIPT_SCRIPTFLAGS_H
