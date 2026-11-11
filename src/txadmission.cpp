@@ -1161,14 +1161,13 @@ static bool ParallelAcceptToMemoryPoolImpl(CTxMemPool &pool,
                             debugger->mineable = false;
                             debugger->futureMineable = false;
                         }
-                        // fMissingInputs and not state.IsInvalid() is used to detect this condition, don't set
-                        // state.Invalid()
+                        // fMissingInputs, not state.IsInvalid(), is used to detect this condition.
                         LOG(MEMPOOL, "input-does-not-exist: %d:%s\n", inIdx, txin.prevout.hash.ToString());
                         *pfMissingInputs = true;
                         if (debugger == nullptr)
                         {
-                            break; // There is no point checking any more once one fails, for orphans we will
-                                   // recheck
+                            // Once it fails stop checking. If it's a true orphan it will be checked later.
+                            break;
                         }
                     }
                     inIdx++;
@@ -1187,9 +1186,7 @@ static bool ParallelAcceptToMemoryPoolImpl(CTxMemPool &pool,
                     else
                     {
                         state.SetDebugMessage("inputs-are-missing");
-                        return false; // state.Invalid(false, REJECT_MISSING_INPUTS, "bad-txns-missing-inputs",
-                                      // "Inputs
-                        // unavailable in ParallelAcceptToMemoryPool", false);
+                        return false;
                     }
                 }
             }
@@ -1300,6 +1297,7 @@ static bool ParallelAcceptToMemoryPoolImpl(CTxMemPool &pool,
             // And, keep track of transactions that spend a coinbase, which we re-scan
             // during reorgs to ensure COINBASE_MATURITY is still met.
             dPriority = view.GetPriority(*tx, chainTip->height(), inChainInputValue, fSpendsCoinbase);
+
             // Check that input script constraints are satisfied
             unsigned char sighashType = 0;
             if (!CheckInputs(tx, state, view, roCoinsTip, true, flags, true, &resourceTracker, chainparams, nullptr,
