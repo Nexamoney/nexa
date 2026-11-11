@@ -311,10 +311,10 @@ BOOST_AUTO_TEST_CASE(TestHashOpCostScalesWithItemSize)
     }
 }
 
-// An input may hash, or reverse, 4096 bytes plus twice the length of its scriptSig
+// An input may hash 4096 bytes plus twice the length of its scriptSig
 BOOST_AUTO_TEST_CASE(TestHashedBytesLimit)
 {
-    for (opcodetype op : {OP_SHA256, OP_HASH256, OP_HASH160, OP_RIPEMD160, OP_SHA1, OP_REVERSEBYTES})
+    for (opcodetype op : {OP_SHA256, OP_HASH256, OP_HASH160, OP_RIPEMD160, OP_SHA1})
     {
         for (uint32_t flags : limitedFlags)
         {
@@ -450,7 +450,7 @@ static uint64_t CopiedBytes(const CScript &script)
     return sm.getStats().copiedBytes;
 }
 
-// Every byte of a stack item that an opcode pushes, copies, moves or rewrites is counted
+// Every byte of a stack item that an opcode pushes, copies, moves, rewrites or compares is counted
 BOOST_AUTO_TEST_CASE(TestCopiedBytesCount)
 {
     const VchType item(500, 0xa5);
@@ -481,7 +481,11 @@ BOOST_AUTO_TEST_CASE(TestCopiedBytesCount)
         {CScript() << OP_DUP << OP_CAT, 500 + 1000},
         {CScript() << 100 << OP_SPLIT, 1 + 500},
         {CScript() << OP_DUP << OP_AND, 500 + 500},
-        {CScript() << OP_DUP << OP_EQUAL, 500 + 1},
+        {CScript() << OP_DUP << OP_EQUAL, 500 + 500 + 1},
+        {CScript() << OP_1 << OP_EQUAL, 1}, // different sizes are not compared
+        {CScript() << OP_REVERSEBYTES, 500},
+        {CScript() << OP_0 << OP_STORE, 500},
+        {CScript() << OP_0 << OP_STORE << OP_0 << OP_LOAD, 500 + 500},
         {CScript() << OP_DUP << OP_1 << OP_PLACE, 500 + 1 + 500},
         {CScript() << OP_DROP << OP_1 << 500 << OP_NUM2BIN, 1 + 2 + 1 + 500},
         {CScript() << OP_DROP << zeros << OP_BIN2NUM, 500 + 500},
