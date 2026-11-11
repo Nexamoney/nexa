@@ -14,9 +14,10 @@ protected:
     CHash256 hash256;
 
     MerkleRootAlg alg;
+    ScriptMachine &sm; // charged for every byte hashed
 
 public:
-    MpHash(MerkleRootAlg a) : alg(a) {}
+    MpHash(MerkleRootAlg a, ScriptMachine &machine) : alg(a), sm(machine) {}
 
     void Finalize(unsigned char *hash)
     {
@@ -50,6 +51,8 @@ public:
 
     MpHash &Write(const unsigned char *data, size_t len)
     {
+        if (!sm.countHashedBytes(len))
+            throw script_error(SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED, "OP_MERKLEROOT: hashed bytes exceeded");
         switch (alg)
         {
         case MerkleRootAlg::SHA256:
@@ -245,7 +248,7 @@ bool ScriptMachine::opMerkleRoot()
 
     const VchType proof = stackItemAt(-1).data();
     PopStack();
-    MpHash hasher(nodeAlg);
+    MpHash hasher(nodeAlg, *this);
 
     std::vector<uint64_t> returnIndex;
     std::vector<uint64_t> returnDepth;
