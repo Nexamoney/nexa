@@ -6,8 +6,10 @@
 Test the limits on the bytes an input hashes and copies, and on the numbers it converts to a BigNum.
 
 Before upgrade2 they are policy: the mempool refuses such a spend, without penalizing the peer and without
-running the script any further, and a block that contains it is still valid.
+running the script any further, and a block that contains it is still valid. After upgrade2 they are consensus:
+a block that contains such a spend is refused.
 """
+import copy
 import logging
 import time
 
@@ -17,7 +19,7 @@ from test_framework.nodemessages import CBlock, CTransaction, FromHex, ToHex, an
 from test_framework.mininode import P2PDataStore, NodeConn, NetworkThread
 from test_framework.script import CScript, OP_BIN2BIGNUM, OP_CAT, OP_DROP, OP_DUP, OP_SHA256, spendAnyoneCanSpend
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import JSONRPCException, p2p_port, waitFor
+from test_framework.util import JSONRPCException, assert_equal, assert_raises_rpc_error, p2p_port, waitFor
 
 HASHED_BYTES_REASON = 'non-mandatory-script-verify-flag (Validation resources exceeded (hashed bytes))'
 COPIED_BYTES_REASON = 'non-mandatory-script-verify-flag (Validation resources exceeded (copied bytes))'
@@ -62,6 +64,25 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
         self.block_heights[block.hashNum] = height
         return block
 
+    def activate_upgrade2(self, node):
+        mocktime = node.getblockheader(node.getbestblockhash())['time']
+        for _ in range(10):
+            mocktime += 120
+            node.setmocktime(mocktime)
+            node.generate(1)
+        node.set("consensus.fork2Time=" + str(node.getblockheader(node.getbestblockhash())['time'] + 240))
+        for _ in range(20):
+            if node.getblockchaininfo()['upgradeenforcednextblock']:
+                break
+            mocktime += 120
+            node.setmocktime(mocktime)
+            node.generate(1)
+        else:
+            raise AssertionError("upgrade2 did not become pending")
+        node.generate(4)
+        assert node.getblockchaininfo()['upgradeactive']
+        assert_equal(node.gettailstorminfo()['bestdag'], 0)
+
     def spend(self, fund, template, satisfier=None):
         tx = CTransaction()
         tx.vin.append(fund.SpendTemplate(0, template, None, satisfier))
@@ -86,7 +107,7 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
 
         tip = self.get_best_block(node)
         coinbases = []
-        for _ in range(8):
+        for _ in range(13):
             tip = self.build_block(tip)
             self.p2p.send_blocks_and_test([tip], node)
             coinbases.append(tip.vtx[0])
@@ -110,6 +131,7 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
         slow = CScript(big_item + [OP_DUP, OP_SHA256, OP_DROP] * 16000 + [OP_DROP])
 
         templates = [within, over, over_padded, copy_within, copy_over, too_wide, slow]
+        templates += [within, over, copy_over, too_wide, within]  # spent after upgrade2
         funds = []
         for template in templates:
             coinbase = coinbases.pop()
@@ -148,6 +170,31 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
         logging.info("Before upgrade2 a block may contain spends over the limits")
         tip = self.build_block(tip, accepted + refused)
         self.p2p.send_blocks_and_test([tip], node)
+
+        logging.info("After upgrade2 a block may not")
+        self.activate_upgrade2(node)
+        # a mined empty subblock gives the header fields
+        template = FromHex(CBlock(), node.getsubblock(node.generate(1)[0], 0))
+        in_dag = 1
+        refused = []
+        valid_spends = [True, False, False, False, True]
+        for nonce, (fund, script, valid) in enumerate(zip(funds[7:], templates[7:], valid_spends), 1):
+            block = copy.deepcopy(template)
+            block.vtx = [block.vtx[0], self.spend(fund, script)]
+            block.nonce = bytearray([nonce, 0, 0])
+            block.update_fields()
+            block.solve(prevhash=block.hashPrevBlock)
+            block.rehash()
+            node.submitblock(ToHex(block))
+            if valid:
+                in_dag += 1
+                waitFor(10, lambda: node.gettailstorminfo()['bestdag'] == in_dag)
+                assert_equal(node.getsubblock(block.hash, 0), ToHex(block))
+            else:
+                refused.append(block)
+        for block in refused:
+            assert_raises_rpc_error(None, "Subblock not found in dag", node.getsubblock, block.hash, 0)
+        assert_equal(node.gettailstorminfo()['bestdag'], in_dag)
 
 
 if __name__ == '__main__':
