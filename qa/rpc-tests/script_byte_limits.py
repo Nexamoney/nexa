@@ -3,7 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
-Test the limits on the bytes an input hashes and on the size of a stack item.
+Test the limits on the bytes an input hashes and copies, and on the numbers it converts to a BigNum.
 
 Before upgrade2 they are policy: the mempool refuses such a spend, without penalizing the peer and without
 running the script any further, and a block that contains it is still valid.
@@ -15,12 +15,13 @@ from test_framework.blocktools import create_block, create_coinbase, create_tx_w
     make_conform_to_ctor
 from test_framework.nodemessages import CBlock, CTransaction, FromHex, ToHex, anySpender
 from test_framework.mininode import P2PDataStore, NodeConn, NetworkThread
-from test_framework.script import CScript, OP_CAT, OP_DROP, OP_DUP, OP_SHA256, spendAnyoneCanSpend
+from test_framework.script import CScript, OP_BIN2BIGNUM, OP_CAT, OP_DROP, OP_DUP, OP_SHA256, spendAnyoneCanSpend
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import JSONRPCException, p2p_port, waitFor
 
 HASHED_BYTES_REASON = 'non-mandatory-script-verify-flag (Validation resources exceeded (hashed bytes))'
-ITEM_SIZE_REASON = 'non-mandatory-script-verify-flag (Push value size limit exceeded)'
+COPIED_BYTES_REASON = 'non-mandatory-script-verify-flag (Validation resources exceeded (copied bytes))'
+BIGNUM_REASON = 'non-mandatory-script-verify-flag (Number too wide to convert to a BigNum)'
 
 
 def hash_item(count, drop_first=False):
@@ -85,7 +86,7 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
 
         tip = self.get_best_block(node)
         coinbases = []
-        for _ in range(6):
+        for _ in range(8):
             tip = self.build_block(tip)
             self.p2p.send_blocks_and_test([tip], node)
             coinbases.append(tip.vtx[0])
@@ -97,12 +98,17 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
         over = hash_item(11)
         # the same 5500 bytes are allowed once the scriptSig is 200 bytes longer
         over_padded = hash_item(11, drop_first=True)
-        # a 4200 byte item
-        long_item = CScript([b'\xa5' * 2100, OP_DUP, OP_CAT, OP_DROP])
+        # An input may copy 2 MiB plus 16 times the length of its scriptSig. Building the 512000 byte item copies
+        # 1535000 bytes
+        big_item = [b'\xa5' * 500] + [OP_DUP, OP_CAT] * 10
+        copy_within = CScript(big_item + [OP_DUP, OP_DROP, OP_DROP])
+        copy_over = CScript(big_item + [OP_DUP, OP_DROP] * 2 + [OP_DROP])
+        # a 8200 bit number, more than the 8192 bits that convert to a BigNum
+        too_wide = CScript([b'\xff' * 1025 + b'\x00', OP_BIN2BIGNUM, OP_DROP])
         # a 512000 byte item hashed 16000 times, about 8 GB
-        slow = CScript([b'\xa5' * 500] + [OP_DUP, OP_CAT] * 10 + [OP_DUP, OP_SHA256, OP_DROP] * 16000 + [OP_DROP])
+        slow = CScript(big_item + [OP_DUP, OP_SHA256, OP_DROP] * 16000 + [OP_DROP])
 
-        templates = [within, over, over_padded, long_item, slow]
+        templates = [within, over, over_padded, copy_within, copy_over, too_wide, slow]
         funds = []
         for template in templates:
             coinbase = coinbases.pop()
@@ -115,27 +121,31 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
         spend_within = self.spend(funds[0], within)
         spend_over = self.spend(funds[1], over)
         spend_over_padded = self.spend(funds[2], over_padded, [b'\x00' * 200])
-        spend_long_item = self.spend(funds[3], long_item)
-        spend_slow = self.spend(funds[4], slow)
+        spend_copy_within = self.spend(funds[3], copy_within)
+        spend_copy_over = self.spend(funds[4], copy_over)
+        spend_too_wide = self.spend(funds[5], too_wide)
+        spend_slow = self.spend(funds[6], slow)
 
         logging.info("The mempool accepts spends within the limits")
-        self.p2p.send_txs_and_test([spend_within, spend_over_padded], node)
-        waitFor(10, lambda: set(node.getrawtxpool()) ==
-            {spend_within.GetRpcHexIdem(), spend_over_padded.GetRpcHexIdem()})
+        accepted = [spend_within, spend_over_padded, spend_copy_within]
+        self.p2p.send_txs_and_test(accepted, node)
+        waitFor(10, lambda: set(node.getrawtxpool()) == {tx.GetRpcHexIdem() for tx in accepted})
 
         logging.info("The mempool refuses spends over the limits, without banning the peer")
         self.refused(spend_over, HASHED_BYTES_REASON)
-        self.refused(spend_long_item, ITEM_SIZE_REASON)
-        self.p2p.send_txs_and_test([spend_over, spend_long_item], node, success=False)
+        self.refused(spend_copy_over, COPIED_BYTES_REASON)
+        self.refused(spend_too_wide, BIGNUM_REASON)
+        refused = [spend_over, spend_copy_over, spend_too_wide]
+        self.p2p.send_txs_and_test(refused, node, success=False)
 
         logging.info("The script is not run again without the limits")
         start = time.time()
-        self.refused(spend_slow, ITEM_SIZE_REASON)
+        self.refused(spend_slow, HASHED_BYTES_REASON)
         elapsed = time.time() - start
         assert elapsed < 5, "refusing the 8 GB spend took %.1f s" % elapsed
 
         logging.info("Before upgrade2 a block may contain spends over the limits")
-        tip = self.build_block(tip, [spend_within, spend_over_padded, spend_over, spend_long_item])
+        tip = self.build_block(tip, accepted + refused)
         self.p2p.send_blocks_and_test([tip], node)
 
 

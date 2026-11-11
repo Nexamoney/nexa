@@ -3970,10 +3970,7 @@ BOOST_AUTO_TEST_CASE(script_op_parse)
         st = CScript() << (i / 2) << (i / 4) << PUSH_BYTECODE_DATA << OP_PARSE;
         for (auto j = 0; j < i / 4; j++)
             st << OP_DROP; // Clean up the stack of stuff extracted from the script
-        if (parseThis.size() <= MAX_SCRIPT_ELEMENT_SIZE)
-            ExpectedScriptTemplateSuccess(st, holderArgs, satisfyBig);
-        else // the bytecode to parse is a stack item
-            ExpectedScriptTemplateFailure(SCRIPT_ERR_PUSH_SIZE, st, holderArgs, satisfyBig);
+        ExpectedScriptTemplateSuccess(st, holderArgs, satisfyBig);
     }
 }
 

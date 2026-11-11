@@ -15,6 +15,7 @@
 #include "unlimited.h"
 #include "utiltime.h"
 
+#include <functional>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -350,23 +351,92 @@ BOOST_AUTO_TEST_CASE(TestHashedBytesLimit)
     BOOST_CHECK(EvalError(twice, MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
 }
 
-// A stack item may be 4096 bytes at most
-BOOST_AUTO_TEST_CASE(TestStackItemSizeLimit)
+// Pushes a 500 byte item, then copies it count times
+static CScript CopyItem(int count)
 {
-    const CScript fits = CScript() << VchType(4096, 0xa5);
-    const CScript tooLong = CScript() << VchType(4097, 0xa5);
-    const CScript catFits = CScript() << VchType(4095, 0xa5) << VchType(1, 0xa5) << OP_CAT;
-    const CScript catTooLong = CScript() << VchType(4096, 0xa5) << VchType(1, 0xa5) << OP_CAT;
+    CScript script = CScript() << VchType(500, 0xa5);
+    for (int i = 0; i < count; i++)
+        script << OP_DUP << OP_DROP;
+    return script;
+}
+
+// Copying a near-1 MiB stack item costs the same single op as copying 1 byte, so one template input can copy
+// about 8 GB within MAX_OPS_PER_SCRIPT_TEMPLATE. Policy, and consensus from upgrade2, must reject it.
+BOOST_AUTO_TEST_CASE(TestCopyOpCostScalesWithItemSize)
+{
+    CScript script = CScript() << VchType(500, 0xa5);
+    for (int i = 0; i < 10; i++) // 512000 bytes
+        script << OP_DUP << OP_CAT;
+    for (int i = 0; i < 16000; i++)
+        script << OP_DUP << OP_DROP;
+    for (uint32_t flags : limitedFlags)
+        BOOST_CHECK(EvalError(script, flags) != SCRIPT_ERR_OK);
+}
+
+// An input may copy 2 MiB plus 16 times the length of its scriptSig
+BOOST_AUTO_TEST_CASE(TestCopiedBytesLimit)
+{
+    // 500 + 4193 * 500 = 2097000 bytes
     for (uint32_t flags : limitedFlags)
     {
-        BOOST_CHECK(EvalError(fits, flags) == SCRIPT_ERR_OK);
-        BOOST_CHECK(EvalError(tooLong, flags) == SCRIPT_ERR_PUSH_SIZE);
-        BOOST_CHECK(EvalError(catFits, flags) == SCRIPT_ERR_OK);
-        BOOST_CHECK(EvalError(catTooLong, flags) == SCRIPT_ERR_PUSH_SIZE);
+        BOOST_CHECK(EvalError(CopyItem(4193), flags) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(CopyItem(4194), flags) != SCRIPT_ERR_OK);
     }
     // Not a consensus rule before upgrade2
-    BOOST_CHECK(EvalError(tooLong, MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
-    BOOST_CHECK(EvalError(catTooLong, MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
+    BOOST_CHECK(EvalError(CopyItem(4194), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
+
+    // A 1003 byte scriptSig allows 16048 more bytes
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0].scriptSig = CScript() << VchType(1000, 0);
+    ScriptImportedState sis;
+    sis.tx = MakeTransactionRef(tx);
+    sis.nIn = 0;
+    for (uint32_t flags : limitedFlags)
+    {
+        BOOST_CHECK(EvalError(CopyItem(4225), flags, sis) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(CopyItem(4226), flags, sis) != SCRIPT_ERR_OK);
+    }
+
+    // Scripts run by OP_EXEC share the allowance of the input
+    const CScript code = CopyItem(2097) << OP_DROP;
+    CScript once = CScript() << Serialize(code) << OP_0 << OP_0 << OP_EXEC;
+    CScript twice = once;
+    twice << Serialize(code) << OP_0 << OP_0 << OP_EXEC;
+    for (uint32_t flags : limitedFlags)
+    {
+        BOOST_CHECK(EvalError(once, flags) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(twice, flags) != SCRIPT_ERR_OK);
+    }
+    BOOST_CHECK(EvalError(twice, MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
+}
+
+// A byte array converts to a BigNum when the number it holds is at most 8192 bits wide
+BOOST_AUTO_TEST_CASE(TestBigNumConversionLimit)
+{
+    // little-endian sign-magnitude: the last byte carries the sign
+    VchType widest(1024, 0xff);
+    widest.push_back(0);
+    VchType tooWide(1024, 0);
+    tooWide.push_back(1);
+    tooWide.push_back(0);
+    VchType padded(2048, 0); // a longer item holding a small number
+    padded[0] = 1;
+
+    const std::function<CScript(const VchType &)> conversions[] = {[](const VchType &item)
+        { return CScript() << item << OP_BIN2BIGNUM; },
+        [](const VchType &item) { return CScript() << OP_1 << OP_BIN2BIGNUM << item << OP_ADD; }};
+    for (const auto &convert : conversions)
+    {
+        for (uint32_t flags : limitedFlags)
+        {
+            BOOST_CHECK(EvalError(convert(widest), flags) == SCRIPT_ERR_OK);
+            BOOST_CHECK(EvalError(convert(padded), flags) == SCRIPT_ERR_OK);
+            BOOST_CHECK(EvalError(convert(tooWide), flags) != SCRIPT_ERR_OK);
+        }
+        // Not a consensus rule before upgrade2
+        BOOST_CHECK(EvalError(convert(tooWide), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
