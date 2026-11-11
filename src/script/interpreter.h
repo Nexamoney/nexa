@@ -422,9 +422,11 @@ public:
         if (sis.tx && sis.nIn < sis.tx->vin.size())
         {
             const uint64_t scriptSigSize = sis.tx->vin[sis.nIn].scriptSig.size();
-            maxHashedBytes += MAX_HASHED_BYTES_PER_SCRIPTSIG_BYTE * scriptSigSize;
+            maxHashedBytes += scriptSigSize;
             maxCopiedBytes += MAX_COPIED_BYTES_PER_SCRIPTSIG_BYTE * scriptSigSize;
         }
+        if (sis.nIn < sis.spentCoins.size())
+            maxHashedBytes += sis.spentCoins[sis.nIn].scriptPubKey.size();
     }
 
     const VchType &stacktop(int i);

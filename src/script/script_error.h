@@ -101,7 +101,7 @@ typedef enum ScriptError_t
     SCRIPT_ERR_INVALID_JUMP,
     SCRIPT_ERR_INVALID_PARAMETER, // one of the opcode parameters is invalid
     SCRIPT_ERR_AMBIGUOUS_WITHIN, // OP_WITHIN result changed by !77 (policy)
-    SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED, // The input hashed more bytes than its scriptSig length allows
+    SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED, // The input hashed more bytes than its script lengths allow
     SCRIPT_ERR_COPIED_BYTES_LIMIT_EXCEEDED, // The input copied more bytes than its scriptSig length allows
     SCRIPT_ERR_BIGNUM_CONVERSION_SIZE, // The number is too wide to convert to a BigNum
 
