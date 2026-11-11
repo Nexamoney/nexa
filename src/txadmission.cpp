@@ -880,7 +880,7 @@ bool AcceptToMemoryPool(CTxMemPool &pool,
     return res;
 }
 
-bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
+static bool ParallelAcceptToMemoryPoolImpl(CTxMemPool &pool,
     CValidationState &state,
     const CTransactionRef &tx,
     bool fLimitFree,
@@ -894,7 +894,6 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
     DbgAssert(txProcessingCorral.region() == CORRAL_TX_PROCESSING ||
                   txProcessingCorral.region() == CORRAL_TX_COMMITMENT || txProcessingCorral.region() == CORRAL_TX_PAUSE,
         LOGA("Do not have corral during parallelaccepttomemorypool"));
-
     const CChainParams &chainparams = Params();
     CBlockIndex *chainTip = chainActive.Tip();
 
@@ -1097,10 +1096,10 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
             view.SetBackend(viewMemPool);
             // Consumed inputs may come from the tailstorm DAG, but read only inputs must be confirmed before being
             // used.  So roCoinsTip points directly at the coins of the summary block tip.
-            // Recall that every transaction in a summary block is effectively seen as being executed simultaneously,
-            // so in subblocks you can continue to access spent UTXOs **as read only** until the summary block
-            // collapses the DAG.  This allows the behavior of the subblock DAG to mirror that of the summary block
-            // they collapse into.
+            // Recall that every transaction in a summary block is effectively seen as being executed
+            // simultaneously, so in subblocks you can continue to access spent UTXOs **as read only** until the
+            // summary block collapses the DAG.  This allows the behavior of the subblock DAG to mirror that of the
+            // summary block they collapse into.
             roCoinsTip.SetBackend(*pcoinsTip);
 
             // do all inputs exist?
@@ -1110,11 +1109,11 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                 int inIdx = 0;
                 for (const CTxIn &txin : tx->vin)
                 {
-                    // At this point we begin to collect coins that are potential candidates for uncaching because as
-                    // soon as we make the call below to view.HaveCoin() any missing coins will be pulled into cache.
-                    // Therefore, any coin in this transaction that is not already in cache will be tracked here such
-                    // that if this transaction fails to enter the memory pool, we will then uncache those coins that
-                    // were not already present, unless the transaction is an orphan.
+                    // At this point we begin to collect coins that are potential candidates for uncaching because
+                    // as soon as we make the call below to view.HaveCoin() any missing coins will be pulled into
+                    // cache. Therefore, any coin in this transaction that is not already in cache will be tracked
+                    // here such that if this transaction fails to enter the memory pool, we will then uncache those
+                    // coins that were not already present, unless the transaction is an orphan.
                     //
                     // We still want to keep orphantx coins in the event the orphantx is finally accepted into the
                     // mempool or shows up in a block that is mined.  Therefore if pfMissingInputs returns true then
@@ -1128,7 +1127,8 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                         {
                             // Read-only inputs can only refer to confirmed inputs
                             // look in coins (utxo of blockchain tip, not mempool tip)
-                            // but ignore whether its spent (read-only spent coins are still accessible in this block).
+                            // but ignore whether its spent (read-only spent coins are still accessible in this
+                            // block).
                             if (!roCoinsTip.GetCoinFromDB(txin.prevout))
                             {
                                 state.relevantInput = inIdx;
@@ -1161,13 +1161,13 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                             debugger->mineable = false;
                             debugger->futureMineable = false;
                         }
-                        // fMissingInputs and not state.IsInvalid() is used to detect this condition, don't set
-                        // state.Invalid()
+                        // fMissingInputs, not state.IsInvalid(), is used to detect this condition.
                         LOG(MEMPOOL, "input-does-not-exist: %d:%s\n", inIdx, txin.prevout.hash.ToString());
                         *pfMissingInputs = true;
                         if (debugger == nullptr)
                         {
-                            break; // There is no point checking any more once one fails, for orphans we will recheck
+                            // Once it fails stop checking. If it's a true orphan it will be checked later.
+                            break;
                         }
                     }
                     inIdx++;
@@ -1186,8 +1186,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                     else
                     {
                         state.SetDebugMessage("inputs-are-missing");
-                        return false; // state.Invalid(false, REJECT_MISSING_INPUTS, "bad-txns-missing-inputs", "Inputs
-                        // unavailable in ParallelAcceptToMemoryPool", false);
+                        return false;
                     }
                 }
             }
@@ -1298,6 +1297,7 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
             // And, keep track of transactions that spend a coinbase, which we re-scan
             // during reorgs to ensure COINBASE_MATURITY is still met.
             dPriority = view.GetPriority(*tx, chainTip->height(), inChainInputValue, fSpendsCoinbase);
+
             // Check that input script constraints are satisfied
             unsigned char sighashType = 0;
             if (!CheckInputs(tx, state, view, roCoinsTip, true, flags, true, &resourceTracker, chainparams, nullptr,
@@ -1393,7 +1393,8 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
             // LOG(MEMPOOL,
             //    "MempoolBytes:%ld LimitFreeRelay:%d FeesSatoshiPerKB:%ld TxBytes:%d "
             //    "TxFees:%ld\n",
-            //    pool.GetTotalTxSize(), limitFreeRelay.Value(), nModifiedFees * 1000 / nSize, nSize, nModifiedFees);
+            //    pool.GetTotalTxSize(), limitFreeRelay.Value(), nModifiedFees * 1000 / nSize, nSize,
+            //    nModifiedFees);
             if (fLimitFree && nModifiedFees < ::minRelayTxFee.GetFee(nSize))
             {
                 static double dFreeCount = 0;
@@ -1428,8 +1429,8 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
                 if (debugger)
                 {
                     debugger->AddInvalidReason("txpool min fee not met");
-                    // fees are not a reason to mark something as not mineable, keep current mineable and futureMineable
-                    // values unchanged
+                    // fees are not a reason to mark something as not mineable, keep current mineable and
+                    // futureMineable values unchanged
                     debugger->standard = false;
                 }
                 else
@@ -1441,8 +1442,8 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
         }
 #ifdef ENABLE_WALLET
         // We calculate the recommended fee by looking at what's in the mempool.  This starts at 0 though for an
-        // empty mempool.  So set the minimum "absurd" fee to 10000 satoshies per byte.  If for some reason fees rise
-        // above that, you can specify up to 100x what other txns are paying in the mempool
+        // empty mempool.  So set the minimum "absurd" fee to 10000 satoshies per byte.  If for some reason fees
+        // rise above that, you can specify up to 100x what other txns are paying in the mempool
         if (fRejectAbsurdFee && nFees > std::max((int64_t)100L * nSize, maxTxFeeTweak.Value()) * 100)
         {
             if (debugger)
@@ -1508,6 +1509,45 @@ bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
     mempool.UpdateTransactionsPerSecond();
 
     return true;
+}
+
+bool ParallelAcceptToMemoryPool(CTxMemPool &pool,
+    CValidationState &state,
+    const CTransactionRef &tx,
+    bool fLimitFree,
+    bool *pfMissingInputs,
+    bool fRejectAbsurdFee,
+    TransactionClass allowedTx,
+    std::vector<COutPoint> &vCoinsToUncache,
+    bool *isRespend,
+    CValidationDebugger *debugger)
+{
+    try
+    {
+        return ParallelAcceptToMemoryPoolImpl(pool, state, tx, fLimitFree, pfMissingInputs, fRejectAbsurdFee, allowedTx,
+            vCoinsToUncache, isRespend, debugger);
+    }
+    catch (const std::bad_alloc &)
+    {
+        if (debugger)
+        {
+            debugger->AddInvalidReason("Validation could not complete: out of memory");
+            return false;
+        }
+        return state.DoS(0, false, REJECT_INVALID, "out-of-memory-while-processing-txn");
+    }
+    catch (const std::exception &e)
+    {
+        std::string message(strprintf("bad-txn-exception-thrown: %s", e.what()));
+        if (debugger)
+        {
+            debugger->AddInvalidReason(message);
+            debugger->mineable = false;
+            debugger->futureMineable = false;
+            return false;
+        }
+        return state.DoS(20, false, REJECT_INVALID, message);
+    }
 }
 
 
