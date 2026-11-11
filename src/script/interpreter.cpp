@@ -384,8 +384,8 @@ void ScriptMachine::PushStack(const StackItem &item)
 {
     int64_t itemSize = item.size();
     CheckAndUpdateStackSize(itemSize);
-    countCopiedBytes(itemSize);
     stack.push_back(item);
+    countCopiedBytes(itemSize);
 }
 
 /* Push an item to the main stack */
@@ -393,8 +393,8 @@ void ScriptMachine::PushStack(const unsigned char *begin, const unsigned char *e
 {
     int64_t itemSize = end - begin;
     CheckAndUpdateStackSize(itemSize);
-    countCopiedBytes(itemSize);
     stack.emplace_back(begin, end);
+    countCopiedBytes(itemSize);
 }
 
 /* Push an item to the main stack */
@@ -402,8 +402,8 @@ void ScriptMachine::PushStack(const CScript::const_iterator &begin, const CScrip
 {
     int64_t itemSize = end - begin;
     CheckAndUpdateStackSize(itemSize);
-    countCopiedBytes(itemSize);
     stack.emplace_back(begin, end);
+    countCopiedBytes(itemSize);
 }
 
 VchType &ScriptMachine::mstacktop(int i) { return mstackItemAt(i).mdata(); }
@@ -1246,8 +1246,8 @@ bool ScriptMachine::Step()
                         else
                         {
                             // Inserting the item, so the size changes
-                            CheckAndUpdateStackSize(si.size());
                             countCopiedBytes(si.size());
+                            CheckAndUpdateStackSize(si.size());
                             stack.insert(stack.end() - n, si);
                         }
                     }
@@ -1287,8 +1287,8 @@ bool ScriptMachine::Step()
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     }
                     const StackItem &si = stackItemAt(-1);
-                    CheckAndUpdateStackSize(si.size());
                     countCopiedBytes(si.size());
+                    CheckAndUpdateStackSize(si.size());
                     stack.insert(stack.end() - 2, si); // si is invalid after this insert!!
                 }
                 break;
