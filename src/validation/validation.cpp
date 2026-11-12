@@ -1670,7 +1670,7 @@ bool CheckInputs(const CTransactionRef &tx,
                             // script without those limits, at the cost they are there to avoid
                             if ((scriptError == SCRIPT_ERR_AMBIGUOUS_WITHIN ||
                                     scriptError == SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED ||
-                                    scriptError == SCRIPT_ERR_COPIED_BYTES_LIMIT_EXCEEDED ||
+                                    scriptError == SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED ||
                                     scriptError == SCRIPT_ERR_BIGNUM_CONVERSION_SIZE) &&
                                 !debugger)
                             {

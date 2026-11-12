@@ -219,8 +219,8 @@ public:
     /** Bytes fed to the hash ops */
     uint64_t hashedBytes = 0;
 
-    /** Bytes of the stack items pushed, copied, moved or rewritten */
-    uint64_t copiedBytes = 0;
+    /** Bytes of the stack items visited: pushed, copied, moved, rewritten, compared or parsed */
+    uint64_t visitedBytes = 0;
 
     ScriptMachineResourceTracker() {}
     /** Combine the results of this tracker and another tracker.
@@ -233,7 +233,7 @@ public:
         nOpCount += stats.nOpCount;
         nOpExec += stats.nOpExec;
         hashedBytes += stats.hashedBytes;
-        copiedBytes += stats.copiedBytes;
+        visitedBytes += stats.visitedBytes;
         // Update the max used stack bytes if it exceeds ours (plus a baseline use)
         unsigned int totalUse = parentsCurrentStackUse + stats.maxStackBytes;
         if (maxStackBytes < totalUse)
@@ -250,7 +250,7 @@ public:
         maxStackBytes = 0;
         maxStackItems = 0;
         hashedBytes = 0;
-        copiedBytes = 0;
+        visitedBytes = 0;
     }
 };
 
@@ -371,8 +371,8 @@ public:
     unsigned int maxConsensusSigOps;
     /** Maximum number of hashed bytes allowed under SCRIPT_LIMIT_HASHED_BYTES */
     uint64_t maxHashedBytes = MAX_HASHED_BYTES_BASE;
-    /** Maximum number of copied bytes allowed under SCRIPT_LIMIT_COPIED_BYTES */
-    uint64_t maxCopiedBytes = MAX_COPIED_BYTES_BASE;
+    /** Maximum number of visited bytes allowed under SCRIPT_LIMIT_VISITED_BYTES */
+    uint64_t maxVisitedBytes = MAX_VISITED_BYTES_BASE;
     /** Maximum combined size of both stacks allowed -- script will abort with error if this number is exceeded */
     int64_t maxStackUse = 0;
     /** Maximum combined number of elements in both stacks -- script will abort with error if this number is exceeded */
@@ -396,7 +396,7 @@ public:
         maxOps = from.maxOps;
         maxConsensusSigOps = from.maxConsensusSigOps;
         maxHashedBytes = from.maxHashedBytes;
-        maxCopiedBytes = from.maxCopiedBytes;
+        maxVisitedBytes = from.maxVisitedBytes;
         maxStackUse = from.maxStackUse;
         maxStackItems = from.maxStackItems;
         bigNumModulo = from.bigNumModulo;
@@ -423,7 +423,7 @@ public:
         {
             const uint64_t scriptSigSize = sis.tx->vin[sis.nIn].scriptSig.size();
             maxHashedBytes += scriptSigSize;
-            maxCopiedBytes += MAX_COPIED_BYTES_PER_SCRIPTSIG_BYTE * scriptSigSize;
+            maxVisitedBytes += MAX_VISITED_BYTES_PER_SCRIPTSIG_BYTE * scriptSigSize;
         }
         if (sis.nIn < sis.spentCoins.size())
             maxHashedBytes += sis.spentCoins[sis.nIn].scriptPubKey.size();
@@ -499,13 +499,13 @@ public:
             throw script_error(SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED, "ScriptMachine: hashed bytes exceeded");
     }
 
-    /** Count the bytes of a stack item that an opcode pushes, copies, moves or rewrites.
+    /** Count the bytes an opcode visits: that it pushes, copies, moves, rewrites, compares or parses.
         Throws if the input is over its allowance */
-    void countCopiedBytes(uint64_t size)
+    void countVisitedBytes(uint64_t size)
     {
-        stats.copiedBytes += size;
-        if ((flags & SCRIPT_LIMIT_COPIED_BYTES) && stats.copiedBytes > maxCopiedBytes)
-            throw script_error(SCRIPT_ERR_COPIED_BYTES_LIMIT_EXCEEDED, "ScriptMachine: copied bytes exceeded");
+        stats.visitedBytes += size;
+        if ((flags & SCRIPT_LIMIT_VISITED_BYTES) && stats.visitedBytes > maxVisitedBytes)
+            throw script_error(SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED, "ScriptMachine: visited bytes exceeded");
     }
 
     /** Convert a stack item to a BigNum modulo the BMD.

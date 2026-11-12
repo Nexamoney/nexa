@@ -3,6 +3,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include "consensus/consensus.h"
 #include "consensus/tx_verify.h"
 #include "core_io.h"
 #include "key.h"
@@ -272,7 +273,16 @@ static ScriptError EvalError(const CScript &script, uint32_t flags, const Script
 {
     ScriptMachine sm(flags, sis, MAX_OPS_PER_SCRIPT_TEMPLATE, 0xffffffff);
     sm.maxScriptSize = MAX_SCRIPT_TEMPLATE_SIZE;
+    uint64_t start = GetStopwatchMicros();
     sm.Eval(script);
+    uint64_t elapsed = GetStopwatchMicros() - start;
+    const ScriptMachineResourceTracker &stats = sm.getStats();
+    printf("EvalError: %lu us, script %u bytes, flags 0x%x, result: %s\n"
+           "  ops %u, opExec %u, opExecDepth %u, sigChecks %lu, maxStackBytes %u, maxStackItems %u, "
+           "hashedBytes %lu, visitedBytes %lu\n",
+        (unsigned long)elapsed, (unsigned int)script.size(), flags, ScriptErrorString(sm.getError()), stats.nOpCount,
+        stats.nOpExec, stats.nOpExecDepth, (unsigned long)stats.consensusSigCheckCount, stats.maxStackBytes,
+        stats.maxStackItems, (unsigned long)stats.hashedBytes, (unsigned long)stats.visitedBytes);
     return sm.getError();
 }
 
@@ -401,8 +411,8 @@ BOOST_AUTO_TEST_CASE(TestCopyOpCostScalesWithItemSize)
         BOOST_CHECK(EvalError(script, flags) != SCRIPT_ERR_OK);
 }
 
-// An input may copy 2 MiB plus 512 times the length of its scriptSig
-BOOST_AUTO_TEST_CASE(TestCopiedBytesLimit)
+// An input may visit 2 MiB plus 512 times the length of its scriptSig
+BOOST_AUTO_TEST_CASE(TestVisitedBytesLimit)
 {
     // 500 + 4193 * 500 = 2097000 bytes
     for (uint32_t flags : limitedFlags)
@@ -467,19 +477,19 @@ BOOST_AUTO_TEST_CASE(TestBigNumConversionLimit)
     }
 }
 
-// Bytes a script counts as copied, with no limit enforced
-static uint64_t CopiedBytes(const CScript &script)
+// Bytes a script counts as visited, with no limit enforced
+static uint64_t VisitedBytes(const CScript &script)
 {
     ScriptMachine sm(MANDATORY_SCRIPT_VERIFY_FLAGS, ScriptImportedState(), MAX_OPS_PER_SCRIPT_TEMPLATE, 0xffffffff);
     sm.maxScriptSize = MAX_SCRIPT_TEMPLATE_SIZE;
     sm.Eval(script);
     BOOST_CHECK(sm.getError() == SCRIPT_ERR_OK);
-    return sm.getStats().copiedBytes;
+    return sm.getStats().visitedBytes;
 }
 
-// Every byte of a stack item that an opcode pushes, copies, moves, rewrites or compares is counted
+// Every byte an opcode pushes, copies, moves, rewrites, compares or parses is counted as visited
 // OP_PARSE decodes the target script op by op up to the pushes asked for. One op could scan a whole output of the
-// transaction, so the decoding is charged as copied bytes.
+// transaction, so the decoding is charged as visited bytes.
 static ScriptImportedState ParseTarget(size_t pushes)
 {
     CScript out;
@@ -508,7 +518,7 @@ BOOST_AUTO_TEST_CASE(TestOpParseScanIsCounted)
     // One scan of 40000 pushes is over the 2 MiB allowance
     const ScriptImportedState large = ParseTarget(40000);
     for (uint32_t flags : limitedFlags)
-        BOOST_CHECK(EvalError(ParseLastPush(40000, 1), flags, large) == SCRIPT_ERR_COPIED_BYTES_LIMIT_EXCEEDED);
+        BOOST_CHECK(EvalError(ParseLastPush(40000, 1), flags, large) == SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED);
     // Not a consensus rule before upgrade2
     BOOST_CHECK(EvalError(ParseLastPush(40000, 1), MANDATORY_SCRIPT_VERIFY_FLAGS, large) == SCRIPT_ERR_OK);
 
@@ -517,15 +527,72 @@ BOOST_AUTO_TEST_CASE(TestOpParseScanIsCounted)
     for (uint32_t flags : limitedFlags)
     {
         BOOST_CHECK(EvalError(ParseLastPush(300, 50), flags, small) == SCRIPT_ERR_OK);
-        BOOST_CHECK(EvalError(ParseLastPush(300, 200), flags, small) == SCRIPT_ERR_COPIED_BYTES_LIMIT_EXCEEDED);
+        BOOST_CHECK(EvalError(ParseLastPush(300, 200), flags, small) == SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED);
     }
 }
 
-BOOST_AUTO_TEST_CASE(TestCopiedBytesCount)
+// One OP_PARSE of the first push of output 0: 5 bytes and 1 counted op
+static CScript &ParseFirstPush(CScript &script) { return script << OP_0 << OP_0 << OP_1 << OP_0 << OP_PARSE; }
+
+// The most OP_PARSE scanning one input can ask for under the limits other than visited bytes.
+// Every parse fetches the first push of output 0, which sits behind the rest of the transaction's bytes as one
+// byte non-push ops, so every parse decodes the whole output.
+// Parses run inside OP_EXEC where possible: a subscript is up to MAX_SCRIPT_SIZE bytes and the stack it leaves
+// is discarded for free. The rest of the op budget goes to parses in the main script, whose results cost an
+// OP_2DROP per 2 parses.
+BOOST_AUTO_TEST_CASE(TestLongestOpParse)
+{
+    CScript code;
+    while (code.size() + 5 <= MAX_SCRIPT_SIZE)
+        ParseFirstPush(code);
+    const size_t parsesPerExec = code.size() / 5;
+
+    CScript script = CScript() << VchType(code.begin(), code.end());
+    for (unsigned int i = 0; i < MAX_OP_EXEC; i++)
+    {
+        if (i + 1 < MAX_OP_EXEC)
+            script << OP_DUP; // keep the code for the next OP_EXEC
+        script << OP_0 << OP_0 << OP_EXEC;
+    }
+    const size_t usedOps = MAX_OP_EXEC * parsesPerExec + MAX_OP_EXEC + (MAX_OP_EXEC - 1);
+    // Leave 1 parse result on the stack as the true result, drop the rest in pairs
+    size_t mainParses = 1;
+    ParseFirstPush(script);
+    while (usedOps + mainParses + 3 <= (size_t)MAX_OPS_PER_SCRIPT_TEMPLATE)
+    {
+        ParseFirstPush(ParseFirstPush(script)) << OP_2DROP;
+        mainParses += 2;
+    }
+    BOOST_CHECK(script.size() <= MAX_SCRIPT_TEMPLATE_SIZE);
+
+    // Fill the transaction up to its consensus size limit with the scanned output
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0].scriptSig = script;
+    tx.vout.push_back(CTxOut(1000, CScript(), CTxOut::SATOSCRIPT));
+    const size_t emptySize = CTransaction(tx).GetTxSize();
+    // The length prefix of the output script grows from 1 to 5 bytes
+    const size_t fill = DEFAULT_LARGEST_TRANSACTION - emptySize - 4 - 1;
+    std::vector<unsigned char> filler(fill, OP_NOP);
+    CScript target = CScript(filler.begin(), filler.end()) << OP_1;
+    tx.vout[0].scriptPubKey = target;
+    BOOST_CHECK(CTransaction(tx).GetTxSize() <= DEFAULT_LARGEST_TRANSACTION);
+
+    ScriptImportedState sis;
+    sis.tx = MakeTransactionRef(tx);
+    sis.nIn = 0;
+    const size_t parses = MAX_OP_EXEC * parsesPerExec + mainParses;
+    printf("TestLongestOpParse: %lu parses of a %lu byte output (%lu ops scanned), script %lu bytes, tx %lu bytes\n",
+        (unsigned long)parses, (unsigned long)target.size(), (unsigned long)(parses * target.size()),
+        (unsigned long)script.size(), (unsigned long)CTransaction(tx).GetTxSize());
+    BOOST_CHECK(EvalError(script, STANDARD_SCRIPT_VERIFY_FLAGS, sis) == SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED);
+}
+
+BOOST_AUTO_TEST_CASE(TestVisitedBytesCount)
 {
     const VchType item(500, 0xa5);
     const VchType zeros(500, 0);
-    const uint64_t base = CopiedBytes(CScript() << item);
+    const uint64_t base = VisitedBytes(CScript() << item);
     BOOST_CHECK_EQUAL(base, 500);
 
     const std::vector<std::pair<CScript, uint64_t> > tests = {
@@ -563,7 +630,7 @@ BOOST_AUTO_TEST_CASE(TestCopiedBytesCount)
     };
     for (const auto &[ops, expected] : tests)
     {
-        const uint64_t counted = CopiedBytes((CScript() << item) + ops) - base;
+        const uint64_t counted = VisitedBytes((CScript() << item) + ops) - base;
         BOOST_CHECK_MESSAGE(counted == expected, ScriptToAsmStr(ops) << " counted " << counted);
     }
 }

@@ -3,7 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
-Test the limits on the bytes an input hashes and copies, and on the numbers it converts to a BigNum.
+Test the limits on the bytes an input hashes and visits, and on the numbers it converts to a BigNum.
 
 Before upgrade2 they are policy: the mempool refuses such a spend, without penalizing the peer and without
 running the script any further, and a block that contains it is still valid. After upgrade2 they are consensus:
@@ -22,7 +22,7 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import JSONRPCException, assert_equal, assert_raises_rpc_error, p2p_port, waitFor
 
 HASHED_BYTES_REASON = 'non-mandatory-script-verify-flag (Validation resources exceeded (hashed bytes))'
-COPIED_BYTES_REASON = 'non-mandatory-script-verify-flag (Validation resources exceeded (copied bytes))'
+VISITED_BYTES_REASON = 'non-mandatory-script-verify-flag (Validation resources exceeded (visited bytes))'
 BIGNUM_REASON = 'non-mandatory-script-verify-flag (Number too wide to convert to a BigNum)'
 
 
@@ -120,7 +120,7 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
         over = hash_item(18)
         # the same 9000 bytes are allowed once the scriptSig is 300 bytes longer
         over_padded = hash_item(18, drop_first=True)
-        # An input may copy 2 MiB plus 512 times the length of its scriptSig. Building the 512000 byte item copies
+        # An input may visit 2 MiB plus 512 times the length of its scriptSig. Building the 512000 byte item copies
         # 1535000 bytes
         big_item = [b'\xa5' * 500] + [OP_DUP, OP_CAT] * 10
         copy_within = CScript(big_item + [OP_DUP, OP_DROP, OP_DROP])
@@ -156,7 +156,7 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
 
         logging.info("The mempool refuses spends over the limits, without banning the peer")
         self.refused(spend_over, HASHED_BYTES_REASON)
-        self.refused(spend_copy_over, COPIED_BYTES_REASON)
+        self.refused(spend_copy_over, VISITED_BYTES_REASON)
         self.refused(spend_too_wide, BIGNUM_REASON)
         refused = [spend_over, spend_copy_over, spend_too_wide]
         self.p2p.send_txs_and_test(refused, node, success=False)

@@ -142,8 +142,8 @@ const char *ScriptErrorString(const ScriptError serror)
         return "OP_WITHIN result differs between node versions";
     case SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED:
         return "Validation resources exceeded (hashed bytes)";
-    case SCRIPT_ERR_COPIED_BYTES_LIMIT_EXCEEDED:
-        return "Validation resources exceeded (copied bytes)";
+    case SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED:
+        return "Validation resources exceeded (visited bytes)";
     case SCRIPT_ERR_BIGNUM_CONVERSION_SIZE:
         return "Number too wide to convert to a BigNum";
 
