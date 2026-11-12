@@ -9,8 +9,12 @@
 
 #include <algorithm>
 #include <boost/test/unit_test.hpp>
+#include <set>
+#include <univalue.h>
 
+extern CTweak<uint64_t> maxAllowedNetMessage;
 extern uint64_t nMaxSendBufferSize;
+extern UniValue capdrpc(const UniValue &params, bool fHelp);
 
 BOOST_FIXTURE_TEST_SUITE(capd_tests, BasicTestingSetup)
 
@@ -1414,6 +1418,202 @@ BOOST_AUTO_TEST_CASE(capd_notification_multiple_matches_soft_budget)
         BOOST_CHECK_EQUAL(watcher.nSendSize.load(), queued);
         BOOST_CHECK_EQUAL(watcher.vLowPrioritySendMsg.size(), 1U);
     }
+}
+
+// A CAPDQUERY reply counts against the peer's send budget and fits in one network message
+BOOST_AUTO_TEST_CASE(capd_query_reply_send_budget)
+{
+    struct SendBufferLimit
+    {
+        uint64_t previous = nMaxSendBufferSize;
+        SendBufferLimit() { nMaxSendBufferSize = 1024; }
+        ~SendBufferLimit() { nMaxSendBufferSize = previous; }
+    } sendBufferLimit;
+
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+    CNode node1(INVALID_SOCKET, CAddress(CService(ipv4Addr, 7777), NODE_NETWORK), "", false);
+    node1.isCapdEnabled = true;
+    node1.capd = new CapdNode(&node1); // owned and deleted by node1
+
+    // 200 messages with the same 2 byte prefix, together larger than one network message
+    msgpool.clear();
+    const size_t dataSize = GetMaxAllowedNetMessage() / 100;
+    for (int i = 0; i < CapdProtocol::CAPD_QUERY_MAX_MSGS; i++)
+    {
+        std::vector<uint8_t> data(dataSize, 0);
+        data[0] = '!';
+        data[1] = '!';
+        WriteLE32(&data[2], i);
+        CapdMsg m(data);
+        m.SetPowTargetHarderThanPriority(msgpool.GetLocalPriority() + 1.0);
+        m.Solve();
+        BOOST_REQUIRE_NO_THROW(msgpool.add(MsgRefCopy(m)));
+    }
+    std::vector<unsigned char> prefix = {'!', '!'};
+    BOOST_REQUIRE_EQUAL(msgpool.find(prefix).size(), (size_t)CapdProtocol::CAPD_QUERY_MAX_MSGS);
+
+    // The peer's send buffer is just below full, so ProcessMessages still handles its query
+    node1.nSendSize = nMaxSendBufferSize - 1;
+    CDataStream pkt = MsgMaker(node1, NetMsgType::CAPDQUERY,
+        [&](auto &p)
+        {
+            p << (uint32_t)1 << (uint8_t)CapdProtocol::CAPD_QUERY_TYPE_MSG << (uint32_t)0
+              << (uint32_t)CapdProtocol::CAPD_QUERY_MAX_MSGS << prefix;
+        });
+    BOOST_CHECK(HandleCapdMessage(node1, pkt));
+
+    const uint64_t queued = node1.nSendSize.load() + node1.capd->pendingSendBytes.load() - nMaxSendBufferSize;
+    BOOST_TEST_MESSAGE("CAPDQUERY reply bytes queued past a full send buffer: " << queued);
+    BOOST_CHECK_LE(queued, GetMaxAllowedNetMessage() + CMessageHeader::HEADER_SIZE);
+
+    node1.vLowPrioritySendMsg.clear();
+    msgpool.clear();
+}
+
+// A large CAPDQUERY result is split into pages that each fit in one network message
+BOOST_AUTO_TEST_CASE(capd_query_reply_pages)
+{
+    struct NetMessageLimit
+    {
+        uint64_t previous = maxAllowedNetMessage.Value();
+        NetMessageLimit() { maxAllowedNetMessage.Set(64 * 1024); } // keeps the proof-of-work setup small
+        ~NetMessageLimit() { maxAllowedNetMessage.Set(previous); }
+    } netMessageLimit;
+
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+    CNode node1(INVALID_SOCKET, CAddress(CService(ipv4Addr, 7777), NODE_NETWORK), "", false);
+    node1.isCapdEnabled = true;
+    node1.capd = new CapdNode(&node1); // owned and deleted by node1
+
+    msgpool.clear();
+    const size_t dataSize = GetMaxAllowedNetMessage() / 100;
+    for (int i = 0; i < CapdProtocol::CAPD_QUERY_MAX_MSGS; i++)
+    {
+        std::vector<uint8_t> data(dataSize, 0);
+        data[0] = '!';
+        data[1] = '!';
+        WriteLE32(&data[2], i);
+        CapdMsg m(data);
+        m.SetPowTargetHarderThanPriority(msgpool.GetLocalPriority() + 1.0);
+        m.Solve();
+        BOOST_REQUIRE_NO_THROW(msgpool.add(MsgRefCopy(m)));
+    }
+    std::vector<unsigned char> prefix = {'!', '!'};
+    BOOST_REQUIRE_EQUAL(msgpool.find(prefix).size(), (size_t)CapdProtocol::CAPD_QUERY_MAX_MSGS);
+
+    std::set<uint256> received;
+    for (uint32_t cookie = 1; received.size() < CapdProtocol::CAPD_QUERY_MAX_MSGS; ++cookie)
+    {
+        BOOST_REQUIRE_LE(cookie, (uint32_t)CapdProtocol::CAPD_QUERY_MAX_MSGS);
+        const uint32_t start = received.size();
+        CDataStream pkt = MsgMaker(node1, NetMsgType::CAPDQUERY,
+            [&](auto &p)
+            {
+                p << cookie << (uint8_t)CapdProtocol::CAPD_QUERY_TYPE_MSG << start
+                  << (uint32_t)CapdProtocol::CAPD_QUERY_MAX_MSGS << prefix;
+            });
+        BOOST_REQUIRE(HandleCapdMessage(node1, pkt));
+
+        CSerializeData wire;
+        BOOST_REQUIRE(node1.vLowPrioritySendMsg.pop_front(wire));
+        BOOST_REQUIRE_LE(wire.size(), GetMaxAllowedNetMessage() + CMessageHeader::HEADER_SIZE);
+        CDataStream reply(wire.begin() + CMessageHeader::HEADER_SIZE, wire.end(), SER_NETWORK, PROTOCOL_VERSION);
+        uint32_t replyCookie;
+        uint8_t type;
+        uint32_t total;
+        std::vector<CapdMsg> page;
+        reply >> replyCookie >> type >> total >> page;
+        BOOST_CHECK_EQUAL(replyCookie, cookie);
+        BOOST_CHECK_EQUAL(type, CapdProtocol::CAPD_QUERY_TYPE_MSG);
+        BOOST_CHECK_EQUAL(total, (uint32_t)CapdProtocol::CAPD_QUERY_MAX_MSGS);
+        BOOST_REQUIRE(!page.empty());
+        for (const CapdMsg &m : page)
+            received.insert(m.GetHash());
+    }
+    BOOST_CHECK_EQUAL(received.size(), (size_t)CapdProtocol::CAPD_QUERY_MAX_MSGS);
+
+    msgpool.clear();
+}
+
+// Restores the network message limit tweak when a test ends
+struct NetMessageLimitGuard
+{
+    uint64_t previous = maxAllowedNetMessage.Value();
+    ~NetMessageLimitGuard() { maxAllowedNetMessage.Set(previous); }
+};
+
+static CapdMsgRef MakeSolvedMsg(uint8_t prefix, size_t dataSize)
+{
+    std::vector<uint8_t> data(dataSize, prefix);
+    CapdMsg m(data);
+    m.SetPowTargetHarderThanPriority(msgpool.GetLocalPriority() + 1.0);
+    m.Solve();
+    return MsgRefCopy(m);
+}
+
+// A pooled message must leave CAPD_MSG_ENVELOPE_RESERVE bytes of the network message limit for its P2P envelope
+BOOST_AUTO_TEST_CASE(capd_pool_message_fits_query_reply)
+{
+    NetMessageLimitGuard guard;
+    msgpool.clear();
+    CapdMsgRef msg = MakeSolvedMsg('a', 1000);
+    const uint64_t msgSize = GetSerializeSize(*msg, SER_NETWORK, PROTOCOL_VERSION);
+
+    maxAllowedNetMessage.Set(msgSize + CAPD_MSG_ENVELOPE_RESERVE - 1);
+    BOOST_CHECK_THROW(msgpool.add(msg), CapdMsgPoolException);
+    BOOST_CHECK_EQUAL(msgpool.Count(), 0U);
+
+    maxAllowedNetMessage.Set(msgSize + CAPD_MSG_ENVELOPE_RESERVE);
+    BOOST_CHECK_NO_THROW(msgpool.add(msg));
+    BOOST_CHECK_EQUAL(msgpool.Count(), 1U);
+
+    msgpool.clear();
+}
+
+// capd send reports a message that is too large to send, and does not pool it
+BOOST_AUTO_TEST_CASE(capd_send_rpc_refuses_oversized)
+{
+    NetMessageLimitGuard guard;
+    msgpool.clear();
+    maxAllowedNetMessage.Set(1000);
+
+    const auto send = [](size_t dataSize)
+    {
+        UniValue params(UniValue::VARR);
+        params.push_back("send");
+        params.push_back(std::string(2 * dataSize, 'a')); // hex
+        return capdrpc(params, false);
+    };
+    BOOST_CHECK_THROW(send(1000), CapdMsgPoolException);
+    BOOST_CHECK_EQUAL(msgpool.Count(), 0U);
+    BOOST_CHECK_NO_THROW(send(100));
+    BOOST_CHECK_EQUAL(msgpool.Count(), 1U);
+
+    msgpool.clear();
+}
+
+// Loading the pool from disk applies the same size limit as admission
+BOOST_AUTO_TEST_CASE(capd_pool_load_drops_oversized)
+{
+    NetMessageLimitGuard guard;
+    msgpool.clear();
+    CapdMsgRef small = MakeSolvedMsg('s', 100);
+    CapdMsgRef big = MakeSolvedMsg('b', 1000);
+    msgpool.add(small);
+    msgpool.add(big);
+    BOOST_REQUIRE(msgpool.DumpMsgPool());
+    msgpool.clear();
+
+    maxAllowedNetMessage.Set(GetSerializeSize(*big, SER_NETWORK, PROTOCOL_VERSION) + CAPD_MSG_ENVELOPE_RESERVE - 1);
+    BOOST_REQUIRE(msgpool.LoadMsgPool());
+    BOOST_CHECK_EQUAL(msgpool.Count(), 1U);
+    BOOST_CHECK_EQUAL(msgpool.find(std::vector<uint8_t>(2, 's')).size(), 1U);
+    BOOST_CHECK(msgpool.find(std::vector<uint8_t>(2, 'b')).empty());
+
+    msgpool.clear();
+    fs::remove(GetDataDir() / "msgpool.dat");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

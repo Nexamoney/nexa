@@ -36,6 +36,13 @@ static uint64_t CapdReplyBytes(const CapdMsg &msg)
     return GetSerializeSize(msg, SER_NETWORK, PROTOCOL_VERSION) + 9 + CMessageHeader::HEADER_SIZE;
 }
 
+// A pooled message must fit on its own in any P2P message that carries it
+static bool FitsNetMessage(const CapdMsg &msg)
+{
+    return GetSerializeSize(msg, SER_NETWORK, PROTOCOL_VERSION) + CAPD_MSG_ENVELOPE_RESERVE <=
+           GetMaxAllowedNetMessage();
+}
+
 uint64_t msgpoolMaxSize = CapdMsgPool::DEFAULT_MSG_POOL_MAX_SIZE;
 
 const uint64_t CAPD_MAX_INV_TO_SEND = 20000;
@@ -306,6 +313,8 @@ bool CapdMsgPool::LoadMsgPool(void)
         {
             CapdMsg msg;
             file >> msg;
+            if (!FitsNetMessage(msg))
+                continue; // saved before admission checked the size, or under a larger limit
             CapdMsgRef ref = std::make_shared<CapdMsg>(msg);
             {
                 ref->InitialPriority(); // fill the cache under the lock, a lone message is never compared on insert
@@ -402,6 +411,12 @@ bool CapdMsgPool::add(const CapdMsgRef &msg)
         {
             LOG(CAPD, "Message POW inconsistent");
             throw CapdMsgPoolException("Message POW inconsistent");
+        }
+
+        if (!FitsNetMessage(*msg))
+        {
+            LOG(CAPD, "Message too large to send");
+            throw CapdMsgPoolException("Message too large");
         }
 
         // A later creation time buys priority, so creators are expected to backdate their messages
@@ -504,8 +519,17 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
             if (type == CAPD_QUERY_TYPE_MSG)
             {
                 quantity = std::min<uint32_t>(CAPD_QUERY_MAX_MSGS, quantity);
+                // Stop before the reply outgrows one network message; the total count lets the client page on
+                uint64_t replySize = sizeof(cookie) + sizeof(type) + sizeof(uint32_t) + GetSizeOfCompactSize(quantity);
+                uint32_t count = 0;
+                for (size_t i = start; i < msgs.size() && count < quantity; ++i, ++count)
+                {
+                    replySize += GetSerializeSize(*msgs[i], SER_NETWORK, PROTOCOL_VERSION);
+                    if (replySize > GetMaxAllowedNetMessage())
+                        break;
+                }
                 pfrom->PushMessageWithCookie(NetMsgType::CAPDQUERYREPLY, msgCookie | 0xFFFF, cookie, type,
-                    (uint32_t)msgs.size(), PtrVectorSpan<CapdMsgRef>(msgs, start, quantity));
+                    (uint32_t)msgs.size(), PtrVectorSpan<CapdMsgRef>(msgs, start, count));
             }
             else if (type == CAPD_QUERY_TYPE_MSG_HASH)
             {
@@ -675,8 +699,7 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
             }
             catch (CapdMsgPoolException &e)
             {
-                // messsage was too low priority, drop it
-                LOG(CAPD, "Capd drop: message priority too low to add");
+                LOG(CAPD, "Capd drop: %s\n", e.what());
             }
         }
 
