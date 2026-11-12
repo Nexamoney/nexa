@@ -401,7 +401,7 @@ BOOST_AUTO_TEST_CASE(TestCopyOpCostScalesWithItemSize)
         BOOST_CHECK(EvalError(script, flags) != SCRIPT_ERR_OK);
 }
 
-// An input may copy 2 MiB plus 16 times the length of its scriptSig
+// An input may copy 2 MiB plus 512 times the length of its scriptSig
 BOOST_AUTO_TEST_CASE(TestCopiedBytesLimit)
 {
     // 500 + 4193 * 500 = 2097000 bytes
@@ -413,7 +413,7 @@ BOOST_AUTO_TEST_CASE(TestCopiedBytesLimit)
     // Not a consensus rule before upgrade2
     BOOST_CHECK(EvalError(CopyItem(4194), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
 
-    // A 1003 byte scriptSig allows 16048 more bytes
+    // A 1003 byte scriptSig allows 513536 more bytes
     CMutableTransaction tx;
     tx.vin.resize(1);
     tx.vin[0].scriptSig = CScript() << VchType(1000, 0);
@@ -422,8 +422,8 @@ BOOST_AUTO_TEST_CASE(TestCopiedBytesLimit)
     sis.nIn = 0;
     for (uint32_t flags : limitedFlags)
     {
-        BOOST_CHECK(EvalError(CopyItem(4225), flags, sis) == SCRIPT_ERR_OK);
-        BOOST_CHECK(EvalError(CopyItem(4226), flags, sis) != SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(CopyItem(5220), flags, sis) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(CopyItem(5221), flags, sis) != SCRIPT_ERR_OK);
     }
 
     // Scripts run by OP_EXEC share the allowance of the input

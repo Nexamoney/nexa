@@ -120,7 +120,7 @@ class ScriptByteLimitsTest(BitcoinTestFramework):
         over = hash_item(18)
         # the same 9000 bytes are allowed once the scriptSig is 300 bytes longer
         over_padded = hash_item(18, drop_first=True)
-        # An input may copy 2 MiB plus 16 times the length of its scriptSig. Building the 512000 byte item copies
+        # An input may copy 2 MiB plus 512 times the length of its scriptSig. Building the 512000 byte item copies
         # 1535000 bytes
         big_item = [b'\xa5' * 500] + [OP_DUP, OP_CAT] * 10
         copy_within = CScript(big_item + [OP_DUP, OP_DROP, OP_DROP])
