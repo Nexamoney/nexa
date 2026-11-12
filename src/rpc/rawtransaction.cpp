@@ -1286,11 +1286,12 @@ UniValue signrawtransaction(const UniValue &params, bool fHelp)
     // Script verification errors
     UniValue vErrors(UniValue::VARR);
 
+    // Same flags as mempool admission
     auto flags = STANDARD_SCRIPT_VERIFY_FLAGS;
     CBlockIndex *tip = chainActive.Tip();
-    if (IsUpgrade2Activated(tip))
+    if (IsUpgrade2Activated(tip) || IsUpgrade2Pending(tip))
     {
-        flags |= POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS;
+        flags = POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS;
     }
 
     // Use CTransaction for the constant parts of the

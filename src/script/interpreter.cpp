@@ -2688,13 +2688,38 @@ bool ScriptMachine::Step()
                         break;
                     }
 
-                    if (size > std::numeric_limits<unsigned int>::max() || !withinStackWidth((unsigned int)size))
+                    // From upgrade2 the result has a separate sign byte, so it is size + 1 bytes
+                    const uint64_t resultSize = upgrade2 ? size + 1 : size;
+                    if (resultSize > std::numeric_limits<unsigned int>::max() ||
+                        !withinStackWidth((unsigned int)resultSize))
                     {
                         return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     }
 
                     PopStack();
                     valtype rawnum = stacktop(-1); // Take a copy
+
+                    if (upgrade2)
+                    {
+                        // Like a BigNum input: size magnitude bytes, then a sign byte
+                        CScriptNum::MinimallyEncode(rawnum);
+                        uint8_t signbit = 0x00;
+                        if (!rawnum.empty())
+                        {
+                            signbit = rawnum.back() & 0x80;
+                            rawnum.back() &= 0x7f;
+                            // A minimal encoding only ends in a zero byte when that byte holds just the sign
+                            if (rawnum.back() == 0x00)
+                                rawnum.pop_back();
+                        }
+                        if ((uint64_t)rawnum.size() > size)
+                            return set_error(serror, SCRIPT_ERR_IMPOSSIBLE_ENCODING);
+                        rawnum.resize(size, 0x00);
+                        rawnum.push_back(signbit);
+                        PopStack();
+                        PushStack(rawnum);
+                        break;
+                    }
 
                     // Try to see if we can fit that number in the number of
                     // byte requested.
