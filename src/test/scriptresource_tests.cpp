@@ -478,6 +478,49 @@ static uint64_t CopiedBytes(const CScript &script)
 }
 
 // Every byte of a stack item that an opcode pushes, copies, moves, rewrites or compares is counted
+// OP_PARSE decodes the target script op by op up to the pushes asked for. One op could scan a whole output of the
+// transaction, so the decoding is charged as copied bytes.
+static ScriptImportedState ParseTarget(size_t pushes)
+{
+    CScript out;
+    for (size_t i = 0; i < pushes; i++)
+        out << OP_1;
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vout.push_back(CTxOut(1000, out, CTxOut::SATOSCRIPT));
+    ScriptImportedState sis;
+    sis.tx = MakeTransactionRef(tx);
+    sis.nIn = 0;
+    return sis;
+}
+
+// Parse the last push of output 0 count times
+static CScript ParseLastPush(size_t pushes, int count)
+{
+    CScript script = CScript() << OP_0 << CScriptNum::fromIntUnchecked(pushes - 1) << OP_1;
+    for (int i = 0; i < count; i++)
+        script << OP_3DUP << OP_0 << OP_PARSE << OP_DROP;
+    return script << OP_2DROP << OP_DROP;
+}
+
+BOOST_AUTO_TEST_CASE(TestOpParseScanIsCounted)
+{
+    // One scan of 40000 pushes is over the 2 MiB allowance
+    const ScriptImportedState large = ParseTarget(40000);
+    for (uint32_t flags : limitedFlags)
+        BOOST_CHECK(EvalError(ParseLastPush(40000, 1), flags, large) == SCRIPT_ERR_COPIED_BYTES_LIMIT_EXCEEDED);
+    // Not a consensus rule before upgrade2
+    BOOST_CHECK(EvalError(ParseLastPush(40000, 1), MANDATORY_SCRIPT_VERIFY_FLAGS, large) == SCRIPT_ERR_OK);
+
+    // Repeated scans of a small output are charged each time
+    const ScriptImportedState small = ParseTarget(300);
+    for (uint32_t flags : limitedFlags)
+    {
+        BOOST_CHECK(EvalError(ParseLastPush(300, 50), flags, small) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(ParseLastPush(300, 200), flags, small) == SCRIPT_ERR_COPIED_BYTES_LIMIT_EXCEEDED);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(TestCopiedBytesCount)
 {
     const VchType item(500, 0xa5);
