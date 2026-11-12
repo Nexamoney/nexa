@@ -1822,8 +1822,7 @@ bool ScriptMachine::Step()
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     }
                     const valtype &vch = stacktop(-1);
-                    if (!countHashedBytes(vch.size()))
-                        return set_error(serror, SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED);
+                    countHashedBytes(vch.size());
                     valtype vchHash((opcode == OP_RIPEMD160 || opcode == OP_SHA1 || opcode == OP_HASH160) ? 20 : 32);
                     if (opcode == OP_RIPEMD160)
                     {
@@ -2115,8 +2114,7 @@ bool ScriptMachine::Step()
                     bool fSuccess = false;
                     if (vchSig.size())
                     {
-                        if (!countHashedBytes(vchMessage.size()))
-                            return set_error(serror, SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED);
+                        countHashedBytes(vchMessage.size());
                         valtype vchHash(32);
                         CSHA256().Write(vchMessage.data(), vchMessage.size()).Finalize(vchHash.data());
                         uint256 messagehash(vchHash);

@@ -491,11 +491,12 @@ public:
 
     bool withinStackWidth(unsigned int size) { return ::withinStackWidth(size, flags); }
 
-    /** Count bytes fed to a hash op. Returns false if the input is over its allowance */
-    bool countHashedBytes(uint64_t size)
+    /** Count bytes fed to a hash op. Throws if the input is over its allowance */
+    void countHashedBytes(uint64_t size)
     {
         stats.hashedBytes += size;
-        return !(flags & SCRIPT_LIMIT_HASHED_BYTES) || stats.hashedBytes <= maxHashedBytes;
+        if ((flags & SCRIPT_LIMIT_HASHED_BYTES) && stats.hashedBytes > maxHashedBytes)
+            throw script_error(SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED, "ScriptMachine: hashed bytes exceeded");
     }
 
     /** Count the bytes of a stack item that an opcode pushes, copies, moves or rewrites.

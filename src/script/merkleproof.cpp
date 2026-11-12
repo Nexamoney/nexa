@@ -51,8 +51,7 @@ public:
 
     MpHash &Write(const unsigned char *data, size_t len)
     {
-        if (!sm.countHashedBytes(len))
-            throw script_error(SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED, "OP_MERKLEROOT: hashed bytes exceeded");
+        sm.countHashedBytes(len);
         switch (alg)
         {
         case MerkleRootAlg::SHA256:
@@ -238,8 +237,7 @@ bool ScriptMachine::opMerkleRoot()
         else
         {
             auto tmp = stackItemAt(-1).asVch();
-            if (!countHashedBytes(tmp.size()))
-                return set_error(&error, SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED);
+            countHashedBytes(tmp.size());
             HashMpLeaf(leafAlg, tmp, elements[i]);
         }
         PopStack();
