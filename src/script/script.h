@@ -61,9 +61,10 @@ static const unsigned int GENESIS_MAX_SCRIPT_ELEMENT_SIZE = 520;
 static const uint64_t MAX_HASHED_BYTES_BASE = 8192;
 
 // Under SCRIPT_LIMIT_COPIED_BYTES an input may copy this many bytes, plus this many per byte of its scriptSig.
-// The base lets a script build and copy an item as large as the stack.
+// The base lets a script build and copy an item as large as the stack. The factor lets every opcode copy a 512
+// byte item.
 static const uint64_t MAX_COPIED_BYTES_BASE = 2 * 1024 * 1024;
-static const uint64_t MAX_COPIED_BYTES_PER_SCRIPTSIG_BYTE = 16;
+static const uint64_t MAX_COPIED_BYTES_PER_SCRIPTSIG_BYTE = 512;
 
 // Maximum number of total bytes allowed in the script stack
 // (restriction added into fork 1)
