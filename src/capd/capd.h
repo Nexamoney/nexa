@@ -607,11 +607,13 @@ public:
     PriorityType _GetHighestPriority();
 
     /** Add a message into the message pool.  Throws CapdMsgPoolException if the message was not added.
+     *  Returns false if the message was already in the pool.
      */
-    void add(const CapdMsgRef &msg);
+    bool add(const CapdMsgRef &msg);
     /** Add a message into the message pool.  Throws CapdMsgPoolException if the message was not added.
+     *  Returns false if the message was already in the pool.
      */
-    void add(const CapdMsg &msg);
+    bool add(const CapdMsg &msg);
 
     /** Delete every message in the message pool */
     void clear();
