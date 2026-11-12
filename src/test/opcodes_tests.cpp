@@ -12,6 +12,7 @@
 
 #include <array>
 #include <limits>
+#include <tuple>
 #include <vector>
 
 typedef StackItem valtype;
@@ -39,6 +40,29 @@ static void CheckTestResultForAllFlags(const stacktype &original_stack,
         BOOST_CHECK(r);
         BOOST_CHECK(stack == expected);
     }
+}
+
+static void CheckTestResult(uint32_t flags,
+    const stacktype &original_stack,
+    const CScript &script,
+    const stacktype &expected)
+{
+    ScriptError err = SCRIPT_ERR_OK;
+    stacktype stack{original_stack};
+    bool r = EvalScript(stack, script, flags, MAX_OPS_PER_SCRIPT, ScriptImportedState(), &err);
+    BOOST_CHECK(r);
+    BOOST_CHECK(stack == expected);
+}
+
+// Check a NUM2BIN result before upgrade2 and after, where the sign has its own byte
+static void CheckNum2BinResult(const stacktype &original_stack,
+    const CScript &script,
+    const valtype &before,
+    const valtype &after)
+{
+    CheckTestResult(STANDARD_SCRIPT_VERIFY_FLAGS, original_stack, script, {before});
+    CheckTestResult(MANDATORY_SCRIPT_VERIFY_FLAGS, original_stack, script, {before});
+    CheckTestResult(POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS, original_stack, script, {after});
 }
 
 
@@ -567,24 +591,43 @@ static void CheckTypeConversionOp(const valtype &bin, const valtype &num)
         rebuilt_bin[rebuilt_bin.size() - 1] &= 0x7f;
     }
 
-    CheckTestResultForAllFlags({num}, CScript() << bin.size() << OP_NUM2BIN, {rebuilt_bin});
+    // From upgrade2 the sign moves to a byte of its own
+    VchType upgrade2_bytes = rebuilt_bin.data();
+    uint8_t sign = 0x00;
+    if (!upgrade2_bytes.empty())
+    {
+        sign = upgrade2_bytes.back() & 0x80;
+        upgrade2_bytes.back() &= 0x7f;
+    }
+    upgrade2_bytes.push_back(sign);
+    const valtype upgrade2_bin(upgrade2_bytes);
+
+    CheckNum2BinResult({num}, CScript() << bin.size() << OP_NUM2BIN, rebuilt_bin, upgrade2_bin);
 
     // Check roundtrip with NUM2BIN.
-    CheckTestResultForAllFlags({bin}, CScript() << OP_BIN2NUM << bin.size() << OP_NUM2BIN, {rebuilt_bin});
+    CheckNum2BinResult({bin}, CScript() << OP_BIN2NUM << bin.size() << OP_NUM2BIN, rebuilt_bin, upgrade2_bin);
 
     // Grow and shrink back down using NUM2BIN. When the minimal encoding already has the requested size, the padded
-    // number is left as is (nexa/nexa!531).
+    // number is left as is before upgrade2 (nexa/nexa!531).
     const CScript grow = CScript() << largeScriptElementSize << OP_NUM2BIN;
+    const CScript growShrink = CScript(grow) << bin.size() << OP_NUM2BIN;
     for (const valtype &start : {bin, num})
     {
-        stacktype expected{rebuilt_bin};
         if (num.size() == bin.size())
         {
-            expected = {start};
+            stacktype padded{start};
             BOOST_REQUIRE(
-                EvalScript(expected, grow, MANDATORY_SCRIPT_VERIFY_FLAGS, MAX_OPS_PER_SCRIPT, ScriptImportedState()));
+                EvalScript(padded, grow, MANDATORY_SCRIPT_VERIFY_FLAGS, MAX_OPS_PER_SCRIPT, ScriptImportedState()));
+            stacktype stack{start};
+            BOOST_CHECK(EvalScript(
+                stack, growShrink, MANDATORY_SCRIPT_VERIFY_FLAGS, MAX_OPS_PER_SCRIPT, ScriptImportedState()));
+            BOOST_CHECK(stack == padded);
+            CheckTestResult(POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS, {start}, growShrink, {upgrade2_bin});
         }
-        CheckTestResultForAllFlags({start}, CScript(grow) << bin.size() << OP_NUM2BIN, expected);
+        else
+        {
+            CheckNum2BinResult({start}, growShrink, rebuilt_bin, upgrade2_bin);
+        }
     }
 
     // BIN2NUM is indempotent.
@@ -658,8 +701,13 @@ BOOST_AUTO_TEST_CASE(type_conversion_test)
     // convert 0 to a 521 byte binary sign-magnitude representation
     CheckWorks(MANDATORY_SCRIPT_VERIFY_FLAGS, {{}, {0x09, 0x02}}, OP_NUM2BIN);
 
-    // Check that the requested encoding is not possible (number is too big for 3 bytes)
-    CheckNum2BinError({{0xab, 0xcd, 0xef, 0x80}, {0x03}}, SCRIPT_ERR_IMPOSSIBLE_ENCODING);
+    // Check that the requested encoding is not possible (number is too big for 3 bytes). From upgrade2 only the
+    // magnitude must fit in size bytes, and the sign gets its own byte.
+    const stacktype tooBig = {{0xab, 0xcd, 0xef, 0x80}, {0x03}};
+    CheckError(STANDARD_SCRIPT_VERIFY_FLAGS, tooBig, CScript() << OP_NUM2BIN, SCRIPT_ERR_IMPOSSIBLE_ENCODING);
+    CheckError(MANDATORY_SCRIPT_VERIFY_FLAGS, tooBig, CScript() << OP_NUM2BIN, SCRIPT_ERR_IMPOSSIBLE_ENCODING);
+    CheckTestResult(
+        POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS, tooBig, CScript() << OP_NUM2BIN, {{0xab, 0xcd, 0xef, 0x80}});
 }
 
 static void CheckDivMod(const valtype &a,
@@ -808,17 +856,25 @@ static void CheckNum2BinSize(int64_t size)
             // 0x01 needs at least 1 byte
             CheckErrorForAllFlags(original, script, SCRIPT_ERR_IMPOSSIBLE_ENCODING);
         }
-        else if (size <= (int64_t)MAX_SCRIPT_STACK_SIZE)
-        {
-            // 0x01 padded with zeros (positive, so the sign byte is 0) to exactly size bytes
-            VchType expected(size, 0x00);
-            expected[0] = 0x01;
-            CheckTestResultForAllFlags(original, script, {valtype(expected)});
-        }
         else
         {
-            // Too wide, including sizes above 32 bits whose low 32 bits alone would be an acceptable width
-            CheckErrorForAllFlags(original, script, SCRIPT_ERR_PUSH_SIZE);
+            for (uint32_t flags : flagset)
+            {
+                // From upgrade2 the result has a sign byte after size magnitude bytes
+                const int64_t extra = (flags & SCRIPT_UPGRADE2_OPCODES) ? 1 : 0;
+                if (size <= (int64_t)MAX_SCRIPT_STACK_SIZE - extra)
+                {
+                    // 0x01 padded with zeros (positive, so the sign byte is 0)
+                    VchType expected(size + extra, 0x00);
+                    expected[0] = 0x01;
+                    CheckTestResult(flags, original, script, {valtype(expected)});
+                }
+                else
+                {
+                    // Too wide, including sizes above 32 bits whose low 32 bits alone would be an acceptable width
+                    CheckError(flags, original, script, SCRIPT_ERR_PUSH_SIZE);
+                }
+            }
         }
     }
 }
@@ -879,6 +935,104 @@ BOOST_AUTO_TEST_CASE(num2bin_size_above_32_bits_is_rejected)
         CheckNum2BinSize(maxWidth + 1 + InsecureRandRange(std::numeric_limits<uint32_t>::max() - maxWidth));
         // negative, anywhere in the pushable range
         CheckNum2BinSize(-1 - (int64_t)InsecureRandRange(int64Max));
+    }
+}
+
+// Since nexa/nexa!531 NUM2BIN leaves a non-minimally encoded number as is when its minimal encoding already has
+// the requested size, so the result can be longer than asked for.  {input, size, result asked for}
+static const std::vector<std::tuple<VchType, int, VchType> > num2binNonMinimal = {
+    {{0xab, 0xcd, 0xef, 0x42, 0x80}, 4, {0xab, 0xcd, 0xef, 0xc2}},
+    {{0x80}, 0, {}}, // negative zero
+    {{0x00, 0x00}, 0, {}},
+    {{0x01, 0x00}, 1, {0x01}},
+};
+
+// Runs NUM2BIN on in and returns the result bytes (StackItems compare as bools)
+static bool Num2Bin(uint32_t flags, const VchType &in, int size, VchType &out, ScriptError &err)
+{
+    stacktype stack{StackItem(in)};
+    if (!EvalScript(stack, CScript() << size << OP_NUM2BIN, flags, MAX_OPS_PER_SCRIPT, ScriptImportedState(), &err))
+        return false;
+    BOOST_REQUIRE_EQUAL(stack.size(), 1U);
+    out = stack[0].data();
+    return true;
+}
+
+BOOST_AUTO_TEST_CASE(num2bin_nonminimal_same_size_is_left_as_is)
+{
+    for (const auto &c : num2binNonMinimal)
+    {
+        const VchType &in = std::get<0>(c);
+        for (uint32_t flags : {STANDARD_SCRIPT_VERIFY_FLAGS, MANDATORY_SCRIPT_VERIFY_FLAGS})
+        {
+            VchType out;
+            ScriptError err = SCRIPT_ERR_OK;
+            BOOST_CHECK(Num2Bin(flags, in, std::get<1>(c), out, err));
+            BOOST_CHECK(out == in);
+        }
+    }
+
+    // Before upgrade2, a minimal input or a size that needs padding gives exactly size bytes
+    const std::vector<std::tuple<VchType, int, VchType> > unaffected = {
+        {{0xab, 0xcd, 0xef, 0xc2}, 4, {0xab, 0xcd, 0xef, 0xc2}},
+        {{0xab, 0xcd, 0xef, 0x42, 0x80}, 5, {0xab, 0xcd, 0xef, 0x42, 0x80}},
+        {{0x80}, 3, {0x00, 0x00, 0x00}},
+        {{0x01, 0x00}, 2, {0x01, 0x00}},
+        {{0x01, 0x00}, 3, {0x01, 0x00, 0x00}},
+        {VchType(), 0, VchType()},
+    };
+    for (const auto &c : unaffected)
+    {
+        for (uint32_t flags : {STANDARD_SCRIPT_VERIFY_FLAGS, MANDATORY_SCRIPT_VERIFY_FLAGS})
+        {
+            VchType out;
+            ScriptError err = SCRIPT_ERR_OK;
+            BOOST_CHECK(Num2Bin(flags, std::get<0>(c), std::get<1>(c), out, err));
+            BOOST_CHECK(out == std::get<2>(c));
+        }
+    }
+}
+
+// From upgrade2 NUM2BIN returns size magnitude bytes and a separate sign byte, as for a BigNum input, whatever the
+// encoding of the number.  {input, size, result}
+BOOST_AUTO_TEST_CASE(num2bin_upgrade2_adds_sign_byte)
+{
+    const std::vector<std::tuple<VchType, int, VchType> > cases = {
+        {{0x05}, 4, {0x05, 0x00, 0x00, 0x00, 0x00}},
+        {{0x85}, 1, {0x05, 0x80}},
+        {{0x85}, 4, {0x05, 0x00, 0x00, 0x00, 0x80}},
+        {{0xab, 0xcd, 0xef, 0xc2}, 4, {0xab, 0xcd, 0xef, 0x42, 0x80}},
+        {{0xab, 0xcd, 0xef, 0x42, 0x80}, 4, {0xab, 0xcd, 0xef, 0x42, 0x80}},
+        {{0x00, 0x00, 0x80, 0x00}, 3, {0x00, 0x00, 0x80, 0x00}}, // 2^23
+        {{0x00, 0x00, 0x80, 0x00}, 4, {0x00, 0x00, 0x80, 0x00, 0x00}},
+        {{0x80, 0x00}, 1, {0x80, 0x00}}, // 128 fits in one magnitude byte
+        {{0x80, 0x80}, 1, {0x80, 0x80}},
+        {{0x01, 0x80}, 1, {0x01, 0x80}}, // non-minimal -1
+        {{0x01, 0x00}, 1, {0x01, 0x00}},
+        {{0x80}, 0, {0x00}}, // negative zero
+        {{}, 0, {0x00}},
+    };
+    for (const auto &c : cases)
+    {
+        for (uint32_t flags : {POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS,
+                 STANDARD_SCRIPT_VERIFY_FLAGS | POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS})
+        {
+            VchType out;
+            ScriptError err = SCRIPT_ERR_OK;
+            BOOST_CHECK(Num2Bin(flags, std::get<0>(c), std::get<1>(c), out, err));
+            BOOST_CHECK(out == std::get<2>(c));
+        }
+    }
+
+    // The magnitude does not fit in size bytes
+    const std::vector<std::pair<VchType, int> > tooBig = {
+        {{0x01}, 0}, {{0x00, 0x01}, 1}, {{0x00, 0x00, 0x80, 0x00}, 2}};
+    for (const auto &c : tooBig)
+    {
+        VchType out;
+        ScriptError err = SCRIPT_ERR_OK;
+        BOOST_CHECK(!Num2Bin(POST_UPGRADE2_MANDATORY_SCRIPT_VERIFY_FLAGS, c.first, c.second, out, err));
+        BOOST_CHECK_EQUAL(err, SCRIPT_ERR_IMPOSSIBLE_ENCODING);
     }
 }
 
