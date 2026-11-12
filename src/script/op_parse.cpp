@@ -27,6 +27,7 @@ bool ScriptMachine::EvalParseBytecode(int64_t first,
         {
             return set_error(&error, SCRIPT_ERR_PARSE);
         }
+        countCopiedBytes(pushedData.size() + COPIED_BYTES_PER_PARSED_OP);
         if (IsPushOpcode(opcode))
         {
             if (pushPos >= first)

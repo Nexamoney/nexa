@@ -65,6 +65,9 @@ static const uint64_t MAX_HASHED_BYTES_BASE = 8192;
 // byte item.
 static const uint64_t MAX_COPIED_BYTES_BASE = 2 * 1024 * 1024;
 static const uint64_t MAX_COPIED_BYTES_PER_SCRIPTSIG_BYTE = 512;
+// Copied bytes charged by OP_PARSE for every instruction it reads on the way to the pushes asked for,
+// on top of the bytes that instruction pushes
+static const uint64_t COPIED_BYTES_PER_PARSED_OP = 64;
 
 // Maximum number of total bytes allowed in the script stack
 // (restriction added into fork 1)
