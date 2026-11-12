@@ -7,7 +7,10 @@
 #include "test/test_nexa.h"
 // #include "test/test_random.h"
 
+#include <algorithm>
 #include <boost/test/unit_test.hpp>
+
+extern uint64_t nMaxSendBufferSize;
 
 BOOST_FIXTURE_TEST_SUITE(capd_tests, BasicTestingSetup)
 
@@ -1164,6 +1167,253 @@ BOOST_AUTO_TEST_CASE(capd_notification_limit)
     }
 
     node1.capd = nullptr;
+}
+
+// A full subscriber disconnects without queueing notifications, including repeated copies of a message.
+BOOST_AUTO_TEST_CASE(capd_notification_send_budget)
+{
+    struct SendBufferLimit
+    {
+        uint64_t previous = nMaxSendBufferSize;
+        SendBufferLimit() { nMaxSendBufferSize = 1024; }
+        ~SendBufferLimit() { nMaxSendBufferSize = previous; }
+    } sendBufferLimit;
+
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+    CNode sender(INVALID_SOCKET, CAddress(CService(ipv4Addr, 7777), NODE_NETWORK), "", false);
+    CNode watcher(INVALID_SOCKET, CAddress(CService(ipv4Addr, 7778), NODE_NETWORK), "", false);
+    CapdNode capdSender(&sender);
+    CapdNode capdWatcher(&watcher);
+    sender.isCapdEnabled = true;
+    sender.capd = &capdSender;
+    watcher.isCapdEnabled = true;
+    watcher.capd = &capdWatcher;
+
+    // The message is solved exactly at the relay minimum and decays below it when the clock ticks over a second,
+    // so freeze time to keep the priority filter from dropping it
+    struct FrozenTime
+    {
+        FrozenTime() { SetMockTime(GetTime()); }
+        ~FrozenTime() { SetMockTime(0); }
+    } frozenTime;
+
+    msgpool.clear();
+    CapdMsg msg("!!notification budget test");
+    msg.SetPowTarget(msgpool.GetRelayPowTarget());
+    msg.Solve();
+
+    // The watcher asks to be sent every message starting with "!!", then stops reading
+    CDataStream query = MsgMaker(watcher, NetMsgType::CAPDQUERY,
+        [&](auto &p)
+        {
+            p << (uint32_t)1 << (uint8_t)(CapdProtocol::CAPD_QUERY_TYPE_MSG | CapdProtocol::CAPD_QUERY_NOTIFY)
+              << (uint32_t)0 << (uint32_t)10 << std::vector<unsigned char>(msg.data.begin(), msg.data.begin() + 2);
+        });
+    BOOST_CHECK(HandleCapdMessage(watcher, query));
+    watcher.vLowPrioritySendMsg.clear();
+    watcher.nSendSize = nMaxSendBufferSize;
+    {
+        LOCK(cs_vNodes);
+        vNodes.push_back(&sender);
+        vNodes.push_back(&watcher);
+    }
+
+    // One message, solved once, sent 100 times in one CAPDMSG
+    CDataStream pkt = MsgMaker(sender, NetMsgType::CAPDMSG, [&](auto &p) { p << std::vector<CapdMsg>(100, msg); });
+    BOOST_CHECK(HandleCapdMessage(sender, pkt));
+    BOOST_CHECK(msgpool.find(msg.GetHash()) != nullptr);
+
+    {
+        LOCK(cs_vNodes);
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &sender), vNodes.end());
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &watcher), vNodes.end());
+    }
+    const uint64_t queued = watcher.nSendSize.load() + capdWatcher.pendingSendBytes.load() - nMaxSendBufferSize;
+    BOOST_TEST_MESSAGE("CAPD notification bytes queued past a full send buffer: " << queued);
+    BOOST_CHECK_EQUAL(queued, 0UL);
+    BOOST_CHECK(watcher.IsDisconnecting());
+    BOOST_CHECK_EQUAL(watcher.nMisbehavior.load(), 0);
+    BOOST_CHECK(!sender.IsDisconnecting());
+
+    msgpool.clear();
+    sender.capd = nullptr;
+    watcher.capd = nullptr;
+}
+
+// Duplicate suppression preserves the connection; a new notification at the limit disconnects it.
+BOOST_AUTO_TEST_CASE(capd_notification_once_within_send_budget)
+{
+    struct SendBufferLimit
+    {
+        uint64_t previous = nMaxSendBufferSize;
+        SendBufferLimit() { nMaxSendBufferSize = 1024; }
+        ~SendBufferLimit() { nMaxSendBufferSize = previous; }
+    } sendBufferLimit;
+
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+    CNode sender(INVALID_SOCKET, CAddress(CService(ipv4Addr, 7777), NODE_NETWORK), "", false);
+    CNode watcher(INVALID_SOCKET, CAddress(CService(ipv4Addr, 7778), NODE_NETWORK), "", false);
+    CapdNode capdSender(&sender);
+    CapdNode capdWatcher(&watcher);
+    sender.isCapdEnabled = true;
+    sender.capd = &capdSender;
+    watcher.isCapdEnabled = true;
+    watcher.capd = &capdWatcher;
+
+    // The message is solved exactly at the relay minimum and decays below it when the clock ticks over a second,
+    // so freeze time to keep the priority filter from dropping it
+    struct FrozenTime
+    {
+        FrozenTime() { SetMockTime(GetTime()); }
+        ~FrozenTime() { SetMockTime(0); }
+    } frozenTime;
+
+    msgpool.clear();
+    CapdMsg resent("!!notified once");
+    CapdMsg late("!!notified past the budget");
+    for (CapdMsg *msg : {&resent, &late})
+    {
+        msg->SetPowTarget(msgpool.GetRelayPowTarget());
+        msg->Solve();
+    }
+
+    CDataStream query = MsgMaker(watcher, NetMsgType::CAPDQUERY,
+        [&](auto &p)
+        {
+            p << (uint32_t)1 << (uint8_t)(CapdProtocol::CAPD_QUERY_TYPE_MSG | CapdProtocol::CAPD_QUERY_NOTIFY)
+              << (uint32_t)0 << (uint32_t)10
+              << std::vector<unsigned char>(resent.data.begin(), resent.data.begin() + 2);
+        });
+    BOOST_CHECK(HandleCapdMessage(watcher, query));
+    watcher.vLowPrioritySendMsg.clear();
+    watcher.nSendSize = 0;
+    {
+        LOCK(cs_vNodes);
+        vNodes.push_back(&sender);
+        vNodes.push_back(&watcher);
+    }
+
+    auto sendCapdMsgs = [&](const std::vector<CapdMsg> &msgs)
+    {
+        CDataStream pkt = MsgMaker(sender, NetMsgType::CAPDMSG, [&](auto &p) { p << msgs; });
+        BOOST_CHECK(HandleCapdMessage(sender, pkt));
+    };
+
+    sendCapdMsgs({resent});
+    const uint64_t oneReply = watcher.nSendSize.load();
+    BOOST_CHECK_GT(oneReply, 0UL);
+    sendCapdMsgs(std::vector<CapdMsg>(3, resent));
+    sendCapdMsgs({resent});
+    BOOST_CHECK_EQUAL(watcher.nSendSize.load(), oneReply);
+    BOOST_CHECK(!watcher.IsDisconnecting());
+
+    // A new matching message disconnects the full subscriber without penalizing it or the publisher.
+    watcher.nSendSize = nMaxSendBufferSize;
+    sendCapdMsgs({late});
+    BOOST_CHECK(msgpool.find(late.GetHash()) != nullptr);
+    BOOST_CHECK_EQUAL(watcher.nSendSize.load(), nMaxSendBufferSize);
+    BOOST_CHECK_EQUAL(capdWatcher.pendingSendBytes.load(), 0UL);
+    BOOST_CHECK(watcher.IsDisconnecting());
+    BOOST_CHECK_EQUAL(watcher.nMisbehavior.load(), 0);
+    BOOST_CHECK(!sender.IsDisconnecting());
+
+    {
+        LOCK(cs_vNodes);
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &sender), vNodes.end());
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), &watcher), vNodes.end());
+    }
+    msgpool.clear();
+    sender.capd = nullptr;
+    watcher.capd = nullptr;
+}
+
+// Only matching notifications disconnect a full subscriber, including when deferred replies fill the budget.
+BOOST_AUTO_TEST_CASE(capd_notification_disconnect_on_full_budget)
+{
+    struct SendBufferLimit
+    {
+        uint64_t previous = nMaxSendBufferSize;
+        ~SendBufferLimit() { nMaxSendBufferSize = previous; }
+    } sendBufferLimit;
+    struct Budget
+    {
+        uint64_t sent;
+        uint64_t pending;
+        uint64_t limit;
+    };
+    const Budget budgets[] = {{1024, 0, 1024}, {512, 512, 1024}, {0, 1025, 1024}, {0, 0, 0}};
+    const CapdMsgRef matching = MsgRefCopy(CapdMsg("!!notification"));
+    const CapdMsgRef unrelated = MsgRefCopy(CapdMsg("??notification"));
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+
+    for (uint8_t type : {CapdProtocol::CAPD_QUERY_TYPE_MSG, CapdProtocol::CAPD_QUERY_TYPE_MSG_HASH})
+    {
+        for (const Budget &budget : budgets)
+        {
+            CNode watcher(INVALID_SOCKET, CAddress(CService(ipv4Addr, 7778), NODE_NETWORK), "", false);
+            CapdNode capdWatcher(&watcher);
+            BOOST_REQUIRE(capdWatcher.installNotification(1, 10, type, {'!', '!'}));
+            nMaxSendBufferSize = budget.limit;
+            watcher.nSendSize = budget.sent;
+            capdWatcher.pendingSendBytes = budget.pending;
+
+            capdWatcher.checkNotification(unrelated);
+            BOOST_CHECK(!watcher.IsDisconnecting());
+            BOOST_CHECK(watcher.vLowPrioritySendMsg.empty());
+
+            capdWatcher.checkNotification(matching);
+            BOOST_CHECK(watcher.IsDisconnecting());
+            BOOST_CHECK_EQUAL(watcher.nMisbehavior.load(), 0);
+            BOOST_CHECK_EQUAL(watcher.nSendSize.load(), budget.sent);
+            BOOST_CHECK_EQUAL(capdWatcher.pendingSendBytes.load(), budget.pending);
+            BOOST_CHECK(watcher.vLowPrioritySendMsg.empty());
+
+            // Draining the backlog must not resume notifications on a disconnecting connection.
+            nMaxSendBufferSize = 1024;
+            watcher.nSendSize = 0;
+            capdWatcher.pendingSendBytes = 0;
+            capdWatcher.checkNotification(matching);
+            BOOST_CHECK_EQUAL(watcher.nSendSize.load(), 0UL);
+            BOOST_CHECK(watcher.vLowPrioritySendMsg.empty());
+        }
+    }
+}
+
+// One reply may cross the soft limit, but a second matching subscription must recheck the budget.
+BOOST_AUTO_TEST_CASE(capd_notification_multiple_matches_soft_budget)
+{
+    struct SendBufferLimit
+    {
+        uint64_t previous = nMaxSendBufferSize;
+        SendBufferLimit() { nMaxSendBufferSize = 1024; }
+        ~SendBufferLimit() { nMaxSendBufferSize = previous; }
+    } sendBufferLimit;
+    const CapdMsgRef matching = MsgRefCopy(CapdMsg("!!notification"));
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0x7f000001;
+
+    for (uint8_t type : {CapdProtocol::CAPD_QUERY_TYPE_MSG, CapdProtocol::CAPD_QUERY_TYPE_MSG_HASH})
+    {
+        CNode watcher(INVALID_SOCKET, CAddress(CService(ipv4Addr, 7778), NODE_NETWORK), "", false);
+        CapdNode capdWatcher(&watcher);
+        BOOST_REQUIRE(capdWatcher.installNotification(1, 10, type, {'!', '!'}));
+        BOOST_REQUIRE(capdWatcher.installNotification(2, 10, type, {'!', '!', 'n', 'o'}));
+        watcher.nSendSize = nMaxSendBufferSize - 1;
+
+        capdWatcher.checkNotification(matching);
+        BOOST_CHECK_GT(watcher.nSendSize.load(), nMaxSendBufferSize);
+        BOOST_CHECK_EQUAL(watcher.vLowPrioritySendMsg.size(), 1U);
+        BOOST_CHECK(watcher.IsDisconnecting());
+        BOOST_CHECK_EQUAL(watcher.nMisbehavior.load(), 0);
+        BOOST_CHECK_EQUAL(capdWatcher.pendingSendBytes.load(), 0UL);
+        const uint64_t queued = watcher.nSendSize.load();
+        capdWatcher.checkNotification(matching);
+        BOOST_CHECK_EQUAL(watcher.nSendSize.load(), queued);
+        BOOST_CHECK_EQUAL(watcher.vLowPrioritySendMsg.size(), 1U);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

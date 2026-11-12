@@ -386,13 +386,13 @@ void CapdMsgPool::_DbgDump()
     printf("relay: %s, local: %s\n", _GetRelayPowTarget().GetHex().c_str(), _GetLocalPowTarget().GetHex().c_str());
 }
 
-void CapdMsgPool::add(const CapdMsg &msg)
+bool CapdMsgPool::add(const CapdMsg &msg)
 {
     CapdMsgRef m = std::make_shared<CapdMsg>(msg);
-    add(m);
+    return add(m);
 }
 
-void CapdMsgPool::add(const CapdMsgRef &msg)
+bool CapdMsgPool::add(const CapdMsgRef &msg)
 {
     bool broadcast = false;
 
@@ -438,6 +438,7 @@ void CapdMsgPool::add(const CapdMsgRef &msg)
         if (p)
             p->GossipMessage(msg);
     }
+    return broadcast;
 }
 
 
@@ -668,8 +669,9 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
 
             try
             {
-                pool->add(msgRef); // the pool will relay to P2P nodes if the message is viable
-                goodMsgs.push_back(msgRef);
+                // The pool relays new messages to P2P nodes. Resent ones were already notified, so skip them
+                if (pool->add(msgRef))
+                    goodMsgs.push_back(msgRef);
             }
             catch (CapdMsgPoolException &e)
             {
@@ -906,7 +908,7 @@ void CapdNode::checkNotification(const CapdMsgRef msg)
     if (msg == nullptr)
         return;
     LOCK(csCapdNode);
-    if (node == nullptr)
+    if (node == nullptr || node->IsDisconnecting())
         return; // In case the node has disconnected
     auto len = msg->data.size();
 
@@ -918,6 +920,12 @@ void CapdNode::checkNotification(const CapdMsgRef msg)
             auto elems = notifications.equal_range(std::vector<uint8_t>(msg->data.begin(), msg->data.begin() + srch));
             for (auto it = elems.first; it != elems.second; ++it)
             {
+                // Make missed notifications visible to the subscriber, and stop growing its backlog.
+                if (node->nSendSize.load() + pendingSendBytes.load() >= nMaxSendBufferSize)
+                {
+                    node->CloseSocketDisconnect("CAPD notification send buffer full");
+                    return;
+                }
                 const CapdNode::NotificationInfo &ni = it->second;
                 LOG(CAPD, "Capd: notification match node %s Id %d\n", node->GetLogName(), ni.cookie);
                 if (ni.type == CapdProtocol::CAPD_QUERY_TYPE_MSG)
