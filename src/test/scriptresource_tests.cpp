@@ -277,12 +277,13 @@ static ScriptError EvalError(const CScript &script, uint32_t flags, const Script
     sm.Eval(script);
     uint64_t elapsed = GetStopwatchMicros() - start;
     const ScriptMachineResourceTracker &stats = sm.getStats();
-    printf("EvalError: %lu us, script %u bytes, flags 0x%x, result: %s\n"
-           "  ops %u, opExec %u, opExecDepth %u, sigChecks %lu, maxStackBytes %u, maxStackItems %u, "
-           "hashedBytes %lu, visitedBytes %lu\n",
+    BOOST_TEST_MESSAGE(strprintf(
+        "EvalError: %lu us, script %u bytes, flags 0x%x, result: %s\n"
+        "  ops %u, opExec %u, opExecDepth %u, sigChecks %lu, maxStackBytes %u, maxStackItems %u, "
+        "hashedBytes %lu, visitedBytes %lu",
         (unsigned long)elapsed, (unsigned int)script.size(), flags, ScriptErrorString(sm.getError()), stats.nOpCount,
         stats.nOpExec, stats.nOpExecDepth, (unsigned long)stats.consensusSigCheckCount, stats.maxStackBytes,
-        stats.maxStackItems, (unsigned long)stats.hashedBytes, (unsigned long)stats.visitedBytes);
+        stats.maxStackItems, (unsigned long)stats.hashedBytes, (unsigned long)stats.visitedBytes));
     return sm.getError();
 }
 
@@ -610,9 +611,10 @@ BOOST_AUTO_TEST_CASE(TestLongestOpParse)
     sis.tx = MakeTransactionRef(tx);
     sis.nIn = 0;
     const size_t parses = MAX_OP_EXEC * parsesPerExec + mainParses;
-    printf("TestLongestOpParse: %lu parses of a %lu byte output (%lu ops scanned), script %lu bytes, tx %lu bytes\n",
+    BOOST_TEST_MESSAGE(strprintf(
+        "TestLongestOpParse: %lu parses of a %lu byte output (%lu ops scanned), script %lu bytes, tx %lu bytes",
         (unsigned long)parses, (unsigned long)target.size(), (unsigned long)(parses * target.size()),
-        (unsigned long)script.size(), (unsigned long)CTransaction(tx).GetTxSize());
+        (unsigned long)script.size(), (unsigned long)CTransaction(tx).GetTxSize()));
     BOOST_CHECK(EvalError(script, STANDARD_SCRIPT_VERIFY_FLAGS, sis) == SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED);
 }
 
@@ -661,6 +663,131 @@ BOOST_AUTO_TEST_CASE(TestVisitedBytesCount)
         const uint64_t counted = VisitedBytes((CScript() << item) + ops) - base;
         BOOST_CHECK_MESSAGE(counted == expected, ScriptToAsmStr(ops) << " counted " << counted);
     }
+}
+
+// OP_CHECKSIG recomputes the signature hash from scratch on every call: SignatureHashNexa re-runs GetPrevoutHash,
+// GetSequenceHash, GetInputAmountHash and GetOutputsHash over the whole transaction, with no cached midstate. None
+// of those bytes are charged to the hashed-byte limit (countHashedBytes is never called on this path; the checker's
+// nBytesHashed only counts the ~200 byte final preimage, not the output set hashed inside GetOutputsHash). It also
+// copies the script tail and FindAndDeletes the sig each call. So a script that checks one signature many times
+// re-hashes the entire transaction each time for free, bounded only by the sigcheck count. This times that: the
+// hashed bytes the limit sees stay zero while the real work scales with (checks * output bytes).
+BOOST_AUTO_TEST_CASE(TestCheckSigRehashesTx)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    const CPubKey pub = key.GetPubKey();
+    const VchType pubkey(pub.begin(), pub.end());
+
+    // A transaction with a large output set, so each sighash hashes a lot
+    const int nOutputs = 500;
+    const int outScriptSize = 500;
+    const VchType outScriptBytes(outScriptSize, OP_NOP);
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0].amount = 10000;
+    for (int i = 0; i < nOutputs; i++)
+        tx.vout.push_back(CTxOut(1, CScript(outScriptBytes.begin(), outScriptBytes.end()), CTxOut::SATOSCRIPT));
+
+    // One signature, verified many times.  The OP_CODESEPARATOR fixes the scriptCode each check sees to the loop
+    // tail, so every check hashes the same preimage and the one signature satisfies all of them.
+    const int nChecks = 1000;
+    CScript loopTail;
+    for (int i = 0; i < nChecks; i++)
+        loopTail << OP_2DUP << OP_CHECKSIGVERIFY;
+    loopTail << OP_2DROP << OP_1;
+
+    uint256 sighash;
+    SignatureHashNexa(loopTail, CTransaction(tx), 0, SigHashType(), sighash, nullptr);
+    VchType sig;
+    key.SignSchnorr(sighash, sig);
+    SigHashType().appendToSig(sig);
+
+    CScript script = (CScript() << sig << pubkey << OP_CODESEPARATOR) + loopTail;
+
+    ScriptImportedStateSig sis(&tx, 0, tx.vin[0].amount, STANDARD_SCRIPT_VERIFY_FLAGS);
+    ScriptMachine sm(STANDARD_SCRIPT_VERIFY_FLAGS, sis, MAX_OPS_PER_SCRIPT_TEMPLATE, 0xffffffff);
+    sm.maxScriptSize = MAX_SCRIPT_TEMPLATE_SIZE;
+    const uint64_t start = GetStopwatchMicros();
+    sm.Eval(script);
+    const uint64_t elapsed = GetStopwatchMicros() - start;
+    const ScriptMachineResourceTracker &stats = sm.getStats();
+
+    const uint64_t outBytes = (uint64_t)nOutputs * (outScriptSize + 11); // approx serialized output bytes
+    BOOST_TEST_MESSAGE(strprintf(
+        "TestCheckSigRehashesTx: %d checksigs over ~%lu output bytes, %lu us, re-hashed ~%lu bytes uncharged; "
+        "hashedBytes %lu, visitedBytes %lu",
+        nChecks, (unsigned long)outBytes, (unsigned long)elapsed, (unsigned long)((uint64_t)nChecks * outBytes),
+        (unsigned long)stats.hashedBytes, (unsigned long)stats.visitedBytes));
+
+    BOOST_CHECK(sm.getError() == SCRIPT_ERR_OK);
+    // The per-checksig re-hash of the whole transaction is charged to neither the hashed nor the visited limit
+    BOOST_CHECK(stats.hashedBytes == 0);
+}
+
+// Build and validate a transaction whose single input is deliberately expensive to validate: a large
+// output set combined with many signature checks.  Each OP_CHECKSIGVERIFY recomputes the sighash over
+// the whole transaction (prevouts/sequences/amounts/outputs) from scratch -- there is no cached midstate
+// -- so validation cost grows as (number of checks) x (transaction size).  Post-Upgrade2 the per-tx
+// MAX_TX_SIGCHECK_COUNT cap is removed (validation.cpp gates it on !IsUpgrade2Activated) and only the
+// scriptSig-density rule (parallel.cpp: ~43 scriptSig bytes per check) bounds the check count, which does
+// not bound it relative to the output-set size that dominates each re-hash.  This test prints the wall
+// clock time and shows the re-hashed bytes are charged to neither the hashed nor the visited limit.
+BOOST_AUTO_TEST_CASE(TestSlowTxValidationViaChecksigs)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    const CPubKey pub = key.GetPubKey();
+    const VchType pubkey(pub.begin(), pub.end());
+
+    // A ~1MB output set: every signature check re-hashes all of it.
+    const int nOutputs = 2000;
+    const int outScriptSize = 500;
+    const VchType outScriptBytes(outScriptSize, OP_NOP);
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0].amount = 10000;
+    for (int i = 0; i < nOutputs; i++)
+        tx.vout.push_back(CTxOut(1, CScript(outScriptBytes.begin(), outScriptBytes.end()), CTxOut::SATOSCRIPT));
+
+    // One signature verified many times.  OP_CODESEPARATOR fixes the scriptCode every check hashes to the
+    // loop tail, so the single signature satisfies all iterations.
+    const int nChecks = 500;
+    CScript loopTail;
+    for (int i = 0; i < nChecks; i++)
+        loopTail << OP_2DUP << OP_CHECKSIGVERIFY;
+    loopTail << OP_2DROP << OP_1;
+
+    uint256 sighash;
+    SignatureHashNexa(loopTail, CTransaction(tx), 0, SigHashType(), sighash, nullptr);
+    VchType sig;
+    key.SignSchnorr(sighash, sig);
+    SigHashType().appendToSig(sig);
+
+    CScript script = (CScript() << sig << pubkey << OP_CODESEPARATOR) + loopTail;
+
+    // Validate the input the way the consensus code does: through a ScriptMachine carrying the tx context,
+    // with the template-script op budget (MAX_OPS_PER_SCRIPT_TEMPLATE) that the real template path uses.
+    ScriptImportedStateSig sis(&tx, 0, tx.vin[0].amount, STANDARD_SCRIPT_VERIFY_FLAGS);
+    ScriptMachine sm(STANDARD_SCRIPT_VERIFY_FLAGS, sis, MAX_OPS_PER_SCRIPT_TEMPLATE, 0xffffffff);
+    sm.maxScriptSize = MAX_SCRIPT_TEMPLATE_SIZE;
+    const uint64_t start = GetStopwatchMicros();
+    sm.Eval(script);
+    const uint64_t elapsed = GetStopwatchMicros() - start;
+    const ScriptMachineResourceTracker &stats = sm.getStats();
+
+    const uint64_t outBytes = (uint64_t)nOutputs * (outScriptSize + 11); // approx serialized output bytes
+    BOOST_TEST_MESSAGE(
+        strprintf("TestSlowTxValidationViaChecksigs: %d checksigs over a ~%lu byte output set took %lu us (%.2f s); "
+                  "re-hashed ~%lu bytes that are charged to neither limit (hashedBytes %lu, visitedBytes %lu)",
+            nChecks, (unsigned long)outBytes, (unsigned long)elapsed, elapsed / 1e6,
+            (unsigned long)((uint64_t)nChecks * outBytes), (unsigned long)stats.hashedBytes,
+            (unsigned long)stats.visitedBytes));
+
+    BOOST_CHECK(sm.getError() == SCRIPT_ERR_OK);
+    BOOST_CHECK_EQUAL(stats.consensusSigCheckCount, (uint64_t)nChecks);
+    // The quadratic cost is the per-check sighash re-hash, and it is accounted to neither resource limit.
+    BOOST_CHECK(stats.hashedBytes == 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
