@@ -1957,6 +1957,8 @@ bool ScriptMachine::Step()
                         // Assuming success is usually a bad idea, but the schnorr path can only succeed.
                         fSuccess = true;
                         stats.consensusSigCheckCount += nSigsCount; // 2020-05-15 sigchecks consensus rule
+                        if (stats.consensusSigCheckCount > maxConsensusSigOps)
+                            return set_error(serror, SCRIPT_ERR_SIGCHECKS_LIMIT_EXCEEDED);
                         // SCHNORR MULTISIG
                         static_assert(
                             MAX_PUBKEYS_PER_MULTISIG < 32, "Multisig bitfield can't represent more than 32 keys");
@@ -2088,8 +2090,9 @@ bool ScriptMachine::Step()
                         return false;
                     }
 
-                    // Checking for > or = here because I'm about to do another one so that will make it >
-                    if (stats.consensusSigCheckCount >= maxConsensusSigOps)
+                    // Checking for > or = here because I'm about to do another one so that will make it >.
+                    // An empty signature is not a sigcheck.
+                    if (vchSig.size() && stats.consensusSigCheckCount >= maxConsensusSigOps)
                     {
                         return set_error(serror, SCRIPT_ERR_SIGCHECKS_LIMIT_EXCEEDED);
                     }
@@ -3098,7 +3101,8 @@ bool VerifyScript(const CScript &scriptSig,
     // Verify that flags are consistent, if not just continue in relase
     if (sis.checker)
         DbgAssert(flags == sis.checker->flags(), );
-    unsigned int maxActualSigops = 0xFFFFFFFF; // TODO add sigop execution limits
+    // Stop at the first sigcheck the density rule would refuse once the script has run
+    const unsigned int maxActualSigops = MaxSigChecksForScriptSig(scriptSig.size());
 
     if (scriptPubKey.type == ScriptType::TEMPLATE)
     {

@@ -65,16 +65,15 @@ bool CScriptCheck::operator()()
     {
         resourceTracker->UpdateConsensusSigChecks(smRes.consensusSigCheckCount);
     }
-    // input standardness rule
-    // if < 2 scriptsig len is allowed to be 0 (len formula goes negative)
+    // Per-input sigcheck density rule. Consensus, not just standardness: blocks run this check too, whatever the
+    // flags. VerifyScript already stops at the same limit for template scripts.
     {
-        auto lenScriptSig = scriptSig.size();
-        if ((smRes.consensusSigCheckCount > 1) && ((smRes.consensusSigCheckCount * 43) - 60 > lenScriptSig))
+        const uint64_t maxSigChecks = MaxSigChecksForScriptSig(scriptSig.size());
+        if (smRes.consensusSigCheckCount > maxSigChecks)
         {
             error = SCRIPT_ERR_SIGCHECKS_LIMIT_EXCEEDED;
-            LOG(SCRIPT,
-                "Sigchecks limit exceeded, with %d sigchecks: min script length (%d) > satisfier script len (%d)",
-                smRes.consensusSigCheckCount, (smRes.consensusSigCheckCount * 43) - 60, lenScriptSig);
+            LOG(SCRIPT, "Sigchecks limit exceeded, with %d sigchecks: satisfier script len (%d) allows %d",
+                smRes.consensusSigCheckCount, scriptSig.size(), maxSigChecks);
             return false;
         }
     }

@@ -742,6 +742,19 @@ bool EvalScript(Stack &stack,
     const ScriptImportedState &sis,
     ScriptError *error = nullptr);
 
+/**
+ * Most sigchecks an input may perform, given the length of its scriptSig.
+ *
+ * Per-input density rule: an input that performs n sigchecks must have a scr0 bytes.
+ * The -60 is a fixed allowance, so 1 sigcheck is always allowed (43 - 60 is negative), 2 need 26 bytes, 3 need 69,
+ * and each further one 43 more. Solving the rule for n gives n <= (len + 60)urns; it
+ * is at least 1 for any length.
+ *
+ * Consensus: CScriptCheck applies it to every input after the script has run, for blocks and mempool alike, and
+ * VerifyScript passes it to the interpreter as the sigcheck cap so a script  it.
+ */
+inline uint64_t MaxSigChecksForScriptSig(size_t scriptSigLen) { return (scriptSigLen + 60) / 43; }
+
 bool VerifyScript(const CScript &scriptSig,
     const CScript &scriptPubKey,
     unsigned int flags,
