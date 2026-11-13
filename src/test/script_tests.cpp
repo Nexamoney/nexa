@@ -4449,6 +4449,21 @@ static void CheckPass(uint32_t flags, const Stack &original_stack, const CScript
     BOOST_CHECK(stack == expected);
 }
 
+// Arguments near the int64 limits must fail cleanly, without signed overflow or an out of range iterator
+BOOST_AUTO_TEST_CASE(script_jump_exec_extreme_args)
+{
+    const uint32_t flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
+
+    for (int64_t offset : {INT64_MAX, -INT64_MAX, int64_t(1) << 40, -(int64_t(1) << 40)})
+    {
+        CheckError(flags, {}, CScript() << CScriptNum::fromIntUnchecked(offset) << OP_JUMP, SCRIPT_ERR_INVALID_JUMP);
+    }
+
+    CScript code = CScript() << OP_1;
+    CheckError(flags, {}, CScript() << ToByteVector(code) << CScriptNum::fromIntUnchecked(INT64_MAX) << OP_0 << OP_EXEC,
+        SCRIPT_ERR_INVALID_STACK_OPERATION);
+}
+
 BOOST_AUTO_TEST_CASE(script_registers)
 {
     uint32_t flags = MANDATORY_SCRIPT_VERIFY_FLAGS;

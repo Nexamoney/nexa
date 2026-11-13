@@ -817,7 +817,7 @@ bool ScriptMachine::Step()
                     int64_t paramQty = stackItemAt(-2).asInt64(fRequireMinimal); // number of parameters
                     if (paramQty < 0)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                    if ((int64_t)stack.size() < 3 + paramQty) // 3 because 2 qty params and code
+                    if (paramQty > (int64_t)stack.size() - 3) // 3 because 2 qty params and code
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
 
                     const valtype code = stacktop(-3 - paramQty);
@@ -877,13 +877,12 @@ bool ScriptMachine::Step()
                     int64_t offset = si.asInt64(false);
                     if (offset != 0) // any form of false does not jump.
                     {
-                        // + 1 the offset because the pc got advanced by 1 byte for OP_IFJUMP already
-                        auto temp = pc - (1 + offset);
-                        if (temp < pbegin)
+                        // The offset is relative to the OP_JUMP byte; pc already moved past it.
+                        // Check the range before moving pc so no out of range iterator is formed.
+                        const int64_t jumpPos = (pc - pbegin) - 1;
+                        if (offset > jumpPos || offset < jumpPos - (pend - pbegin))
                             return set_error(serror, SCRIPT_ERR_INVALID_JUMP);
-                        if (temp > pend)
-                            return set_error(serror, SCRIPT_ERR_INVALID_JUMP);
-                        pc = temp;
+                        pc = pbegin + (jumpPos - offset);
                     }
                     PopStack(); // Pop the arg from the stack last so we can use the arg by reference
                 }
