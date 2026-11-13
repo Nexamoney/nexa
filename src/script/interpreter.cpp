@@ -1205,8 +1205,10 @@ bool ScriptMachine::Step()
                         StackItem si = stackItemAt(-n - 1);
                         if (opcode == OP_ROLL)
                         {
-                            // In the roll case, items are moved, so no stack size change occurs
-                            countVisitedBytes(si.size());
+                            // In the roll case, items are moved, so no stack size change occurs.
+                            // The erase below shifts the n items above the rolled one down by a slot, so the
+                            // work is O(n): charge a visited byte per shifted slot on top of the moved item.
+                            countVisitedBytes(si.size() + n);
                             stack.push_back(si);
                             // another item was added to the stack, index -n-1 is now
                             // off by one, subtract 1 to compensate
@@ -1238,15 +1240,19 @@ bool ScriptMachine::Step()
                         // subtract 1 from n to offset the end
                         if (opcode == OP_ROLL)
                         {
-                            // No size change because we are moving the item
-                            countVisitedBytes(si.size());
+                            // No size change because we are moving the item.
+                            // The insert shifts the n items at/above the target slot up by one, so the work is
+                            // O(n): charge a visited byte per shifted slot on top of the moved item.
+                            countVisitedBytes(si.size() + n);
                             stack.insert(stack.end() - n, si);
                             stack.pop_back();
                         }
                         else
                         {
-                            // Inserting the item, so the size changes
-                            countVisitedBytes(si.size());
+                            // Inserting the item, so the size changes.
+                            // The insert shifts the n items at/above the target slot up by one, so the work is
+                            // O(n): charge a visited byte per shifted slot on top of the inserted item.
+                            countVisitedBytes(si.size() + n);
                             CheckAndUpdateStackSize(si.size());
                             stack.insert(stack.end() - n, si);
                         }
