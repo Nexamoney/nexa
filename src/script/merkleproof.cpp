@@ -14,9 +14,10 @@ protected:
     CHash256 hash256;
 
     MerkleRootAlg alg;
+    ScriptMachine &sm; // charged for every byte hashed
 
 public:
-    MpHash(MerkleRootAlg a) : alg(a) {}
+    MpHash(MerkleRootAlg a, ScriptMachine &machine) : alg(a), sm(machine) {}
 
     void Finalize(unsigned char *hash)
     {
@@ -50,6 +51,7 @@ public:
 
     MpHash &Write(const unsigned char *data, size_t len)
     {
+        sm.countHashedBytes(len);
         switch (alg)
         {
         case MerkleRootAlg::SHA256:
@@ -235,6 +237,7 @@ bool ScriptMachine::opMerkleRoot()
         else
         {
             auto tmp = stackItemAt(-1).asVch();
+            countHashedBytes(tmp.size());
             HashMpLeaf(leafAlg, tmp, elements[i]);
         }
         PopStack();
@@ -243,7 +246,7 @@ bool ScriptMachine::opMerkleRoot()
 
     const VchType proof = stackItemAt(-1).data();
     PopStack();
-    MpHash hasher(nodeAlg);
+    MpHash hasher(nodeAlg, *this);
 
     std::vector<uint64_t> returnIndex;
     std::vector<uint64_t> returnDepth;

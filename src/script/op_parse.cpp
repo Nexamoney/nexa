@@ -27,6 +27,9 @@ bool ScriptMachine::EvalParseBytecode(int64_t first,
         {
             return set_error(&error, SCRIPT_ERR_PARSE);
         }
+        // Count every byte visited.  This is especially important here because we could be parsing the transaction
+        // itself (not data on the stack), so these memory visits will not be covered by duplicating stack items
+        countVisitedBytes(pushedData.size() + VISITED_BYTES_PER_PARSED_OP);
         if (IsPushOpcode(opcode))
         {
             if (pushPos >= first)

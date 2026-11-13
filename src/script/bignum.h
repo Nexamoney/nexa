@@ -16,6 +16,8 @@
 
 #define MAX_BIGNUM_MAGNITUDE_SIZE 512
 #define MAX_BIGNUM_BITSHIFT_SIZE (MAX_BIGNUM_MAGNITUDE_SIZE * 8)
+// Under SCRIPT_LIMIT_BIGNUM_CONVERSION, byte arrays holding a wider number (8192 bits) do not convert to a BigNum
+#define MAX_BIGNUM_CONVERSION_MAGNITUDE_SIZE (MAX_BIGNUM_MAGNITUDE_SIZE * 2)
 
 class OutOfBounds : std::exception
 {

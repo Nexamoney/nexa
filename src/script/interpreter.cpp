@@ -385,6 +385,7 @@ void ScriptMachine::PushStack(const StackItem &item)
     int64_t itemSize = item.size();
     CheckAndUpdateStackSize(itemSize);
     stack.push_back(item);
+    countVisitedBytes(itemSize);
 }
 
 /* Push an item to the main stack */
@@ -393,6 +394,7 @@ void ScriptMachine::PushStack(const unsigned char *begin, const unsigned char *e
     int64_t itemSize = end - begin;
     CheckAndUpdateStackSize(itemSize);
     stack.emplace_back(begin, end);
+    countVisitedBytes(itemSize);
 }
 
 /* Push an item to the main stack */
@@ -401,6 +403,7 @@ void ScriptMachine::PushStack(const CScript::const_iterator &begin, const CScrip
     int64_t itemSize = end - begin;
     CheckAndUpdateStackSize(itemSize);
     stack.emplace_back(begin, end);
+    countVisitedBytes(itemSize);
 }
 
 VchType &ScriptMachine::mstacktop(int i) { return mstackItemAt(i).mdata(); }
@@ -457,6 +460,7 @@ void ScriptMachine::PushAltStack(const StackItem &item)
     {
         throw script_error(SCRIPT_ERR_STACK_BYTES, "ScriptMachine.PushAltStack: stack memory exceeded");
     }
+    countVisitedBytes(itemSize);
     // currentTotal <= maxStackUse <= UINT_MAX, so this narrowing cannot truncate
     if (currentTotal > stats.maxStackBytes)
         stats.maxStackBytes = (unsigned int)currentTotal;
@@ -828,6 +832,8 @@ bool ScriptMachine::Step()
                     ScriptMachine sm(
                         flags, sis, maxOps - stats.nOpCount, maxConsensusSigOps - stats.consensusSigCheckCount);
                     sm.stats.nOpExecDepth = stats.nOpExecDepth + 1;
+                    sm.maxHashedBytes = maxHashedBytes - std::min(maxHashedBytes, stats.hashedBytes);
+                    sm.maxVisitedBytes = maxVisitedBytes - std::min(maxVisitedBytes, stats.visitedBytes);
                     sm.StackReserve(paramQty);
                     for (int i = 0; i < paramQty; i++)
                     {
@@ -965,6 +971,7 @@ bool ScriptMachine::Step()
                     {
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     }
+                    countVisitedBytes(stackItemAt(-1).size());
                     MoveStackToAlt();
                 }
                 break;
@@ -975,6 +982,7 @@ bool ScriptMachine::Step()
                     {
                         return set_error(serror, SCRIPT_ERR_INVALID_ALTSTACK_OPERATION);
                     }
+                    countVisitedBytes(altstackItemAt(-1).size());
                     MoveAltToStack();
                 }
                 break;
@@ -1050,6 +1058,7 @@ bool ScriptMachine::Step()
                     }
                     const StackItem si1 = stackItemAt(-6); // copy not refs so erase ok
                     const StackItem si2 = stackItemAt(-5);
+                    countVisitedBytes(si1.size() + si2.size());
                     // Since this operation just moves stack items, the total stack length is not changed.
                     // This means we can use stack primitives rather than PushStack and PopStack
                     stack.erase(stack.end() - 6, stack.end() - 4);
@@ -1077,6 +1086,7 @@ bool ScriptMachine::Step()
                     {
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     }
+                    countVisitedBytes(stackItemAt(-1).size()); // read even when not duplicated
                     if (enableExtBignum)
                     {
                         const StackItem &arg = stackItemAt(-1);
@@ -1194,7 +1204,11 @@ bool ScriptMachine::Step()
                         StackItem si = stackItemAt(-n - 1);
                         if (opcode == OP_ROLL)
                         {
-                            // In the roll case, items are moved, so no stack size change occurs
+                            // In the roll case, items are moved, so no stack size change occurs.
+                            // The erase below shifts the n items above the rolled one down by a slot, so the
+                            // work is O(n): charge ROLL_COST_PER_ITEM visited bytes per shifted slot on top of the
+                            // moved item.
+                            countVisitedBytes(si.size() + ROLL_COST_PER_ITEM * n);
                             stack.push_back(si);
                             // another item was added to the stack, index -n-1 is now
                             // off by one, subtract 1 to compensate
@@ -1226,13 +1240,19 @@ bool ScriptMachine::Step()
                         // subtract 1 from n to offset the end
                         if (opcode == OP_ROLL)
                         {
-                            // No size change because we are moving the item
+                            // No size change because we are moving the item.
+                            // The insert shifts the n items at/above the target slot up by one, so the work is
+                            // O(n): charge ROLL_COST_PER_ITEM visited bytes per shifted slot on top of the moved item.
+                            countVisitedBytes(si.size() + ROLL_COST_PER_ITEM * n);
                             stack.insert(stack.end() - n, si);
                             stack.pop_back();
                         }
                         else
                         {
-                            // Inserting the item, so the size changes
+                            // Inserting the item, so the size changes.
+                            // The insert shifts the n items at/above the target slot up by one, so the work is
+                            // O(n): charge a visited byte per shifted slot on top of the inserted item.
+                            countVisitedBytes(si.size() + n);
                             CheckAndUpdateStackSize(si.size());
                             stack.insert(stack.end() - n, si);
                         }
@@ -1273,6 +1293,7 @@ bool ScriptMachine::Step()
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     }
                     const StackItem &si = stackItemAt(-1);
+                    countVisitedBytes(si.size());
                     CheckAndUpdateStackSize(si.size());
                     stack.insert(stack.end() - 2, si); // si is invalid after this insert!!
                 }
@@ -1314,6 +1335,7 @@ bool ScriptMachine::Step()
                         return set_error(serror, SCRIPT_ERR_INVALID_REGISTER);
                     }
                     // store the value in the register
+                    countVisitedBytes(register_value.size());
                     arrRegisters[register_num] = register_value;
                     PopStack(); // pop the register number off the stack
                     PopStack(); // pop the stored value off the stack
@@ -1369,8 +1391,8 @@ bool ScriptMachine::Step()
                         const auto &arg2 = stackItemAt(-1);
                         if (arg1.isBigNum() || arg2.isBigNum())
                         {
-                            BigNum b1 = arg1.asBigNum(bigNumModulo);
-                            BigNum b2 = arg2.asBigNum(bigNumModulo);
+                            BigNum b1 = toBigNum(arg1);
+                            BigNum b2 = toBigNum(arg2);
                             BigNum result;
                             switch (opcode)
                             {
@@ -1406,6 +1428,7 @@ bool ScriptMachine::Step()
                         }
 
                         // To avoid allocating, we modify vch1 in place.
+                        countVisitedBytes(vch1.size());
                         switch (opcode)
                         {
                         case OP_AND:
@@ -1456,6 +1479,8 @@ bool ScriptMachine::Step()
                         {
                             const valtype &vch1 = stacktop(-2);
                             const valtype &vch2 = stacktop(-1);
+                            if (vch1.size() == vch2.size())
+                                countVisitedBytes(vch1.size());
                             fEqual = (vch1 == vch2);
                             /*  Super-useful script debugging printout
                             if (opcode == OP_EQUALVERIFY)
@@ -1627,14 +1652,12 @@ bool ScriptMachine::Step()
                         if (upgrade2)
                         {
                             // In upgrade 2 swap the order of arguments to match that of non-bignum operations
-                            if (!BigNumScriptOp(ret, opcode, b.asBigNum(bigNumModulo), a.asBigNum(bigNumModulo),
-                                    bigNumModulo, serror))
+                            if (!BigNumScriptOp(ret, opcode, toBigNum(b), toBigNum(a), bigNumModulo, serror))
                                 return false;
                         }
                         else
                         {
-                            if (!BigNumScriptOp(ret, opcode, a.asBigNum(bigNumModulo), b.asBigNum(bigNumModulo),
-                                    bigNumModulo, serror))
+                            if (!BigNumScriptOp(ret, opcode, toBigNum(a), toBigNum(b), bigNumModulo, serror))
                                 return false;
                         }
                         PopStack();
@@ -1805,6 +1828,7 @@ bool ScriptMachine::Step()
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     }
                     const valtype &vch = stacktop(-1);
+                    countHashedBytes(vch.size());
                     valtype vchHash((opcode == OP_RIPEMD160 || opcode == OP_SHA1 || opcode == OP_HASH160) ? 20 : 32);
                     if (opcode == OP_RIPEMD160)
                     {
@@ -2099,6 +2123,7 @@ bool ScriptMachine::Step()
                     bool fSuccess = false;
                     if (vchSig.size())
                     {
+                        countHashedBytes(vchMessage.size());
                         valtype vchHash(32);
                         CSHA256().Write(vchMessage.data(), vchMessage.size()).Finalize(vchHash.data());
                         uint256 messagehash(vchHash);
@@ -2148,6 +2173,7 @@ bool ScriptMachine::Step()
                     {
                         return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
                     }
+                    countVisitedBytes(vch1.size() + vch2.size());
                     // The total stack size in bytes isn't changing in op_cat
                     vch1.insert(vch1.end(), vch2.begin(), vch2.end());
                     // so its ok to pop manually
@@ -2172,6 +2198,7 @@ bool ScriptMachine::Step()
                         return set_error(serror, SCRIPT_ERR_INVALID_SPLIT_RANGE);
                     }
 
+                    countVisitedBytes(data.size());
                     // Prepare the results in their own buffer as `data`
                     // will be invalidated.
                     valtype n1(data.begin(), data.begin() + position);
@@ -2193,6 +2220,7 @@ bool ScriptMachine::Step()
 
                     // The size doesn't change when reversing so we can do it in places
                     valtype &data = mstacktop(-1);
+                    countVisitedBytes(data.size());
                     std::reverse(data.begin(), data.end());
                 }
                 break;
@@ -2598,6 +2626,8 @@ bool ScriptMachine::Step()
                         PopStack();
                     }
                     const StackItem &item = stackItemAt(-1);
+                    if (count != 0)
+                        countVisitedBytes(item.size());
                     if (count > 0)
                     {
                         if ((int64_t)stack.size() <= count)
@@ -2659,7 +2689,7 @@ bool ScriptMachine::Step()
                     }
                     else // [op_bin2bignum.md#BIN2BIGNUM.O1]
                     {
-                        PushStack(BigNum().deserialize(top.asVch()).tdiv(bigNumModulo));
+                        PushStack(toBigNum(top));
                     }
                 }
                 break;
@@ -2700,6 +2730,7 @@ bool ScriptMachine::Step()
 
                     PopStack();
                     valtype rawnum = stacktop(-1); // Take a copy
+                    countVisitedBytes(rawnum.size());
 
                     if (upgrade2)
                     {
@@ -2767,6 +2798,7 @@ bool ScriptMachine::Step()
                     }
 
                     valtype n = stacktop(-1); // Take a copy
+                    countVisitedBytes(n.size());
                     CScriptNum::MinimallyEncode(n); // minimally encode it
                     PopStack(); // replace the top with the new value
                     PushStack(n); // using these ensures that the stack size tracking remains correct
