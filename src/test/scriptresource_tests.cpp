@@ -542,9 +542,9 @@ static CScript &ParseFirstPush(CScript &script) { return script << OP_0 << OP_0 
 // is discarded for free. The rest of the op budget goes to parses in the main script, whose results cost an
 // OP_2DROP per 2 parses.
 // OP_ROLL moves a stack item from depth n to the top, shifting the n slots in between. That shift is O(n), so the
-// op charges n visited bytes for it on top of the moved item. Without that charge a script could roll a deep
-// stack tens of thousands of times for a trivial charge; with it, the visited byte budget bounds the roll count.
-// Roll the deepest item of a depth-sized stack to the top, `rolls` times.
+// op charges ROLL_COST_PER_ITEM visited bytes per shifted slot on top of the moved item. Without that charge a script
+// could roll a deep stack tens of thousands of times for a trivial charge; with it, the visited byte budget bounds the
+// roll count. Roll the deepest item of a depth-sized stack to the top, `rolls` times.
 static CScript DeepRoll(int depth, int rolls)
 {
     CScript script;
@@ -558,15 +558,18 @@ static CScript DeepRoll(int depth, int rolls)
 BOOST_AUTO_TEST_CASE(TestDeepRollCost)
 {
     const int depth = 1000;
-    // Each roll charges about `depth` visited bytes, so the 2 MiB base budget bounds the roll count near
-    // MAX_VISITED_BYTES_BASE / depth.  Well under it is accepted; well over it visits too many bytes.
+    // Each roll charges about ROLL_COST_PER_ITEM * depth visited bytes, so the 2 MiB base budget bounds the roll
+    // count near MAX_VISITED_BYTES_BASE / (ROLL_COST_PER_ITEM * depth).  Well under it is accepted; well over it
+    // visits too many bytes.
+    const int fewRolls = 1500 / ROLL_COST_PER_ITEM;
+    const int manyRolls = 3000 / ROLL_COST_PER_ITEM;
     for (uint32_t flags : limitedFlags)
     {
-        BOOST_CHECK(EvalError(DeepRoll(depth, 1500), flags) == SCRIPT_ERR_OK);
-        BOOST_CHECK(EvalError(DeepRoll(depth, 3000), flags) == SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED);
+        BOOST_CHECK(EvalError(DeepRoll(depth, fewRolls), flags) == SCRIPT_ERR_OK);
+        BOOST_CHECK(EvalError(DeepRoll(depth, manyRolls), flags) == SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED);
     }
     // The visited limit is policy only before upgrade2, so the deep rolling script is still consensus valid then
-    BOOST_CHECK(EvalError(DeepRoll(depth, 3000), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
+    BOOST_CHECK(EvalError(DeepRoll(depth, manyRolls), MANDATORY_SCRIPT_VERIFY_FLAGS) == SCRIPT_ERR_OK);
 }
 
 BOOST_AUTO_TEST_CASE(TestLongestOpParse)
@@ -635,9 +638,11 @@ BOOST_AUTO_TEST_CASE(TestVisitedBytesCount)
         {CScript() << OP_DUP << OP_TUCK, 500 + 500},
         {CScript() << OP_DUP << OP_2DUP << OP_2OVER, 1500 + 1000},
         {CScript() << OP_1 << OP_1 << OP_PICK, 2 + 500}, // pick to the top only pushes, no slots shift
-        {CScript() << OP_1 << OP_1 << OP_ROLL, 2 + 500 + 1}, // + 1 slot shifted by the roll from depth 1
+        // + 1 slot shifted by the roll from depth 1
+        {CScript() << OP_1 << OP_1 << OP_ROLL, 2 + 500 + ROLL_COST_PER_ITEM},
         {CScript() << OP_1 << OP_SWAP << OP_1NEGATE << OP_PICK, 2 + 500 + 1}, // + 1 slot shifted by the insert
-        {CScript() << OP_1 << OP_SWAP << OP_2 << OP_NEGATE << OP_ROLL, 3 + 500 + 2}, // + 2 slots shifted
+        // + 2 slots shifted
+        {CScript() << OP_1 << OP_SWAP << OP_2 << OP_NEGATE << OP_ROLL, 3 + 500 + 2 * ROLL_COST_PER_ITEM},
         {CScript() << OP_1 << OP_1 << OP_1 << OP_1 << OP_1 << OP_2ROT, 5 + 501},
         {CScript() << OP_1 << OP_SWAP, 1},
         {CScript() << OP_1 << OP_1 << OP_ROT, 2},

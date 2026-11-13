@@ -1207,8 +1207,9 @@ bool ScriptMachine::Step()
                         {
                             // In the roll case, items are moved, so no stack size change occurs.
                             // The erase below shifts the n items above the rolled one down by a slot, so the
-                            // work is O(n): charge a visited byte per shifted slot on top of the moved item.
-                            countVisitedBytes(si.size() + n);
+                            // work is O(n): charge ROLL_COST_PER_ITEM visited bytes per shifted slot on top of the
+                            // moved item.
+                            countVisitedBytes(si.size() + ROLL_COST_PER_ITEM * n);
                             stack.push_back(si);
                             // another item was added to the stack, index -n-1 is now
                             // off by one, subtract 1 to compensate
@@ -1242,8 +1243,8 @@ bool ScriptMachine::Step()
                         {
                             // No size change because we are moving the item.
                             // The insert shifts the n items at/above the target slot up by one, so the work is
-                            // O(n): charge a visited byte per shifted slot on top of the moved item.
-                            countVisitedBytes(si.size() + n);
+                            // O(n): charge ROLL_COST_PER_ITEM visited bytes per shifted slot on top of the moved item.
+                            countVisitedBytes(si.size() + ROLL_COST_PER_ITEM * n);
                             stack.insert(stack.end() - n, si);
                             stack.pop_back();
                         }

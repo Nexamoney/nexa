@@ -831,4 +831,7 @@ bool CheckPubKeyEncoding(const std::vector<uint8_t> &vchSig, unsigned int flags,
 extern uint64_t maxSatoScriptOps;
 extern uint64_t maxScriptTemplateOps;
 
+// Visited byte cost of shifting one stack slot when OP_ROLL moves an item past it
+const uint64_t ROLL_COST_PER_ITEM = 16;
+
 #endif // NEXA_SCRIPT_INTERPRETER_H
