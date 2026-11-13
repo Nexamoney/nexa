@@ -90,6 +90,19 @@ enum
     //
     SCRIPT_ENABLE_CHECKDATASIG = (1U << 18),
 
+    // Fail OP_WITHIN when x < max && x != min: before !77 it computed x <= min && x < max, so nodes without the fix
+    // disagree on those results. Policy only, until upgrade2.
+    SCRIPT_VERIFY_UNAMBIGUOUS_WITHIN = (1U << 19),
+    // Limit the bytes an input feeds to the hash ops (see MAX_HASHED_BYTES_BASE): their cost grows with the item,
+    // but they count as one op. Policy before Upgrade2, consensus after.
+    SCRIPT_LIMIT_HASHED_BYTES = (1U << 20),
+    // Limit the bytes an input visits: that it pushes, copies, moves, rewrites, compares or parses (see
+    // MAX_VISITED_BYTES_BASE), for the same reason. Policy before Upgrade2, consensus after.
+    SCRIPT_LIMIT_VISITED_BYTES = (1U << 21),
+    // Fail the conversion to a BigNum of a number wider than MAX_BIGNUM_CONVERSION_MAGNITUDE_SIZE: reducing it
+    // modulo the BMD costs one op whatever its size. Policy before Upgrade2, consensus after.
+    SCRIPT_LIMIT_BIGNUM_CONVERSION = (1U << 22),
+
     // Flag which determines if the script interpretor should relax stack width restrictions
     SCRIPT_RELAX_STACK_WIDTH = (1U << 26),
     // Flag which determines if the script interpretor should enforce a maximum # of bytes for the entire stack
@@ -101,18 +114,6 @@ enum
     // A group creation must spend its first input: the group id commits to that outpoint, and a read-only input
     // is not spent, so the same genesis could be claimed again. Policy before Upgrade2, consensus after.
     SCRIPT_GROUP_GENESIS_SPENDS_INPUT = (1U << 30),
-    // Fail OP_WITHIN when x < max && x != min: before !77 it computed x <= min && x < max, so nodes without the fix
-    // disagree on those results. Policy only, until upgrade2.
-    SCRIPT_VERIFY_UNAMBIGUOUS_WITHIN = (1U << 19),
-    // Limit the bytes an input feeds to the hash ops (see MAX_HASHED_BYTES_BASE): their cost grows with the item,
-    // but they count as one op. Policy before Upgrade2, consensus after.
-    SCRIPT_LIMIT_HASHED_BYTES = (1U << 21),
-    // Limit the bytes an input visits: that it pushes, copies, moves, rewrites, compares or parses (see
-    // MAX_VISITED_BYTES_BASE), for the same reason. Policy before Upgrade2, consensus after.
-    SCRIPT_LIMIT_VISITED_BYTES = (1U << 22),
-    // Fail the conversion to a BigNum of a number wider than MAX_BIGNUM_CONVERSION_MAGNITUDE_SIZE: reducing it
-    // modulo the BMD costs one op whatever its size. Policy before Upgrade2, consensus after.
-    SCRIPT_LIMIT_BIGNUM_CONVERSION = (1U << 23),
 };
 
 #endif // NEXA_SCRIPT_SCRIPTFLAGS_H
