@@ -4423,6 +4423,77 @@ BOOST_AUTO_TEST_CASE(script_jump)
     BOOST_CHECK(vfy);
 }
 
+// Template that checks a data signature n times in an OP_JUMP loop, n given by the satisfier.
+// With emptySigTail it then runs one OP_CHECKDATASIG with an empty signature, which is not a sigcheck.
+static CScript SigCheckLoop(const KeyData &keys, bool emptySigTail)
+{
+    VchType msg;
+    uint256 hash;
+    CSHA256().Write(msg.data(), msg.size()).Finalize(hash.begin());
+    VchType sig;
+    BOOST_REQUIRE(keys.key0.SignSchnorr(hash, sig));
+
+    CScript prefix = CScript() << sig << msg << ToByteVector(keys.pubkey0) << OP_CHECKDATASIGVERIFY << OP_1 << OP_SUB
+                               << OP_DUP << OP_0NOTEQUAL;
+    // jump back to the start while the counter is not 0; the offset is the position of the OP_JUMP byte
+    int64_t offset = prefix.size() + 2;
+    while ((int64_t)(CScript(prefix) << CScriptNum::fromIntUnchecked(offset) << OP_MUL).size() != offset)
+        offset = (CScript(prefix) << CScriptNum::fromIntUnchecked(offset) << OP_MUL).size();
+    CScript loop = CScript(prefix) << CScriptNum::fromIntUnchecked(offset) << OP_MUL << OP_JUMP << OP_DROP;
+    if (emptySigTail)
+        loop << OP_0 << OP_0 << ToByteVector(keys.pubkey0) << OP_CHECKDATASIG << OP_NOT << OP_VERIFY;
+    return loop;
+}
+
+static ScriptError VerifySigCheckLoop(const CScript &templ,
+    int64_t n,
+    uint64_t *maxSigChecks,
+    uint64_t *sigChecks = nullptr)
+{
+    const uint32_t flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
+    CScript empty;
+    CMutableTransaction txFrom = BuildTemplateCreditingTransaction(templ, empty, empty, 1);
+    CMutableTransaction txTo =
+        BuildTemplateSpendingTransaction(templ, empty, CScript() << CScriptNum::fromIntUnchecked(n), txFrom);
+    auto sis = ScriptImportedStateSig(&txTo, 0, txFrom.vout[0].nValue, flags);
+    sis.spentCoins.push_back(txFrom.vout[0]);
+    // the per-input density rule of CScriptCheck: 43 bytes of scriptSig per sigcheck, less 60
+    *maxSigChecks = (txTo.vin[0].scriptSig.size() + 60) / 43;
+    ScriptMachineResourceTracker trk;
+    ScriptError err;
+    VerifyScript(txTo.vin[0].scriptSig, txFrom.vout[0].scriptPubKey, flags, sis, &err, &trk);
+    if (sigChecks)
+        *sigChecks = trk.consensusSigCheckCount;
+    return err;
+}
+
+// A script stops at the first sigcheck the density rule would refuse, not after running to the end
+BOOST_AUTO_TEST_CASE(script_sigchecks_abort_at_density_limit)
+{
+    const KeyData keys;
+    for (bool tail : {false, true})
+    {
+        CScript templ = SigCheckLoop(keys, tail);
+        uint64_t maxSigChecks = 0;
+        uint64_t sigChecks = 0;
+        VerifySigCheckLoop(templ, 1, &maxSigChecks);
+        BOOST_REQUIRE(maxSigChecks > 1 && maxSigChecks <= 16); // keeps the counter push 1 byte
+
+        uint64_t limit = 0;
+        ScriptError err = VerifySigCheckLoop(templ, maxSigChecks, &limit, &sigChecks);
+        BOOST_CHECK_EQUAL(limit, maxSigChecks);
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+        BOOST_CHECK_EQUAL(sigChecks, maxSigChecks);
+
+        err = VerifySigCheckLoop(templ, maxSigChecks + 1, &limit);
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_SIGCHECKS_LIMIT_EXCEEDED, ScriptErrorString(err));
+
+        // a loop the op limit would otherwise stop after thousands of sigchecks
+        err = VerifySigCheckLoop(templ, 100000, &limit);
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_SIGCHECKS_LIMIT_EXCEEDED, ScriptErrorString(err));
+    }
+}
+
 
 static void CheckError(uint32_t flags, const Stack &original_stack, const CScript &script, ScriptError expected)
 {
