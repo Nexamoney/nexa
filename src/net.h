@@ -501,7 +501,6 @@ public:
     // b) the peer may tell us in its version message that we should not relay tx invs
     //    unless it loads a bloom filter.
     bool fRelayTxes;
-    bool fSentAddr;
     CSemaphoreGrant grantOutbound;
 
     CCriticalSection cs_filter;
@@ -567,11 +566,13 @@ public:
     uint256 hashContinue;
     int nStartingHeight;
 
-    // flood relay
-    std::vector<CAddress> vAddrToSend GUARDED_BY(cs_vSend);
-    CRollingBloomFilter addrKnown;
-    int64_t nNextAddrSend;
-    int64_t nNextLocalAddrSend;
+    // address relay
+    CCriticalSection cs_vAddr;
+    std::vector<CAddress> vAddrToSend GUARDED_BY(cs_vAddr);
+    CRollingBloomFilter addrKnown GUARDED_BY(cs_vAddr);
+    int64_t nNextAddrSend GUARDED_BY(cs_vAddr);
+    int64_t nNextLocalAddrSend GUARDED_BY(cs_vAddr);
+    bool fSentAddr GUARDED_BY(cs_vAddr);
 
     // inventory based relay
     CRollingFastFilter<4 * 1024 * 1024> filterInventoryKnown;

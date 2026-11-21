@@ -2935,6 +2935,7 @@ bool ProcessMessage(CNode *pfrom,
             return true;
         }
 
+        LOCK(pfrom->cs_vAddr);
         // Only send one GetAddr response per connection to reduce resource waste
         //  and discourage addr stamping of INV announcements.
         if (pfrom->fSentAddr)
@@ -2943,7 +2944,6 @@ bool ProcessMessage(CNode *pfrom,
             return true;
         }
         pfrom->fSentAddr = true;
-        LOCK(pfrom->cs_vSend);
         pfrom->vAddrToSend.clear();
         std::vector<CAddress> vAddr = addrman.GetAddr();
         FastRandomContext insecure_rand;
@@ -3790,7 +3790,7 @@ bool SendMessages(CNode *pto)
         //
         if (pto->nNextAddrSend < nNow)
         {
-            LOCK(pto->cs_vSend);
+            LOCK(pto->cs_vAddr);
             pto->nNextAddrSend = PoissonNextSend(nNow, AVG_ADDRESS_BROADCAST_INTERVAL);
             std::vector<CAddress> vAddr;
             vAddr.reserve(pto->vAddrToSend.size());
