@@ -642,7 +642,7 @@ static bool IsPriorityMsg(std::string strCommand)
 
 void CNode::LookAhead()
 {
-    AssertLockHeld(cs_vRecvMsg);
+    AssertLockHeld(cs_recvMsg);
     if (fDownloading.load())
         return;
 
@@ -680,7 +680,7 @@ void CNode::LookAhead()
 
 bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes)
 {
-    AssertLockHeld(cs_vRecvMsg);
+    AssertLockHeld(cs_recvMsg);
     while (nBytes > 0)
     {
         // Absorb network data.
@@ -1391,7 +1391,7 @@ void CleanupDisconnectedNodes()
                 TRY_LOCK(pnode->cs_msgBeingSent, lockSend);
                 if (lockSend)
                 {
-                    TRY_LOCK(pnode->cs_vRecvMsg, lockRecv);
+                    TRY_LOCK(pnode->cs_recvMsg, lockRecv);
                     if (lockRecv)
                     {
                         TRY_LOCK(pnode->cs_inventory, lockInv);
@@ -1595,9 +1595,9 @@ void ThreadSocketHandler()
                 continue;
             if (FD_ISSET(hSocket, &fdsetRecv) || FD_ISSET(hSocket, &fdsetError))
             {
-                TRY_LOCK(pnode->cs_vRecvMsg, lockRecv);
                 // If traffic shaping says we can grab some bytes, and we don't have full send messages buffers
                 // (that is, the receiver is reading our responses), then grab some more requests to process
+                TRY_LOCK(pnode->cs_recvMsg, lockRecv);
                 int64_t amt2Recv = receiveShaper.available(RECV_SHAPER_MIN_FRAG);
                 if (lockRecv && (amt2Recv > 0))
                 {
@@ -2973,11 +2973,12 @@ void NetCleanup()
         {
             // Since we are quitting, disconnect abruptly from the node rather than finishing up our conversation
             // with it.
+            pnode->vRecvMsg.clear();
             {
-                LOCK(pnode->cs_vRecvMsg);
-                pnode->vRecvMsg.clear();
+                LOCK(pnode->cs_recvMsg);
                 pnode->vRecvMsg_handshake.clear();
             }
+            pnode->vSendMsg.clear();
             {
                 LOCK(pnode->cs_msgBeingSent);
                 pnode->msgBeingSent.clear();

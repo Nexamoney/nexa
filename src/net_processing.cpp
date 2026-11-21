@@ -3483,7 +3483,7 @@ bool ProcessMessages(CNode *pfrom)
         // try to complete the handshake before handling messages that require us to be fSuccessfullyConnected
         if (!pfrom->fSuccessfullyConnected)
         {
-            TRY_LOCK(pfrom->cs_vRecvMsg, lockRecv);
+            TRY_LOCK(pfrom->cs_recvMsg, lockRecv);
             if (!lockRecv)
                 break;
             if (pfrom->vRecvMsg_handshake.empty())
@@ -3502,7 +3502,7 @@ bool ProcessMessages(CNode *pfrom)
             {
                 if (!pfrom->vRecvMsg_handshake.empty())
                 {
-                    LOCK(pfrom->cs_vRecvMsg);
+                    LOCK(pfrom->cs_recvMsg);
                     if (!pfrom->vRecvMsg_handshake.empty()) // check again after locking
                     {
                         std::string frontCommand = pfrom->vRecvMsg_handshake.front().hdr.GetCommand();

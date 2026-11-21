@@ -405,12 +405,11 @@ public:
     std::deque<std::pair<CInv2, uint32_t> > vRecvGetData2 GUARDED_BY(csRecvGetData);
     std::deque<std::pair<CExtInv, uint32_t> > vRecvExtGetData GUARDED_BY(csRecvGetData);
 
-    CCriticalSection cs_vRecvMsg;
-    std::deque<CNetMessage> vRecvMsg_handshake GUARDED_BY(cs_vRecvMsg);
-    // the next message we receive from the socket
-    CNetMessage msg GUARDED_BY(cs_vRecvMsg);
-    CStatHistory<uint64_t> currentRecvMsgSize;
+    CCriticalSection cs_recvMsg;
+    std::deque<CNetMessage> vRecvMsg_handshake GUARDED_BY(cs_recvMsg);
+    CNetMessage msg GUARDED_BY(cs_recvMsg); // the next message we receive from the socket
 
+    CStatHistory<uint64_t> currentRecvMsgSize;
     std::atomic<uint64_t> nRecvBytes;
     CLockSwapQ<CNetMessage> vRecvMsg;
 
@@ -646,12 +645,11 @@ public:
     /** Updates node configuration variables based on extversion data in the extversion member variable */
     void ReadConfigFromExtversion();
 
-    // requires LOCK(cs_vRecvMsg)
-    bool ReceiveMsgBytes(const char *pch, unsigned int nBytes) EXCLUSIVE_LOCKS_REQUIRED(cs_vRecvMsg);
+    bool ReceiveMsgBytes(const char *pch, unsigned int nBytes) EXCLUSIVE_LOCKS_REQUIRED(cs_recvMsg);
 
     // Examine the current message (msg) to see if block or thintype blocks have begun downloading data.
     std::atomic<bool> fDownloading{false};
-    void LookAhead() EXCLUSIVE_LOCKS_REQUIRED(cs_vRecvMsg);
+    void LookAhead() EXCLUSIVE_LOCKS_REQUIRED(cs_recvMsg);
 
     void SetRecvVersion(int nVersionIn) { nRecvVersion = nVersionIn; }
     const CMessageHeader::MessageStartChars &GetMagic(const CChainParams &params) const
