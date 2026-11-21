@@ -646,13 +646,6 @@ public:
     /** Updates node configuration variables based on extversion data in the extversion member variable */
     void ReadConfigFromExtversion();
 
-    unsigned int GetSendMsgSize()
-    {
-        LOCK(cs_vSend);
-        return vSendMsg.size();
-    }
-
-
     // requires LOCK(cs_vRecvMsg)
     bool ReceiveMsgBytes(const char *pch, unsigned int nBytes) EXCLUSIVE_LOCKS_REQUIRED(cs_vRecvMsg);
 
