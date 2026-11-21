@@ -103,8 +103,6 @@ static void CleanupAll(std::vector<CNode *> &vPeers)
         thinrelay.RemovePeers(pnode);
 
         ClearPriorityQueues(pnode);
-        pnode->vSendMsg.clear();
-        pnode->vLowPrioritySendMsg.clear();
     }
     requester.MapBlocksInFlightClear();
 
@@ -843,7 +841,6 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     // download an xthin
     SetMockTime(nTime + 20);
     {
-        LOCK(dummyNodeXthin.cs_vSend);
         dummyNodeXthin.vSendMsg.clear();
     }
     inv.hash = InsecureRand256();
