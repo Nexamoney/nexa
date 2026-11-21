@@ -378,9 +378,9 @@ public:
     /** The "hook" into capd functionality */
     CapdNode *capd = nullptr;
 
-    CCriticalSection cs_vSend;
-    CSerializeData msgBeingSent GUARDED_BY(cs_vSend);
-    size_t nSendOffset GUARDED_BY(cs_vSend); // offset inside the first vSendMsg already sent
+    CCriticalSection cs_msgBeingSent;
+    CSerializeData msgBeingSent GUARDED_BY(cs_msgBeingSent);
+    size_t nSendOffset GUARDED_BY(cs_msgBeingSent); // bytes already sent for the current msgBeingSent
 
     CLockSwapQ<CSerializeData> vSendMsg;
     CLockSwapQ<CSerializeData> vLowPrioritySendMsg;
