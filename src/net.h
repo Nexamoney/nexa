@@ -705,7 +705,7 @@ public:
     void AddAddressKnown(const CAddress &_addr) { addrKnown.insert(_addr.GetKey()); }
     void PushAddress(const CAddress &_addr, FastRandomContext &insecure_rand)
     {
-        LOCK(cs_vSend);
+        LOCK(cs_vAddr);
         // Whether the peer supports the address in `_addr`. For example,
         // nodes that do not implement BIP155 cannot receive Tor v3 addresses
         // because they require ADDRv2 (BIP155) encoding.
