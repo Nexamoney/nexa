@@ -702,7 +702,12 @@ public:
         return false;
     }
 
-    void AddAddressKnown(const CAddress &_addr) { addrKnown.insert(_addr.GetKey()); }
+    void AddAddressKnown(const CAddress &_addr)
+    {
+        LOCK(cs_vAddr);
+        addrKnown.insert(_addr.GetKey());
+    }
+
     void PushAddress(const CAddress &_addr, FastRandomContext &insecure_rand)
     {
         LOCK(cs_vAddr);
@@ -726,7 +731,6 @@ public:
             }
         }
     }
-
 
     void AddInventoryKnown(const CInv2 &inv)
     {
