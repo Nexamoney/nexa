@@ -7,9 +7,11 @@
 #include "blockrelay/thinblock.h"
 #include "bloom.h"
 #include "chainparams.h"
+#include "daa.h"
 #include "dosman.h"
 #include "main.h"
 #include "net.h"
+#include "pow.h"
 #include "primitives/block.h"
 #include "protocol.h"
 #include "random.h"
@@ -21,6 +23,7 @@
 #include "unlimited.h"
 #include "util.h"
 #include "utilstrencodings.h"
+#include "validation/tailstorm.h"
 #include "validation/validation.h"
 #include "version.h"
 
@@ -33,6 +36,7 @@
 #include <string>
 
 extern CTweak<uint64_t> grapheneMaxVersionSupported;
+extern CTweak<unsigned int> txRetryInterval;
 
 class CRequestManagerTest
 {
@@ -48,8 +52,38 @@ public:
     std::set<uint256> GetSetDeleter() { return _rman->setDeleter; }
     std::set<uint256> GetSetBlockDeleter() { return _rman->setBlockDeleter; }
     std::map<NodeId, CRequestManagerNodeState> GetNodeState() { return _rman->mapRequestManagerNodeState; }
+    uint64_t GetTxnRequestCount() { return _rman->nTxnRequestCount.load(); }
+
+    void SetTxnRate(uint64_t rate)
+    {
+        _rman->nApproximateTxnPerSec.store(rate);
+        _rman->nLastCheckForTPS.store(GetTimeMillis());
+    }
+
+    void CleanupTxnRequests()
+    {
+        LOCK(_rman->cs_objDownloader);
+        std::map<uint256, CUnknownObj> pending;
+        _rman->GetTxnRequests(pending);
+        _rman->CheckIfNewSource(pending, _rman->mapTxnInfo);
+        _rman->AddNewTxnRequests(pending);
+        _rman->Cleanup();
+        _rman->RunTxnDeleter(pending);
+    }
+
+    void ClearMapBlkToAdd()
+    {
+        LOCK(_rman->cs_addBlock);
+        _rman->mapBlkToAdd.clear();
+    }
 
     void ClearNodeState(int id) { _rman->mapRequestManagerNodeState[id].vBlocksInFlight.clear(); }
+    void SendTxnReRequests()
+    {
+        LOCK(_rman->cs_objDownloader);
+        _rman->SendTxnRequests(_rman->mapTxnInfo);
+    }
+    void Cleanup(const CInv &inv) { _rman->cleanup(inv); }
 };
 
 // Used for accessing private data for a node
@@ -116,6 +150,20 @@ static std::string NetMessage(CLockSwapQ<CSerializeData> &_vSendMsg)
 }
 
 static void ClearThinBlocksInFlight(CNode &node, CInv &inv) { thinrelay.ClearBlockInFlight(node.GetId(), inv.hash); }
+
+// Release queued references before a stack node is destroyed.
+static void ClearPrioritySendReferences(CNode &node)
+{
+    LOCK(cs_prioritySendQ);
+    for (auto it = vPrioritySendQ.begin(); it != vPrioritySendQ.end();)
+    {
+        if (it->get() == &node)
+            it = vPrioritySendQ.erase(it);
+        else
+            ++it;
+    }
+}
+
 BOOST_FIXTURE_TEST_SUITE(requestmanager_tests, TestingSetup)
 
 BOOST_AUTO_TEST_CASE(blockrequest_tests)
@@ -1181,6 +1229,8 @@ BOOST_AUTO_TEST_CASE(blockrequest_tests)
     vNodes.erase(remove(vNodes.begin(), vNodes.end(), &dummyNodeNone), vNodes.end());
     vNodes.erase(remove(vNodes.begin(), vNodes.end(), &dummyNodeCmpct), vNodes.end());
     vNodes.erase(remove(vNodes.begin(), vNodes.end(), &dummyNodeXthin), vNodes.end());
+    for (CNode *node : {&dummyNodeXthin, &dummyNodeGraphene, &dummyNodeCmpct, &dummyNodeNone})
+        ClearPrioritySendReferences(*node);
 }
 
 BOOST_AUTO_TEST_CASE(askfor_tests)
@@ -1483,6 +1533,447 @@ BOOST_AUTO_TEST_CASE(askfor_tests)
     BOOST_CHECK_EQUAL(mapBlkInfo.size(), 1);
     BOOST_CHECK_EQUAL(setBlockDeleter.count(inv_block.hash), 0);
     BOOST_CHECK_EQUAL(mapBlkInfo[inv_block.hash].availableFrom.size(), 8); // there should be another source
+}
+
+BOOST_AUTO_TEST_CASE(reject_does_not_pin_txn_requests)
+{
+    // Not freed: the request manager keeps references to them
+    CNode *nodeA = new CNode(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode *nodeB = new CNode(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10000)), "", true);
+    CRequestManager rman;
+    CRequestManagerTest rman_access(&rman);
+    IsChainNearlySyncdSet(true);
+    const unsigned int nRetryInterval = txRetryInterval.Value();
+    txRetryInterval.Set(1000); // 1 ms
+
+    // Announced by A and requested from A
+    CInv inv(MSG_TX, GetRandHash());
+    rman.AskFor(inv, nodeA, objType::TXN);
+    rman.SendRequests();
+    BOOST_REQUIRE(rman_access.GetMapTxnInfo().count(inv.hash));
+
+    BOOST_CHECK_EQUAL(rman_access.GetMapTxnInfo()[inv.hash].outstandingReqs, 1);
+
+    // A reject from B, which was never asked, is ignored
+    rman.Rejected(inv, nodeB, REJECT_INSUFFICIENTFEE);
+    BOOST_CHECK_EQUAL(rman_access.GetMapTxnInfo()[inv.hash].outstandingReqs, 1);
+
+    // A reject from A is counted, and the request is then retried and, with no sources left, dropped
+    rman.Rejected(inv, nodeA, REJECT_INSUFFICIENTFEE);
+    BOOST_CHECK_EQUAL(rman_access.GetMapTxnInfo()[inv.hash].outstandingReqs, 0);
+    MilliSleep(50);
+    rman_access.SendTxnReRequests();
+    BOOST_CHECK_EQUAL(rman_access.GetSetDeleter().count(inv.hash), 1);
+
+    txRetryInterval.Set(nRetryInterval);
+    IsChainNearlySyncdSet(false);
+}
+
+BOOST_AUTO_TEST_CASE(block_failing_checkblock_is_requested_again)
+{
+    CAddress addr(ipaddress(0xa0b0c001, 10000));
+    CNode node(INVALID_SOCKET, addr, "", true);
+    CRequestManagerTest rman_access(&requester);
+
+    // Same header as the genesis block, different body
+    CBlock block(Params().GenesisBlock());
+    CMutableTransaction coinbase(*block.vtx[0]);
+    coinbase.vout[0].nValue += 1;
+    block.vtx[0] = MakeTransactionRef(coinbase);
+    ConstCBlockRef pblock = std::make_shared<const CBlock>(block);
+    CInv inv(MSG_BLOCK, pblock->GetHash());
+
+    requester.AskFor(inv, &node, objType::BLOCK);
+    std::map<uint256, CUnknownObj> mapTmp;
+    requester.GetBlockRequests(mapTmp);
+    requester.AddNewBlockRequests(mapTmp);
+    requester.ProcessingBlock(inv.hash, &node);
+    BOOST_CHECK(rman_access.GetMapBlkInfo()[inv.hash].fProcessing);
+
+    CValidationState state;
+    BOOST_CHECK(!ProcessSummaryBlock(state, Params(), &node, pblock, false, nullptr, SINGLE_THREADED));
+    BOOST_CHECK(!state.IsInvalid());
+    BOOST_CHECK(!rman_access.GetMapBlkInfo()[inv.hash].fProcessing);
+
+    rman_access.Cleanup(inv);
+    // Don't leave references to this stack node in the global requester.
+    requester.RunBlockDeleter(mapTmp);
+    thinrelay.ClearAllBlocksInFlight(node.GetId());
+    ClearPrioritySendReferences(node);
+}
+
+// A summary listing numProofs sub-block proofs. With fValidPow the proofs and the summary carry the
+// work they claim, otherwise the proofs are ground to fail it. nDeclaredSubblocks overrides the count
+// written in the miner data; chain work follows that declared count.
+static CBlockRef MakeRequestTestSummary(const CBlockIndex *parent,
+    size_t numProofs,
+    bool fValidPow,
+    uint8_t numUncles = 0,
+    int nDeclaredSubblocks = -1)
+{
+    const Consensus::Params &params = Params().GetConsensus();
+    const uint256 prevHash = parent->GetBlockHash();
+    const uint256 uncleParent = numUncles ? parent->pprev->GetBlockHash() : uint256();
+    const uint32_t nBitsUncle = numUncles ? parent->pprev->tgtBits() : 0;
+    const uint8_t nSubblocks = nDeclaredSubblocks < 0 ? uint8_t(numProofs - numUncles) : uint8_t(nDeclaredSubblocks);
+    CBlockRef block = MakeBlockRef();
+    block->hashPrevBlock = prevHash;
+    block->height = parent->height() + 1;
+    block->hashAncestor = parent->GetChildsConsensusAncestor()->GetBlockHash();
+    block->nTime = GetTime();
+    const uint32_t nBits = GetNextWorkRequired(parent, block.get(), params);
+    block->nBits = nBits;
+    block->chainWork = ArithToUint256(parent->chainWork() + GetWorkForDifficultyBits(nBits) +
+                                      arith_uint256(numUncles) * GetWorkForDifficultyBits(nBitsUncle) +
+                                      arith_uint256(nSubblocks) * GetWorkForDifficultyBits(nBits));
+    std::vector<std::pair<uint256, std::vector<uint8_t> > > proofs;
+    for (size_t i = 0; i < numProofs; i++)
+    {
+        uint256 mhc = GetRandHash();
+        std::vector<uint8_t> nonce(4, 0);
+        const uint256 &proofParent = i < numUncles ? uncleParent : prevHash;
+        const uint32_t proofBits = i < numUncles ? nBitsUncle : nBits;
+        for (uint32_t n = 0; CheckProofOfWork(GetMiningHash(mhc, nonce), proofParent, proofBits, params) != fValidPow;
+             n++)
+            memcpy(nonce.data(), &n, sizeof(n));
+        proofs.emplace_back(mhc, nonce);
+    }
+    CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+    ds << uint8_t(DEFAULT_MINER_DATA_SUMMARYBLOCK_VERSION) << uncleParent << numUncles << nBitsUncle << nSubblocks
+       << nBits << proofs;
+
+    block->minerData.assign(ds.begin(), ds.end());
+    block->nonce.resize(4, 0);
+    block->UpdateHeader();
+    for (uint32_t n = 0; fValidPow && !CheckProofOfWork(block->GetMiningHash(), prevHash, nBits, params); n++)
+        memcpy(block->nonce.data(), &n, sizeof(n));
+    return block;
+}
+
+// How many of the summary's listed sub-blocks are queued for request
+static size_t RequestedSubblocks(CRequestManagerTest &rman, const CBlockRef &summary)
+{
+    std::map<uint256, CUnknownObj> mapBlkToAdd = rman.GetMapBlkToAdd();
+    size_t count = 0;
+    for (const auto &proof : ParseSummaryBlockMinerData(summary->minerData).vSubblockProofs)
+        count += mapBlkToAdd.count(proof.first);
+    return count;
+}
+
+// Regtest, so the test can grind proofs of work
+struct RegtestRequestSetup : public TestingSetup
+{
+    CNode node;
+    const uint64_t forkTime;
+    const bool nearlySynced;
+
+    RegtestRequestSetup()
+        : TestingSetup(CBaseChainParams::REGTEST),
+          node(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true), forkTime(nMiningForkTime),
+          nearlySynced(IsChainNearlySyncd())
+    {
+        SetConnected(node);
+        IsChainNearlySyncdSet(true);
+    }
+
+    ~RegtestRequestSetup()
+    {
+        CRequestManagerTest(&requester).ClearMapBlkToAdd();
+        BOOST_CHECK_EQUAL(node.GetRefCount(), 0);
+        nMiningForkTime = forkTime;
+        IsChainNearlySyncdSet(nearlySynced);
+    }
+};
+
+BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_valid_header, RegtestRequestSetup)
+{
+    CRequestManagerTest rman(&requester);
+    const size_t nProofs = Params().GetConsensus().tailstorm_k - 1;
+    const CBlockIndex *parent = chainActive.Tip();
+    CBlockRef good = MakeRequestTestSummary(parent, nProofs, true);
+
+    // Before the fork no sub-blocks exist, so nothing is requested
+    nMiningForkTime = chainActive.Tip()->GetMedianTimePast() + 1;
+    BOOST_REQUIRE(!IsUpgrade2Pending(chainActive.Tip()) && !IsUpgrade2Activated(chainActive.Tip()));
+    BlockReceivedPostProcessing(&node, good);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, good), 0);
+
+    // Once the fork is pending, a summary with too many proofs or proofs without work is ignored
+    nMiningForkTime = chainActive.Tip()->GetMedianTimePast();
+    BOOST_REQUIRE(IsUpgrade2Pending(chainActive.Tip()));
+    CBlockRef tooMany = MakeRequestTestSummary(parent, 1000, false);
+    BlockReceivedPostProcessing(&node, tooMany);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, tooMany), 0);
+    CBlockRef noWork = MakeRequestTestSummary(parent, nProofs, false);
+    BlockReceivedPostProcessing(&node, noWork);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, noWork), 0);
+
+    // Invalid proof counts must not populate the request tables.
+    {
+        CBlockRef oversized = MakeRequestTestSummary(parent, 255, true);
+        CValidationState state;
+        BOOST_REQUIRE(!CheckBlockHeader(Params().GetConsensus(), *oversized, state, true));
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-blk-wrong-number-of-subblocks");
+        BlockReceivedPostProcessing(&node, oversized);
+        BOOST_CHECK_EQUAL(RequestedSubblocks(rman, oversized), 0);
+
+        CBlockRef undeclared = MakeRequestTestSummary(parent, nProofs, true, 0, 0);
+        state = CValidationState();
+        BOOST_REQUIRE(!CheckBlockHeader(Params().GetConsensus(), *undeclared, state, true));
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-blk-wrong-number-of-subblocks");
+        BlockReceivedPostProcessing(&node, undeclared);
+        BOOST_CHECK_EQUAL(RequestedSubblocks(rman, undeclared), 0);
+    }
+
+    // and a summary whose header checks out gets its sub-blocks requested
+    BlockReceivedPostProcessing(&node, good);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, good), nProofs);
+}
+
+BOOST_FIXTURE_TEST_CASE(summary_subblock_requests_need_parent_context, RegtestRequestSetup)
+{
+    CRequestManagerTest rman(&requester);
+    CBlockIndex *genesis = chainActive.Tip();
+    nMiningForkTime = genesis->GetMedianTimePast();
+
+    CBlockHeader parentHeader = genesis->GetBlockHeader();
+    parentHeader.hashPrevBlock = genesis->GetBlockHash();
+    parentHeader.height = genesis->height() + 1;
+    parentHeader.hashAncestor = genesis->GetChildsConsensusAncestor()->GetBlockHash();
+    parentHeader.nTime = genesis->GetBlockTime() + 1;
+    parentHeader.chainWork = ArithToUint256(genesis->chainWork() + GetWorkForDifficultyBits(parentHeader.nBits));
+    parentHeader.nonce.resize(4);
+    for (uint32_t n = 0;
+         !CheckProofOfWork(parentHeader.GetMiningHash(), uint256(), parentHeader.nBits, Params().GetConsensus()); n++)
+        memcpy(parentHeader.nonce.data(), &n, sizeof(n));
+    CValidationState parentState;
+    BOOST_REQUIRE(CheckBlockHeader(Params().GetConsensus(), parentHeader, parentState, true));
+    BOOST_REQUIRE(ContextualCheckBlockHeader(Params(), parentHeader, parentState, genesis));
+
+    const uint256 parentHash = parentHeader.GetHash();
+    CBlockIndex unknownParent(parentHeader);
+    unknownParent.phashBlock = &parentHash;
+    unknownParent.pprev = genesis;
+    BOOST_REQUIRE(LookupBlockIndex(parentHash) == nullptr);
+    const size_t nProofs = Params().GetConsensus().tailstorm_k - 1;
+    for (size_t count : {nProofs, size_t(510)})
+    {
+        // The 255+255 proof list is invalid even before parent lookup.
+        CBlockRef unknown = MakeRequestTestSummary(&unknownParent, count, true, count == 510 ? 255 : 0);
+        CValidationState state;
+        BOOST_REQUIRE_EQUAL(CheckBlockHeader(Params().GetConsensus(), *unknown, state, true), count == nProofs);
+        BlockReceivedPostProcessing(&node, unknown);
+        BOOST_CHECK_EQUAL(RequestedSubblocks(rman, unknown), 0);
+    }
+
+    CBlockIndex *parent = nullptr;
+    {
+        LOCK(cs_main);
+        parent = AddToBlockIndex(Params(), parentHeader);
+    }
+    BOOST_REQUIRE(parent != nullptr);
+    nMiningForkTime = parent->GetMedianTimePast();
+    BOOST_REQUIRE(!IsUpgrade2Pending(genesis) && !IsUpgrade2Activated(genesis));
+    BOOST_REQUIRE(IsUpgrade2Pending(parent));
+    BOOST_REQUIRE(chainActive.Tip() == genesis);
+    CBlockRef good = MakeRequestTestSummary(parent, nProofs, true);
+    CValidationState state;
+    BOOST_REQUIRE(ContextualCheckBlockHeader(Params(), *good, state, parent));
+
+    // A valid competing parent supplies fork context while the active tip is still pre-fork.
+    BlockReceivedPostProcessing(&node, good);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, good), nProofs);
+    rman.ClearMapBlkToAdd();
+
+    // Regtest inherits the parent target; require more work than this summary declares.
+    nMiningForkTime = genesis->GetMedianTimePast();
+    const uint32_t parentBits = parent->tgtBits();
+    arith_uint256 harderTarget = UintToArith256(Params().GetConsensus().powLimit);
+    harderTarget >>= 4;
+    parent->SetBlockHeaderBits(harderTarget.GetCompact());
+    state = CValidationState();
+    BOOST_CHECK(!ContextualCheckBlockHeader(Params(), *good, state, parent));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-diffbits");
+    BlockReceivedPostProcessing(&node, good);
+    BOOST_CHECK_EQUAL(RequestedSubblocks(rman, good), 0);
+    parent->SetBlockHeaderBits(parentBits);
+}
+
+BOOST_AUTO_TEST_CASE(askfor_one_peer_cannot_fill_txn_requests)
+{
+    // Declared before rman so they outlive the references it holds.
+    CNode attacker(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode honest(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+
+    CRequestManager rman;
+    CRequestManagerTest rman_access(&rman);
+    rman.UpdateTxnRequestLimits(2);
+
+    // One peer announces more unknown transactions than the global cap, and they become in-flight requests.
+    for (uint64_t i = 0; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &attacker, objType::TXN);
+    std::map<uint256, CUnknownObj> mapTmp;
+    rman.GetTxnRequests(mapTmp);
+    rman.AddNewTxnRequests(mapTmp);
+
+    // Another peer's announcement must still be requested.
+    CInv inv(MSG_TX, GetRandHash());
+    rman.AskFor(inv, &honest, objType::TXN);
+    BOOST_CHECK_EQUAL(rman_access.GetMapTxnToAdd().count(inv.hash), 1);
+
+    // The attacker filled only its share, and gets it back once its requests are erased.
+    BOOST_CHECK_EQUAL(attacker.nTxnRequests.load(), MAX_IN_FLIGHT_REQS / 2);
+    rman_access.CleanupTxnRequests();
+    BOOST_CHECK_EQUAL(attacker.nTxnRequests.load(), 0);
+    BOOST_CHECK_EQUAL(honest.nTxnRequests.load(), 0);
+    BOOST_CHECK_EQUAL(rman_access.GetTxnRequestCount(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(askfor_peer_share_adapts_when_peers_join)
+{
+    CNode first(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode second(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+    CNode third(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c003, 10002)), "", true);
+    CNode fourth(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c004, 10003)), "", true);
+    CRequestManager rman;
+    CRequestManagerTest access(&rman);
+    rman.UpdateTxnRequestLimits(1);
+
+    // Keep requests in both maps so a joining peer must reclaim both queued and in-flight capacity.
+    for (uint64_t i = 0; i < MAX_IN_FLIGHT_REQS * 3 / 4; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &first, objType::TXN);
+    std::map<uint256, CUnknownObj> pending;
+    rman.GetTxnRequests(pending);
+    rman.AddNewTxnRequests(pending);
+    for (uint64_t i = MAX_IN_FLIGHT_REQS * 3 / 4; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &first, objType::TXN);
+    BOOST_REQUIRE_EQUAL(first.nTxnRequests.load(), MAX_IN_FLIGHT_REQS);
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), MAX_IN_FLIGHT_REQS);
+
+    std::vector<CNode *> peers = {&first, &second, &third, &fourth};
+    for (size_t count = 2; count <= peers.size(); count++)
+    {
+        rman.UpdateTxnRequestLimits(count);
+        const uint64_t limit = MAX_IN_FLIGHT_REQS / count;
+        for (size_t i = 0; i < count - 1; i++)
+            BOOST_CHECK_EQUAL(peers[i]->nTxnRequests.load(), limit);
+
+        // The new peer can immediately use its share even though the first peer filled the entire map.
+        for (uint64_t i = 0; i <= limit; i++)
+            rman.AskFor(CInv(MSG_TX, GetRandHash()), peers[count - 1], objType::TXN);
+        BOOST_CHECK_EQUAL(peers[count - 1]->nTxnRequests.load(), limit);
+        BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), count * limit);
+    }
+    rman.UpdateTxnRequestLimits(5);
+    for (CNode *peer : peers)
+        BOOST_CHECK_EQUAL(peer->nTxnRequests.load(), MAX_IN_FLIGHT_REQS / 4);
+
+    access.CleanupTxnRequests();
+    for (CNode *peer : peers)
+        BOOST_CHECK_EQUAL(peer->nTxnRequests.load(), 0);
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(askfor_new_peer_reclaims_disconnected_requests)
+{
+    CNode first(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode replacement(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+    CRequestManager rman;
+    CRequestManagerTest access(&rman);
+    rman.InitializeNodeState(first.GetId());
+    rman.InitializeNodeState(replacement.GetId());
+    rman.UpdateTxnRequestLimits(1, &first);
+    for (uint64_t i = 0; i < MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &first, objType::TXN);
+    BOOST_REQUIRE_EQUAL(first.nTxnRequests.load(), MAX_IN_FLIGHT_REQS);
+
+    first.CloseSocketDisconnect("test replaces the only peer");
+    rman.UpdateTxnRequestLimits(1, &replacement);
+    BOOST_CHECK_EQUAL(first.nTxnRequests.load(), 0);
+    const CInv inv(MSG_TX, GetRandHash());
+    rman.AskFor(inv, &replacement, objType::TXN);
+    BOOST_CHECK_EQUAL(access.GetMapTxnToAdd().count(inv.hash), 1);
+    access.CleanupTxnRequests();
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(askfor_peer_share_scales_with_throughput)
+{
+    CNode first(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode second(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+    CRequestManager rman;
+    CRequestManagerTest access(&rman);
+    access.SetTxnRate(20000);
+    rman.UpdateTxnRequestLimits(2);
+
+    for (uint64_t i = 0; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &first, objType::TXN);
+    BOOST_CHECK_EQUAL(first.nTxnRequests.load(), MAX_IN_FLIGHT_REQS);
+    const CInv inv(MSG_TX, GetRandHash());
+    rman.AskFor(inv, &second, objType::TXN);
+    BOOST_CHECK_EQUAL(access.GetMapTxnToAdd().count(inv.hash), 1);
+    access.CleanupTxnRequests();
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(askfor_light_clients_do_not_shrink_full_peer_share)
+{
+    CNode full(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode client1(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+    CNode client2(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c003, 10002)), "", true);
+    CNode client3(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c004, 10003)), "", true);
+    const std::vector<CNode *> peers = {&full, &client1, &client2, &client3};
+    for (CNode *peer : peers)
+    {
+        peer->fSuccessfullyConnected = true;
+        peer->fClient = (peer != &full);
+    }
+    {
+        LOCK(cs_vNodes);
+        vNodes.insert(vNodes.end(), peers.begin(), peers.end());
+    }
+
+    // Light clients do not relay transactions, so the only full node keeps the whole limit.
+    const size_t nPeers = CountTxnRequestPeers(&full);
+    BOOST_CHECK_EQUAL(nPeers, 1);
+    CRequestManager rman;
+    CRequestManagerTest access(&rman);
+    rman.UpdateTxnRequestLimits(nPeers, &full);
+    for (uint64_t i = 0; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &full, objType::TXN);
+    BOOST_CHECK_EQUAL(full.nTxnRequests.load(), MAX_IN_FLIGHT_REQS);
+
+    access.CleanupTxnRequests();
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), 0);
+    LOCK(cs_vNodes);
+    for (CNode *peer : peers)
+        vNodes.erase(std::remove(vNodes.begin(), vNodes.end(), peer), vNodes.end());
+}
+
+BOOST_AUTO_TEST_CASE(askfor_light_client_gets_baseline_share)
+{
+    CNode full(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c001, 10000)), "", true);
+    CNode client(INVALID_SOCKET, CAddress(ipaddress(0xa0b0c002, 10001)), "", true);
+    client.fClient = true;
+    CRequestManager rman;
+    CRequestManagerTest access(&rman);
+    const uint64_t baseline = MAX_IN_FLIGHT_REQS * DEFAULT_TX_REQUEST_PEER_SHARE / 100;
+
+    // A peer claims to be a client in its VERSION, so a client never gets more than the baseline share,
+    // even next to a single full node, and the full node can use the rest.
+    rman.UpdateTxnRequestLimits(1, &client);
+    for (uint64_t i = 0; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &client, objType::TXN);
+    BOOST_CHECK_EQUAL(client.nTxnRequests.load(), baseline);
+
+    rman.UpdateTxnRequestLimits(1, &full);
+    for (uint64_t i = 0; i <= MAX_IN_FLIGHT_REQS; i++)
+        rman.AskFor(CInv(MSG_TX, GetRandHash()), &full, objType::TXN);
+    BOOST_CHECK_EQUAL(full.nTxnRequests.load(), MAX_IN_FLIGHT_REQS - baseline);
+    BOOST_CHECK_EQUAL(client.nTxnRequests.load(), baseline);
+
+    access.CleanupTxnRequests();
+    BOOST_CHECK_EQUAL(access.GetTxnRequestCount(), 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

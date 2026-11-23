@@ -177,6 +177,9 @@ public:
         {
             throw std::ios_base::failure("Number of IBLT hash functions needs to be > 0");
         }
+        // Each peel costs n_hash cell updates, and no IBLT we build uses more than MaxNHash()
+        if (ser_action.ForRead() && n_hash > MaxNHash())
+            throw std::ios_base::failure("Too many IBLT hash functions");
         READWRITE(is_modified);
 
         if (version >= 2)
@@ -227,7 +230,7 @@ public:
     inline bool isModified() { return is_modified; }
 
 protected:
-    void _insert(int plusOrMinus, uint64_t k, const std::vector<uint8_t> &v);
+    void _insert(int plusOrMinus, uint64_t k, const std::vector<uint8_t> &v, std::vector<size_t> *pTouched = nullptr);
 
     // This salt is used to seed the IBLT hash functions. When its value (passed in via constructor)
     // is derived from a pseudo-random value, the IBLT hash functions themselves become randomized.

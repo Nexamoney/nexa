@@ -511,11 +511,13 @@ def createBloomFilter(data: bytes, false_pos_rate: float, capacity: int, max_siz
         return None
     return res_buf.raw[0:res_size]
 
-def extractFromMerkleBlock(num_txes: int, merkle_proof_path: bytes, hash_in: bytes, num_hashes: int) -> (int, bytes):
-    res_buf = create_string_buffer(C_STR_BUF_SIZE)
+def extractFromMerkleBlock(num_txes: int, merkle_proof_path: bytes, hash_in: bytes, num_hashes: int,
+                           result_len: int = C_STR_BUF_SIZE) -> (int, bytes):
+    """Returns libnexa's result and the whole buffer, including one spare hash of 0xaa bytes past result_len"""
+    res_buf = create_string_buffer(b"\xaa" * (result_len + 32), result_len + 32)
     res = libnexa.extractFromMerkleBlock(num_txes, merkle_proof_path, len(merkle_proof_path),
-                                        hash_in, len(hash_in), num_hashes, res_buf, C_STR_BUF_SIZE)
-    return int(res), res_buf.raw[0:(res*32)]
+                                        hash_in, num_hashes, res_buf, result_len)
+    return int(res), res_buf.raw
 
 def capdSolve(message: bytes) -> bytes:
     res_size_buf = create_string_buffer(C_STR_BUF_SIZE)

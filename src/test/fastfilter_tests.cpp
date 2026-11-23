@@ -8,6 +8,9 @@
 
 #include "fastfilter.h"
 #include "hashwrapper.h"
+#include "streams.h"
+#include "utilstrencodings.h"
+#include "version.h"
 
 void TestVariableFastFilter(CVariableFastFilter filt, int buffer, int n, double fpr)
 {
@@ -81,6 +84,69 @@ BOOST_AUTO_TEST_CASE(variablefastfilter_tests)
     int buffer = 2;
     CVariableFastFilter filt(n, fpr);
     TestVariableFastFilter(filt, buffer, n, fpr);
+}
+
+BOOST_AUTO_TEST_CASE(variablefastfilter_bit_layout)
+{
+    // Filter bits are sent to peers, so the layout must not change. Over 8 hash funcs also covers the rotation.
+    CVariableFastFilter filt(4, 0.001);
+    for (int i = 1; i <= 2; i++)
+    {
+        uint256 t = ArithToUint256(i);
+        filt.insert(Hash(t.begin(), t.end()));
+    }
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << filt;
+    BOOST_CHECK_EQUAL(HexStr(ss.begin(), ss.end()), "08b6a82291880492400b4000000000000000");
+}
+
+BOOST_AUTO_TEST_CASE(variablefastfilter_many_hash_funcs_deterministic)
+{
+    // 16 or more hash funcs used to read one word past the hash
+    auto build = []()
+    {
+        CVariableFastFilter filt(4, 0.000001);
+        uint256 t = ArithToUint256(1);
+        filt.insert(Hash(t.begin(), t.end()));
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << filt;
+        return HexStr(ss.begin(), ss.end());
+    };
+    BOOST_CHECK_EQUAL(build(), build());
+}
+
+BOOST_AUTO_TEST_CASE(variablefastfilter_rejects_inconsistent_size)
+{
+    // A received filter's bit count must fit its data, or lookups divide by zero or read out of bounds
+    for (uint64_t bits :
+        {(uint64_t)0, (uint64_t)1, (uint64_t)17, (uint64_t)1000000, std::numeric_limits<uint64_t>::max()})
+    {
+        CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+        ds << std::vector<unsigned char>(2, 0xff) << (uint8_t)1 << bits;
+        CVariableFastFilter f;
+        BOOST_CHECK_THROW(ds >> f, std::ios_base::failure);
+    }
+    for (uint64_t bits : {(uint64_t)2, (uint64_t)16})
+    {
+        CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+        ds << std::vector<unsigned char>(2, 0xff) << (uint8_t)1 << bits;
+        CVariableFastFilter f;
+        BOOST_CHECK_NO_THROW(ds >> f);
+        BOOST_CHECK_EQUAL(f.nFilterBytes, 2);
+    }
+
+    // A filter built locally round trips, and reset() clears only its own data
+    uint256 hash = uint256S("f00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeedf00dfeed");
+    CVariableFastFilter orig(100, 0.01);
+    orig.insert(hash);
+    CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+    ds << orig;
+    CVariableFastFilter copy;
+    ds >> copy;
+    BOOST_CHECK_EQUAL(copy.nFilterBytes, orig.nFilterBytes);
+    BOOST_CHECK(copy.contains(hash));
+    copy.reset();
+    BOOST_CHECK(!copy.contains(hash));
 }
 
 BOOST_AUTO_TEST_CASE(fastfilter_tests)

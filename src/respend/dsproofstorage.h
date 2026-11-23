@@ -19,6 +19,14 @@
 
 class COutPoint;
 
+//! MAX total serialized size of the orphan proofs held at one time
+static constexpr size_t MAX_ORPHAN_DSPROOF_BYTES = 1000 * 1000;
+//! MAX number of orphan proofs held from one peer
+static constexpr size_t MAX_ORPHAN_DSPROOFS_PER_PEER = 20;
+//! MAX serialized size of one orphan proof
+//! (real proofs are only hundreds of bytes, so this gives plenty of space)
+static constexpr size_t MAX_ORPHAN_DSPROOF_SIZE = 4 * 1000;
+
 class DoubleSpendProofStorage
 {
 public:
@@ -37,6 +45,7 @@ public:
 
     /// this add()s and additionally registers this is an orphan.
     /// you can fetch those upto 90s using 'claim()'.
+    /// the oldest orphans are evicted to stay within MAX_ORPHAN_DSPROOF_BYTES and MAX_ORPHAN_DSPROOFS_PER_PEER.
     void addOrphan(const DoubleSpendProof &proof, NodeId peerId);
     /// Returns all (not yet verified) orphans matching prevOut.
     /// Each item is a pair of a proofId and the nodeId that send the proof to us
@@ -45,7 +54,18 @@ public:
     //! Returns how many orphans have this proof id
     int orphanCount(int proofId);
 
-    void claimOrphan(int proofId);
+    //! Returns how many proof ids the orphan outpoint lookup table holds
+    size_t orphanLookupCount() const;
+
+    //! Returns the total serialized size of the orphan proofs
+    size_t orphanBytes() const;
+
+    //! Returns how many orphan proofs are held from this peer
+    size_t peerOrphanCount(NodeId peerId) const;
+
+    //! Stops an orphan from expiring or being evicted.
+    //! Returns false if proofId is no longer an orphan (after eviction or expiry)
+    bool claimOrphan(int proofId);
 
     DoubleSpendProof lookup(const uint256 &proofId) const;
     bool exists(const uint256 &proofId) const;
@@ -64,6 +84,13 @@ private:
     std::map<int32_t, DoubleSpendProof> m_proofs;
     int m_nextId = 1;
     std::map<int, std::pair<NodeId, int64_t> > m_orphans;
+    //! Total serialized size of the proofs in m_orphans
+    size_t m_orphanBytes = 0;
+    //! The ids in m_orphans, by the peer that sent them
+    std::map<NodeId, std::set<int> > m_orphansByPeer;
+
+    //! Erases an orphan from m_orphans and from the totals above
+    void eraseOrphan(int proofId);
 
     //! A salted hasher for use with the uint256 type in the LookupTable below.
     //! This code is inspired by txmempool.h's SaltedTxidHasher

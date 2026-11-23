@@ -44,11 +44,12 @@
 
 using namespace std;
 
-extern CTweak<unsigned int> maxBlocksInTransitPerPeer;
+extern CTweak<uint64_t> maxBlocksInTransitPerPeer;
 extern CTweak<unsigned int> blockDownloadWindow;
 extern CTweak<unsigned int> blockLookAheadInterval;
 extern CTweak<unsigned int> blkRetryInterval;
 extern CTweak<unsigned int> txRetryInterval;
+extern CTweak<unsigned int> txRequestPeerShare;
 extern CTweak<bool> requestMissingSubblocks;
 
 // Request management
@@ -72,6 +73,7 @@ CRequestManagerNodeState::CRequestManagerNodeState()
 {
     nDownloadingFromPeerSince = 0;
     nBlocksInFlight = 0;
+    fTxnAnnouncementsSeen = false;
 }
 
 CRequestManager::CRequestManager()
@@ -99,6 +101,17 @@ void CRequestManager::Cleanup()
         auto prev = i;
         ++i;
         cleanup(prev); // cleanup erases which is why I need to advance the iterator first
+    }
+}
+
+// Give the announcing peer back its share of the transaction request limit.
+void CRequestManager::ReleaseTxnAnnouncer(CUnknownObj &item)
+{
+    if (item.announcer)
+    {
+        item.announcer->nTxnRequests--;
+        nTxnRequestCount--;
+        item.announcer = nullptr;
     }
 }
 
@@ -138,6 +151,71 @@ void CRequestManager::cleanup(const CInv &inv)
 }
 
 
+size_t CountTxnRequestPeers(CNode *from)
+{
+    size_t nPeers = 0;
+    LOCK(cs_vNodes);
+    for (CNode *node : vNodes)
+        if (!node->IsDisconnecting() && !node->fClient && (node == from || node->fSuccessfullyConnected))
+            ++nPeers;
+    return nPeers;
+}
+
+void CRequestManager::UpdateTxnRequestLimits(size_t nPeers, CNode *from)
+{
+    int64_t nNow = GetTimeMillis();
+    int64_t nLastCheck = nLastCheckForTPS.load();
+    if (nNow - nLastCheck > 250 && nLastCheckForTPS.compare_exchange_strong(nLastCheck, nNow))
+        nApproximateTxnPerSec.store(mempool.GetInstantaneousTxPerSec());
+
+    const uint64_t maxReqs = std::max(MAX_IN_FLIGHT_REQS, nApproximateTxnPerSec.load() * 10);
+    const unsigned int share = std::min(std::max(txRequestPeerShare.Value(), 1U), 100U);
+    nPeers = std::max(size_t(1), nPeers);
+    // A peer only claims to be a light client, so it never gets more than the baseline share.
+    const uint64_t clientLimit = maxReqs * share / 100;
+    const uint64_t peerLimit = std::max(clientLimit, maxReqs / nPeers);
+
+    LOCK(cs_objDownloader);
+    LOCK(cs_addTxn);
+    bool fNewAnnouncer = false;
+    if (from)
+    {
+        auto state = mapRequestManagerNodeState.find(from->GetId());
+        if (state != mapRequestManagerNodeState.end())
+        {
+            fNewAnnouncer = !state->second.fTxnAnnouncementsSeen;
+            state->second.fTxnAnnouncementsSeen = true;
+        }
+    }
+    if (fNewAnnouncer || nPeers != nTxnRequestPeers || peerLimit < nTxnRequestPeerLimit ||
+        clientLimit < nTxnRequestClientLimit || maxReqs < nTxnRequestLimit)
+    {
+        // Reclaim old allocations when peers join, before their announcements can be dropped by a full map.
+        for (OdMap *map : {&mapTxnInfo, &mapTxnToAdd})
+        {
+            for (auto it = map->begin(); it != map->end();)
+            {
+                CUnknownObj &item = it->second;
+                if (item.announcer && !item.fProcessing &&
+                    (item.announcer->IsDisconnecting() ||
+                        item.announcer->nTxnRequests > (item.announcer->fClient ? clientLimit : peerLimit) ||
+                        nTxnRequestCount > maxReqs))
+                {
+                    pendingTxns -= 1;
+                    ReleaseTxnAnnouncer(item);
+                    it = map->erase(it);
+                }
+                else
+                    ++it;
+            }
+        }
+    }
+    nTxnRequestLimit = maxReqs;
+    nTxnRequestPeerLimit = peerLimit;
+    nTxnRequestClientLimit = clientLimit;
+    nTxnRequestPeers = nPeers;
+}
+
 // Get this object from somewhere, asynchronously.
 void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
 {
@@ -146,28 +224,28 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
     CNodeRef noderef(from);
     if (obj.type == MSG_TX && objType == objType::TXN)
     {
-        // Limit the  number of times we update this value so we don't have to take the lock
-        // in the mempool so often. Doing this just a few times a second is ample accuracy.
-        int64_t nNow = GetTimeMillis();
-        int64_t nLastCheck = nLastCheckForTPS.load();
-        if (nNow - nLastCheck > 250)
-        {
-            if (nLastCheckForTPS.compare_exchange_strong(nLastCheck, nNow))
-            {
-                nApproximateTxnPerSec.store(mempool.GetInstantaneousTxPerSec());
-            }
-        }
-
-        // Don't allow the in flight requests to grow unbounded.
-        if (mapTxnInfo.size() > std::max(MAX_IN_FLIGHT_REQS, (nApproximateTxnPerSec * 10)))
-        {
-            LOG(REQ, "Tx request buffer full: Dropping request for %s", obj.hash.ToString());
-            return;
-        }
-
         LOCK(cs_addTxn);
-        std::pair<OdMap::iterator, bool> result = mapTxnToAdd.emplace(obj.hash, CUnknownObj());
-        OdMap::iterator &item = result.first;
+        OdMap::iterator item = mapTxnToAdd.find(obj.hash);
+        if (item == mapTxnToAdd.end())
+        {
+            // Don't allow the in flight requests to grow unbounded, nor one peer to fill them.
+            if (nTxnRequestCount >= nTxnRequestLimit)
+            {
+                LOG(REQ, "Tx request buffer full: Dropping request for %s", obj.hash.ToString());
+                return;
+            }
+            if (from->nTxnRequests >= (from->fClient ? nTxnRequestClientLimit : nTxnRequestPeerLimit))
+            {
+                LOG(REQ, "Tx request share of peer %d full: Dropping request for %s", from->GetId(),
+                    obj.hash.ToString());
+                return;
+            }
+            item = mapTxnToAdd.emplace(obj.hash, CUnknownObj()).first;
+            item->second.announcer = noderef;
+            from->nTxnRequests++;
+            nTxnRequestCount++;
+            pendingTxns += 1;
+        }
         CUnknownObj &data = item->second;
         data.obj = obj;
         data.objType = objType;
@@ -177,14 +255,16 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
         // if multiple invs were received before the transaction
         // was actually requested.
         data.AddSource(noderef, obj);
-
-        if (result.second) // inserted new
-        {
-            pendingTxns += 1;
-        }
     }
     else if (IsBlockType(obj) && (objType == objType::BLOCK || objType == objType::SUBBLOCK))
     {
+        // A peer that sent a bad body would most likely send the same one again
+        if (from && suspectBlockBodies.IsBadSource(obj.hash, from->GetId()))
+        {
+            LOG(REQ, "Not asking peer=%d again for suspect block %s\n", from->GetId(), obj.hash.ToString());
+            return;
+        }
+
         // Don't allow the in flight requests to grow unbounded.
         if (mapBlkInfo.size() > DEFAULT_BLOCK_DOWNLOAD_WINDOW * 2)
         {
@@ -397,6 +477,12 @@ void CRequestManager::Rejected(const CInv &obj, CNode *from, unsigned char reaso
             LOG(REQ, "ReqMgr: Item already removed. Unknown txn rejected %s\n", obj.ToString());
             return;
         }
+        // Only the peer we asked can reject the request
+        if (item->second.prevRequestNode.get() != from)
+        {
+            LOG(REQ, "ReqMgr: Ignoring reject for %s from a peer we did not ask\n", obj.ToString());
+            return;
+        }
         if (item->second.outstandingReqs)
             item->second.outstandingReqs--;
 
@@ -455,7 +541,6 @@ void CRequestManager::Rejected(const CInv &obj, CNode *from, unsigned char reaso
     }
     else if (reason == REJECT_INSUFFICIENTFEE)
     {
-        item->second.rateLimited = true;
     }
     else if (reason == REJECT_DUPLICATE)
     {
@@ -844,8 +929,15 @@ void CRequestManager::RunTxnDeleter(OdMap &maybeToSend)
     }
     for (const uint256 &hash : setTemp)
     {
-        maybeToSend.erase(hash);
-        mapTxnInfo.erase(hash);
+        for (OdMap *map : {&maybeToSend, &mapTxnInfo})
+        {
+            OdMap::iterator it = map->find(hash);
+            if (it != map->end())
+            {
+                ReleaseTxnAnnouncer(it->second);
+                map->erase(it);
+            }
+        }
     }
 }
 
@@ -1150,6 +1242,7 @@ void CRequestManager::CheckIfNewSource(OdMap &mapNewRequests, OdMap &mapOldReque
                 iterOld->second.AddSource(item.noderef, iterNew->second.obj);
             }
             // Remove the the new request
+            ReleaseTxnAnnouncer(iterNew->second);
             iterNew = mapNewRequests.erase(iterNew);
         }
         else
@@ -1205,108 +1298,105 @@ void CRequestManager::SendTxnRequests(OdMap &mapTxns)
         // if never requested then lastRequestTime==0 so this will always be true
         if (now - item.lastRequestTime > _txReqRetryInterval)
         {
-            if (!item.rateLimited)
+            // If item.lastRequestTime is true then we've requested at least once, so this is a rerequest -> a txn
+            // request was dropped.
+            if (item.lastRequestTime)
             {
-                // If item.lastRequestTime is true then we've requested at least once, so this is a rerequest -> a txn
-                // request was dropped.
-                if (item.lastRequestTime)
-                {
-                    LOG(REQ, "Request timeout for %s.  Retrying\n", item.obj.ToString().c_str());
-                }
+                LOG(REQ, "Request timeout for %s.  Retrying\n", item.obj.ToString().c_str());
+            }
 
-                if (item.availableFrom.empty())
+            if (item.availableFrom.empty())
+            {
+                // There can be no block sources because a node dropped out.  In this case, nothing can be done so
+                // remove the item.
+                LOG(REQ, "Tx has no sources for %s.  Removing\n", item.obj.ToString().c_str());
+                cleanup(itemIter);
+            }
+            else // Ok, we have at least one source so request this item.
+            {
+                CNodeRequestData next;
+                // Go thru the availableFrom list, looking for the first node that isn't disconnected
+                while (!item.availableFrom.empty() && (next.noderef.get() == nullptr))
                 {
-                    // There can be no block sources because a node dropped out.  In this case, nothing can be done so
-                    // remove the item.
-                    LOG(REQ, "Tx has no sources for %s.  Removing\n", item.obj.ToString().c_str());
-                    cleanup(itemIter);
-                }
-                else // Ok, we have at least one source so request this item.
-                {
-                    CNodeRequestData next;
-                    // Go thru the availableFrom list, looking for the first node that isn't disconnected
-                    while (!item.availableFrom.empty() && (next.noderef.get() == nullptr))
-                    {
-                        next = item.availableFrom.front(); // Grab the next location where we can find this object.
-                        item.availableFrom.pop_front();
-                        if (next.noderef.get() != nullptr)
-                        {
-                            // Node was disconnected so we can't request from it
-                            if (next.noderef.get()->IsDisconnecting())
-                            {
-                                continue;
-                            }
-                        }
-                    }
-
+                    next = item.availableFrom.front(); // Grab the next location where we can find this object.
+                    item.availableFrom.pop_front();
                     if (next.noderef.get() != nullptr)
                     {
-                        // This commented code skips requesting TX if the node is not synced. The request
-                        // manager should not make this decision but rather the caller should not give us the TX.
-                        if (1)
+                        // Node was disconnected so we can't request from it
+                        if (next.noderef.get()->IsDisconnecting())
                         {
-                            // If item.lastRequestTime is true then we've requested at least once, so this is a
-                            // rerequest -> a txn request was dropped.
-                            if (item.lastRequestTime)
-                            {
-                                LOG(REQ, "Request timeout for %s.  Retrying\n", item.obj.ToString().c_str());
-                                // Not reducing inFlight; it's still outstanding and will be cleaned up when
-                                // item is removed from map.
-                                // Note we can never be sure its really dropped verses just delayed for a long
-                                // time so this is not authoritative.
-                                droppedTxns += 1;
+                            continue;
+                        }
+                    }
+                }
 
-                                // if we've requested before then increment the re-request counter for the
-                                // previous peer we requested from.
-                                if (item.prevRequestNode.get() != nullptr)
-                                    item.prevRequestNode.get()->nReRequests++;
+                if (next.noderef.get() != nullptr)
+                {
+                    // This commented code skips requesting TX if the node is not synced. The request
+                    // manager should not make this decision but rather the caller should not give us the TX.
+                    if (1)
+                    {
+                        // If item.lastRequestTime is true then we've requested at least once, so this is a
+                        // rerequest -> a txn request was dropped.
+                        if (item.lastRequestTime)
+                        {
+                            LOG(REQ, "Request timeout for %s.  Retrying\n", item.obj.ToString().c_str());
+                            // Not reducing inFlight; it's still outstanding and will be cleaned up when
+                            // item is removed from map.
+                            // Note we can never be sure its really dropped verses just delayed for a long
+                            // time so this is not authoritative.
+                            droppedTxns += 1;
+
+                            // if we've requested before then increment the re-request counter for the
+                            // previous peer we requested from.
+                            if (item.prevRequestNode.get() != nullptr)
+                                item.prevRequestNode.get()->nReRequests++;
+                        }
+
+                        item.outstandingReqs++;
+                        item.lastRequestTime = now;
+                        item.prevRequestNode = next.noderef;
+
+                        if (next.noderef.get()->fPeerWantsINV2)
+                        {
+                            uint64_t cheaphash = item.obj.hash.GetCheapHash();
+                            mapBatchTxnRequestsInv2[next.noderef].emplace_back(CExtInv(MSG_EXT_TX, cheaphash));
+
+                            // If we have 1000 requests for this peer then send them right away.
+                            if (mapBatchTxnRequestsInv2[next.noderef].size() >= 1000)
+                            {
+                                next.noderef.get()->PushMessageWithCookie(NetMsgType::EXTGETDATA,
+                                    (++requestCookie << 16), mapBatchTxnRequestsInv2[next.noderef]);
+
+                                LOG(REQ, "Sent batched request with %d transactions to node %s\n",
+                                    mapBatchTxnRequestsInv2[next.noderef].size(), next.noderef.get()->GetLogName());
+
+                                mapBatchTxnRequestsInv2.erase(next.noderef);
                             }
+                        }
+                        else
+                        {
+                            mapBatchTxnRequests[next.noderef].emplace_back(item.obj);
 
-                            item.outstandingReqs++;
-                            item.lastRequestTime = now;
-                            item.prevRequestNode = next.noderef;
-
-                            if (next.noderef.get()->fPeerWantsINV2)
+                            // If we have 1000 requests for this peer then send them right away.
+                            if (mapBatchTxnRequests[next.noderef].size() >= 1000)
                             {
-                                uint64_t cheaphash = item.obj.hash.GetCheapHash();
-                                mapBatchTxnRequestsInv2[next.noderef].emplace_back(CExtInv(MSG_EXT_TX, cheaphash));
+                                next.noderef.get()->PushMessageWithCookie(
+                                    NetMsgType::GETDATA, getCookie(), mapBatchTxnRequests[next.noderef]);
+                                LOG(REQ, "Sent batched request with %d transactions to node %s\n",
+                                    mapBatchTxnRequests[next.noderef].size(), next.noderef.get()->GetLogName());
 
-                                // If we have 1000 requests for this peer then send them right away.
-                                if (mapBatchTxnRequestsInv2[next.noderef].size() >= 1000)
-                                {
-                                    next.noderef.get()->PushMessageWithCookie(NetMsgType::EXTGETDATA,
-                                        (++requestCookie << 16), mapBatchTxnRequestsInv2[next.noderef]);
-
-                                    LOG(REQ, "Sent batched request with %d transactions to node %s\n",
-                                        mapBatchTxnRequestsInv2[next.noderef].size(), next.noderef.get()->GetLogName());
-
-                                    mapBatchTxnRequestsInv2.erase(next.noderef);
-                                }
-                            }
-                            else
-                            {
-                                mapBatchTxnRequests[next.noderef].emplace_back(item.obj);
-
-                                // If we have 1000 requests for this peer then send them right away.
-                                if (mapBatchTxnRequests[next.noderef].size() >= 1000)
-                                {
-                                    next.noderef.get()->PushMessageWithCookie(
-                                        NetMsgType::GETDATA, getCookie(), mapBatchTxnRequests[next.noderef]);
-                                    LOG(REQ, "Sent batched request with %d transactions to node %s\n",
-                                        mapBatchTxnRequests[next.noderef].size(), next.noderef.get()->GetLogName());
-
-                                    mapBatchTxnRequests.erase(next.noderef);
-                                }
+                                mapBatchTxnRequests.erase(next.noderef);
                             }
                         }
                     }
-                    else
-                    {
-                        // We requested from all available sources so remove the source. This should not
-                        // happen and would indicate some other problem.
-                        LOG(REQ, "Tx has no sources for %s.  Removing\n", item.obj.ToString().c_str());
-                        cleanup(itemIter);
-                    }
+                }
+                else
+                {
+                    // We requested from all available sources so remove the source. This should not
+                    // happen and would indicate some other problem.
+                    LOG(REQ, "Tx has no sources for %s.  Removing\n", item.obj.ToString().c_str());
+                    cleanup(itemIter);
                 }
             }
         }
@@ -1551,9 +1641,11 @@ void CRequestManager::FindNextBlocksToDownload(CNode *node, size_t count, std::v
                 // We consider the chain that this peer is on invalid.
                 return;
             }
-            if (pindex->nStatus & BLOCK_HAVE_DATA || chainActive.Contains(pindex))
+            // Linked descendants must not move the cursor past a suspect ancestor.
+            if ((pindex->nStatus & BLOCK_HAVE_DATA && !suspectBlockBodies.IsSuspect(blockHash)) ||
+                chainActive.Contains(pindex))
             {
-                if (pindex->IsLinked())
+                if (pindex->IsLinked() && pindex->pprev == state->pindexLastCommonBlock)
                     state->pindexLastCommonBlock = pindex;
             }
             else
@@ -1657,6 +1749,13 @@ void CRequestManager::MarkBlockAsReceivedByAnother(const uint256 &hash)
         }
         state.nBlocksInFlight = state.vBlocksInFlight.size();
     }
+}
+
+bool CRequestManager::IsBlockInFlightFrom(const uint256 &hash, NodeId nodeid)
+{
+    LOCK(cs_objDownloader);
+    auto itHash = mapBlocksInFlight.find(hash);
+    return itHash != mapBlocksInFlight.end() && itHash->second.count(nodeid);
 }
 
 // Returns a bool if successful in indicating we originally asked for this block.

@@ -9,6 +9,7 @@
 #include "serialize.h"
 #include "util.h"
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <vector>
 
@@ -17,6 +18,14 @@
 #define MIN_N_HASH_FUNC 1
 #define MAX_N_HASH_FUNC 32
 class uint256;
+
+// uint256 bytes have no alignment guarantee, so load words with memcpy
+static inline uint32_t FastFilterWord(const unsigned char *p)
+{
+    uint32_t v;
+    memcpy(&v, p, sizeof(v));
+    return v;
+}
 
 uint256 GetRandHash() noexcept;
 
@@ -74,11 +83,14 @@ public:
     {
         uint256 rotHash; // We require a mutable hash for rotation
         memcpy(rotHash.begin(), hash.begin(), 32);
-        const uint32_t *pos = (const uint32_t *)rotHash.begin();
+        const unsigned char *pos = rotHash.begin();
         bool unset = 0; // If any position is not set, then this will be true
-        for (unsigned int i = 0; i < nHashFuncs; i++, pos++)
+        for (unsigned int i = 0; i < nHashFuncs; i++, pos += 4)
         {
-            uint32_t val = *pos;
+            // After a rotation pos starts at word 1, so word 8 would be past the end
+            if (pos == rotHash.end())
+                pos = rotHash.begin();
+            uint32_t val = FastFilterWord(pos);
             uint32_t idx = val % (nFilterBits - 1);
             uint32_t bit = (1 << (idx & 7));
             idx >>= 3;
@@ -89,7 +101,7 @@ public:
             if (i % 8 == 7)
             {
                 std::rotate(rotHash.begin(), rotHash.begin() + 1, rotHash.end());
-                pos = (const uint32_t *)rotHash.begin();
+                pos = rotHash.begin();
             }
         }
 
@@ -100,10 +112,13 @@ public:
     {
         uint256 rotHash; // We require a mutable hash for rotation
         memcpy(rotHash.begin(), hash.begin(), 32);
-        const uint32_t *pos = (const uint32_t *)rotHash.begin();
-        for (unsigned int i = 0; i < nHashFuncs; i++, pos++)
+        const unsigned char *pos = rotHash.begin();
+        for (unsigned int i = 0; i < nHashFuncs; i++, pos += 4)
         {
-            uint32_t val = *pos;
+            // After a rotation pos starts at word 1, so word 8 would be past the end
+            if (pos == rotHash.end())
+                pos = rotHash.begin();
+            uint32_t val = FastFilterWord(pos);
             uint32_t idx = val % (nFilterBits - 1);
             vData[idx >> 3] |= (1 << (idx & 7));
 
@@ -111,7 +126,7 @@ public:
             if (i % 8 == 7)
             {
                 std::rotate(rotHash.begin(), rotHash.begin() + 1, rotHash.end());
-                pos = (const uint32_t *)rotHash.begin();
+                pos = rotHash.begin();
             }
         }
     }
@@ -120,11 +135,14 @@ public:
     {
         uint256 rotHash; // We require a mutable hash for rotation
         memcpy(rotHash.begin(), hash.begin(), 32);
-        const uint32_t *pos = (const uint32_t *)rotHash.begin();
+        const unsigned char *pos = rotHash.begin();
         bool unset = 0; // If any position is not set, then this will be true
-        for (unsigned int i = 0; i < nHashFuncs; i++, pos++)
+        for (unsigned int i = 0; i < nHashFuncs; i++, pos += 4)
         {
-            uint32_t val = *pos;
+            // After a rotation pos starts at word 1, so word 8 would be past the end
+            if (pos == rotHash.end())
+                pos = rotHash.begin();
+            uint32_t val = FastFilterWord(pos);
             uint32_t idx = val % (nFilterBits - 1);
             unset |= (0 == (vData[idx >> 3] & (1 << (idx & 7))));
 
@@ -132,7 +150,7 @@ public:
             if (i % 8 == 7)
             {
                 std::rotate(rotHash.begin(), rotHash.begin() + 1, rotHash.end());
-                pos = (const uint32_t *)rotHash.begin();
+                pos = rotHash.begin();
             }
         }
 
@@ -151,7 +169,12 @@ public:
             throw std::ios_base::failure("nHashFuncs must be in the range [1,32], inclusive");
         READWRITE(nFilterBits);
         if (ser_action.ForRead())
-            nFilterBytes = 8 * nFilterBits;
+        {
+            // Bit indexes are taken modulo nFilterBits - 1 and must fall inside vData
+            if (nFilterBits < 2 || nFilterBits > 8 * (uint64_t)vData.size())
+                throw std::ios_base::failure("nFilterBits is inconsistent with the filter data");
+            nFilterBytes = vData.size();
+        }
     }
 };
 
@@ -210,11 +233,11 @@ public:
     // returns true IF this function made a change (i.e. the value was previously not set).
     bool checkAndSet(const uint256 &hash)
     {
-        const uint32_t *pos = (const uint32_t *)hash.begin();
+        const unsigned char *pos = hash.begin();
         bool unset = 0; // If any position is not set, then this will be true
-        for (unsigned int i = 0; i < NUM_HASH_FNS / 2; i++, pos++)
+        for (unsigned int i = 0; i < NUM_HASH_FNS / 2; i++, pos += 4)
         {
-            uint32_t val = *pos;
+            uint32_t val = FastFilterWord(pos);
             uint32_t idx = val & (FILTER_SIZE - 1);
             uint32_t bit = (1 << (idx & 7));
             idx >>= 3;
@@ -235,10 +258,10 @@ public:
 
     void insert(const uint256 &hash)
     {
-        const uint32_t *pos = (const uint32_t *)hash.begin();
-        for (unsigned int i = 0; i < NUM_HASH_FNS / 2; i++, pos++)
+        const unsigned char *pos = hash.begin();
+        for (unsigned int i = 0; i < NUM_HASH_FNS / 2; i++, pos += 4)
         {
-            uint32_t val = *pos;
+            uint32_t val = FastFilterWord(pos);
             uint32_t idx = val & (FILTER_SIZE - 1);
             val = __builtin_bswap32(val);
             uint32_t idx2 = val & (FILTER_SIZE - 1);
@@ -250,11 +273,11 @@ public:
 
     bool contains(const uint256 &hash) const
     {
-        const uint32_t *pos = (const uint32_t *)hash.begin();
+        const unsigned char *pos = hash.begin();
         bool unset = 0; // If any position is not set, then this will be true
-        for (unsigned int i = 0; i < NUM_HASH_FNS / 2; i++, pos++)
+        for (unsigned int i = 0; i < NUM_HASH_FNS / 2; i++, pos += 4)
         {
-            uint32_t val = *pos;
+            uint32_t val = FastFilterWord(pos);
             uint32_t idx = val & (FILTER_SIZE - 1);
             val = __builtin_bswap32(val);
             uint32_t idx2 = val & (FILTER_SIZE - 1);
@@ -348,21 +371,21 @@ public:
         }
 
         // Do the insert
-        const uint32_t *pos_salt = (const uint32_t *)salt.begin();
-        const uint32_t *pos = ((const uint32_t *)hash.begin()) + ((*pos_salt) & 7);
-        const uint32_t *end = (const uint32_t *)hash.end();
-        for (unsigned int i = 0; i < NUM_HASH_FNS / 2; i++, pos_salt++)
+        const unsigned char *pos_salt = salt.begin();
+        const unsigned char *pos = hash.begin() + 4 * (FastFilterWord(pos_salt) & 7);
+        const unsigned char *end = hash.end();
+        for (unsigned int i = 0; i < NUM_HASH_FNS / 2; i++, pos_salt += 4)
         {
-            uint32_t val = *pos ^ *pos_salt;
+            uint32_t val = FastFilterWord(pos) ^ FastFilterWord(pos_salt);
             uint32_t idx = val & (FILTER_SIZE - 1);
             val = __builtin_bswap32(val);
             uint32_t idx2 = val & (FILTER_SIZE - 1);
 
             vData[idx >> 3] |= (1 << (idx & 7));
             vData[idx2 >> 3] |= (1 << (idx2 & 7));
-            pos++;
+            pos += 4;
             if (pos == end)
-                pos = ((const uint32_t *)hash.begin());
+                pos = hash.begin();
         }
 
         // Increment the counter
@@ -373,15 +396,15 @@ public:
     {
         std::lock_guard<std::mutex> lock(cs_rollingfilter);
 
-        const uint32_t *pos_salt = (const uint32_t *)salt.begin();
-        const uint32_t *pos = ((const uint32_t *)hash.begin()) + ((*pos_salt) & 7);
-        const uint32_t *end = (const uint32_t *)hash.end();
+        const unsigned char *pos_salt = salt.begin();
+        const unsigned char *pos = hash.begin() + 4 * (FastFilterWord(pos_salt) & 7);
+        const unsigned char *end = hash.end();
         bool unset = 0; // If any position is not set, then this will be true
         bool unset2 = 0; // If any position is not set, then this will be true
         bool unset3 = 0; // If any position is not set, then this will be true
-        for (unsigned int i = 0; i < NUM_HASH_FNS / 2; i++, pos_salt++)
+        for (unsigned int i = 0; i < NUM_HASH_FNS / 2; i++, pos_salt += 4)
         {
-            uint32_t val = *pos ^ *pos_salt;
+            uint32_t val = FastFilterWord(pos) ^ FastFilterWord(pos_salt);
             uint32_t idx = val & (FILTER_SIZE - 1);
             val = __builtin_bswap32(val);
             uint32_t idx2 = val & (FILTER_SIZE - 1);
@@ -394,9 +417,9 @@ public:
 
             unset3 |= (0 == (vData3[idx >> 3] & (1 << (idx & 7))));
             unset3 |= (0 == (vData3[idx2 >> 3] & (1 << (idx2 & 7))));
-            pos++;
+            pos += 4;
             if (pos == end)
-                pos = ((const uint32_t *)hash.begin());
+                pos = hash.begin();
             if (unset && unset2 && unset3)
             {
                 return false;

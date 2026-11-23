@@ -7,10 +7,12 @@
 // Counterparty and protocol discovery
 #include <limits>
 #include <queue>
+#include <set>
 
 #include "arith_uint256.h"
 #include "capd.h"
 #include "clientversion.h"
+#include "consensus/consensus.h"
 #include "dosman.h"
 #include "init.h"
 #include "net.h"
@@ -26,12 +28,32 @@
 #include <univalue.h>
 
 const CapdMsgRef nullmsgref = CapdMsgRef();
+extern uint64_t nMaxSendBufferSize;
+
+static uint64_t CapdReplyBytes(const CapdMsg &msg)
+{
+    // Count the maximum vector prefix and a header per reply, so batching never sends more than is counted
+    return GetSerializeSize(msg, SER_NETWORK, PROTOCOL_VERSION) + 9 + CMessageHeader::HEADER_SIZE;
+}
+
+// A pooled message must fit on its own in any P2P message that carries it
+static bool FitsNetMessage(const CapdMsg &msg)
+{
+    return GetSerializeSize(msg, SER_NETWORK, PROTOCOL_VERSION) + CAPD_MSG_ENVELOPE_RESERVE <=
+           GetMaxAllowedNetMessage();
+}
 
 uint64_t msgpoolMaxSize = CapdMsgPool::DEFAULT_MSG_POOL_MAX_SIZE;
 
 const uint64_t CAPD_MAX_INV_TO_SEND = 20000;
 const uint64_t CAPD_MAX_MSG_TO_REQUEST = 10000;
 const uint64_t CAPD_MAX_MSG_TO_SEND = 5000;
+// Approximate maximum bytes of messages placed in a single CAPDMSG.  Bounds the serialization buffer FlushMessages
+// builds, so many queued requests for large messages are not all serialized into one CAPDMSG.  Not const so tests can
+// lower it.
+uint64_t CAPD_MAX_SEND_CHUNK_BYTES = 100 * 1000 * 1000;
+// Bounds a peer's notification memory and the CAPDREMOVENOTIFY scan
+const uint64_t CAPD_MAX_NOTIFICATIONS = 1024;
 
 CapdMsgPool msgpool;
 CapdProtocol capdProtocol(msgpool);
@@ -291,8 +313,11 @@ bool CapdMsgPool::LoadMsgPool(void)
         {
             CapdMsg msg;
             file >> msg;
+            if (!FitsNetMessage(msg))
+                continue; // saved before admission checked the size, or under a larger limit
             CapdMsgRef ref = std::make_shared<CapdMsg>(msg);
             {
+                ref->InitialPriority(); // fill the cache under the lock, a lone message is never compared on insert
                 msgs.insert(ref);
                 size += ref->RamSize();
                 ++count;
@@ -370,13 +395,13 @@ void CapdMsgPool::_DbgDump()
     printf("relay: %s, local: %s\n", _GetRelayPowTarget().GetHex().c_str(), _GetLocalPowTarget().GetHex().c_str());
 }
 
-void CapdMsgPool::add(const CapdMsg &msg)
+bool CapdMsgPool::add(const CapdMsg &msg)
 {
     CapdMsgRef m = std::make_shared<CapdMsg>(msg);
-    add(m);
+    return add(m);
 }
 
-void CapdMsgPool::add(const CapdMsgRef &msg)
+bool CapdMsgPool::add(const CapdMsgRef &msg)
 {
     bool broadcast = false;
 
@@ -386,6 +411,19 @@ void CapdMsgPool::add(const CapdMsgRef &msg)
         {
             LOG(CAPD, "Message POW inconsistent");
             throw CapdMsgPoolException("Message POW inconsistent");
+        }
+
+        if (!FitsNetMessage(*msg))
+        {
+            LOG(CAPD, "Message too large to send");
+            throw CapdMsgPoolException("Message too large");
+        }
+
+        // A later creation time buys priority, so creators are expected to backdate their messages
+        if (msg->createTime > (uint64_t)GetTime())
+        {
+            LOG(CAPD, "Message created in the future");
+            throw CapdMsgPoolException("Message created in the future");
         }
 
         if (msg->Priority() < _GetLocalPriority())
@@ -415,6 +453,7 @@ void CapdMsgPool::add(const CapdMsgRef &msg)
         if (p)
             p->GossipMessage(msg);
     }
+    return broadcast;
 }
 
 
@@ -470,24 +509,38 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
         auto sz = content.size();
         if ((sz == 2) || (sz == 4) || (sz == 8) || (sz == 16))
         {
-            if (notify)
-                cn->installNotification(cookie, quantity, type, content);
+            if (notify && !cn->installNotification(cookie, quantity, type, content))
+            {
+                LOG(CAPD, "Capd: too many notifications installed by %s\n", pfrom->GetLogName());
+                dosMan.Misbehaving(pfrom, 10, BanReasonInvalidSize);
+            }
 
             std::vector<CapdMsgRef> msgs = msgpool.find(content);
             if (type == CAPD_QUERY_TYPE_MSG)
             {
-                quantity = std::min((int)CAPD_QUERY_MAX_MSGS, (int)quantity);
+                quantity = std::min<uint32_t>(CAPD_QUERY_MAX_MSGS, quantity);
+                // Stop before the reply outgrows one network message; the total count lets the client page on
+                uint64_t replySize = sizeof(cookie) + sizeof(type) + sizeof(uint32_t) + GetSizeOfCompactSize(quantity);
+                uint32_t count = 0;
+                for (size_t i = start; i < msgs.size() && count < quantity; ++i, ++count)
+                {
+                    replySize += GetSerializeSize(*msgs[i], SER_NETWORK, PROTOCOL_VERSION);
+                    if (replySize > GetMaxAllowedNetMessage())
+                        break;
+                }
                 pfrom->PushMessageWithCookie(NetMsgType::CAPDQUERYREPLY, msgCookie | 0xFFFF, cookie, type,
-                    (uint32_t)msgs.size(), PtrVectorSpan<CapdMsgRef>(msgs, start, quantity));
+                    (uint32_t)msgs.size(), PtrVectorSpan<CapdMsgRef>(msgs, start, count));
             }
             else if (type == CAPD_QUERY_TYPE_MSG_HASH)
             {
-                int qty = std::min(
-                    std::min((int)CAPD_QUERY_MAX_INVS + start, (int)start + quantity), (int)msgs.size() - start);
                 std::vector<uint256> hashes;
-                for (int i = start; i < qty; i++)
+                if (start < msgs.size())
                 {
-                    hashes.push_back(msgs[i]->GetHash());
+                    size_t qty = std::min<size_t>(std::min<size_t>(CAPD_QUERY_MAX_INVS, quantity), msgs.size() - start);
+                    for (size_t i = start; i < start + qty; i++)
+                    {
+                        hashes.push_back(msgs[i]->GetHash());
+                    }
                 }
                 pfrom->PushMessageWithCookie(
                     NetMsgType::CAPDQUERYREPLY, msgCookie | 0xFFFF, cookie, type, (uint32_t)msgs.size(), hashes);
@@ -550,9 +603,17 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
             return error(CAPD, "Capd drop: Received message with too many (%d) capd message requests\n", msgIds.size());
         }
 
+        // Each message is sent at most once per request, so a peer cannot multiply our memory use by repeating an id.
+        // A peer that really wants multiple copies must send separate requests.
+        std::set<uint256> requested;
         for (auto id : msgIds)
         {
             LOG(CAPD, "received GetMsg %s", id.GetHex());
+            if (!requested.insert(id).second)
+            {
+                LOG(CAPD, "Capd drop: message %s requested more than once\n", id.GetHex());
+                continue;
+            }
             auto msg = pool->find(id);
             if (msg == nullptr)
             {
@@ -566,20 +627,52 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
                 continue;
             }
 
-            cn->sendMsg(msg, msgCookie | 0xFFFF);
+            if (!cn->sendMsg(msg, msgCookie | 0xFFFF))
+            {
+                LOG(CAPD, "Capd drop: message %s does not fit in a network message\n", id.GetHex());
+                continue;
+            }
         }
     }
     else if (command == NetMsgType::CAPDMSG)
     {
         std::vector<CapdMsg> msgs; // TODO deserialize as CapdMsgRefs
         std::vector<CapdMsgRef> goodMsgs;
-        vRecv >> msgs;
+        try
+        {
+            vRecv >> msgs;
+        }
+        catch (const std::ios_base::failure &e)
+        {
+            // Malformed CAPD messages (including nonces longer than the spec allows) should be punished.
+            // (currently honest nodes can send them by accidentally relaying over-long nonces, uncomment in 2027)
+            // dosMan.Misbehaving(pfrom, 10, BanReasonInvalidObject);
+            // Rethrow so the generic network handler still replies with a REJECT and logs the failure.
+            LOG(CAPD, "Capd drop: failed to deserialize messages from %s: %s\n", pfrom->GetLogName(), e.what());
+            throw;
+        }
         LOG(CAPD, "Capd: Received %d messages", msgs.size());
         for (const CapdMsg &msg : msgs)
         {
             auto msgRef = MakeMsgRef(CapdMsg(msg));
             uint256 hash = msgRef->GetHash();
             LOG(CAPD, "received Msg %s\n", hash.GetHex());
+            if (!msgRef->IsNonceSizeValid())
+            {
+                // An honest node can never produce or relay such a message
+                // (currently they can by accidental relay, uncomment in 2027)
+                // dosMan.Misbehaving(pfrom, 10, BanReasonInvalidSize);
+                LOG(CAPD, "Capd drop: message %s has invalid nonce size %d\n", hash.GetHex(), msgRef->nonce.size());
+                continue;
+            }
+            if (msgRef->createTime > (uint64_t)GetTime())
+            {
+                // Only penalise beyond clock skew between us and the creator
+                if (msgRef->createTime > (uint64_t)GetTime() + MSG_MAX_FUTURE_SEC)
+                    dosMan.Misbehaving(pfrom, 1, BanReasonInvalidPriority);
+                LOG(CAPD, "Capd drop: message %s created in the future\n", hash.GetHex());
+                continue;
+            }
             PriorityType priority = msgRef->Priority();
             LOG(CAPD, "Msg priority %f\n", priority);
             if (priority < cn->receivePriority)
@@ -588,7 +681,7 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
                 // It is possible for a node to accidentally send us a message within the priority when it was sent
                 // but too low by the time we process it.
                 auto punished = "";
-                if (priority < (cn->receivePriority * 0.75) - 1.0)
+                if (priority < cn->receivePriority - 1.0)
                 {
                     dosMan.Misbehaving(pfrom, 1, BanReasonInvalidPriority);
                     punished = " (and punish)";
@@ -600,13 +693,13 @@ bool CapdProtocol::HandleCapdMessage(CNode *pfrom,
 
             try
             {
-                pool->add(msgRef); // the pool will relay to P2P nodes if the message is viable
-                goodMsgs.push_back(msgRef);
+                // The pool relays new messages to P2P nodes. Resent ones were already notified, so skip them
+                if (pool->add(msgRef))
+                    goodMsgs.push_back(msgRef);
             }
             catch (CapdMsgPoolException &e)
             {
-                // messsage was too low priority, drop it
-                LOG(CAPD, "Capd drop: message priority too low to add");
+                LOG(CAPD, "Capd drop: %s\n", e.what());
             }
         }
 
@@ -705,6 +798,17 @@ void CapdProtocol::FlushGossipMessagesToNodes()
     }
 }
 
+bool CapdNode::sendMsg(const CapdMsgRef m, uint32_t msgCookie)
+{
+    LOCK(csCapdNode);
+    const uint64_t bytes = CapdReplyBytes(*m);
+    if (bytes - CMessageHeader::HEADER_SIZE > GetMaxAllowedNetMessage())
+        return false;
+    sendMsgs.emplace_back(m, msgCookie);
+    pendingSendBytes += bytes;
+    return true;
+}
+
 void CapdNode::clear()
 {
     LOCK(csCapdNode);
@@ -712,6 +816,7 @@ void CapdNode::clear()
     invMsgs.clear();
     requestMsgs.clear();
     sendMsgs.clear();
+    pendingSendBytes = 0;
     notifications.clear();
 }
 
@@ -751,46 +856,60 @@ bool CapdNode::FlushMessages()
         requestMsgs.clear();
     }
 
-    if (!sendMsgs.empty())
+    // Send replies in request order while the peer's send buffer has room, like deferred GETDATA requests, and keep
+    // the rest for a later call.  Each CAPDMSG holds one reply with a reply cookie, or a batch of replies without one
+    // of approximately CAPD_MAX_SEND_CHUNK_BYTES (at most CAPD_MAX_MSG_TO_SEND messages, and within the network
+    // message limit).  A batch may exceed the byte target by up to one message.
+    // The batch holds raw pointers, which is safe because sendMsgs keeps every message alive until it is erased
+    // below.  PtrVectorSpan serializes them exactly like a vector of the messages, so nothing is copied.
+    size_t i = 0;
+    while (i < sendMsgs.size() && (nMaxSendBufferSize == 0 || node->nSendSize.load() < nMaxSendBufferSize))
     {
-        unsigned int offset = 0;
-        // Send all messages that didn't provide a reply cookie in a few large chunks
-        std::vector<CapdMsg> unreplyMessages;
-        for (auto m : sendMsgs)
+        const auto &first = sendMsgs[i];
+        if ((first.second & 0xFFFF0000) != 0)
         {
-            if ((m.second & 0xFFFF0000) == 0)
-                unreplyMessages.push_back(*(m.first));
-        }
-        do
-        {
-            node->PushMessage(NetMsgType::CAPDMSG, VectorSpan<CapdMsg>(unreplyMessages, offset, CAPD_MAX_MSG_TO_SEND));
-            offset += CAPD_MAX_MSG_TO_SEND;
-        } while (offset < unreplyMessages.size());
-
-        // Now send the messages that need a reply cookie
-        for (auto it : sendMsgs)
-        {
-            if ((it.second & 0xFFFF0000) != 0)
-            {
-                std::vector<CapdMsg> oneMsg(1);
-                oneMsg[0] = *it.first;
-                node->PushMessageWithCookie(NetMsgType::CAPDMSG, it.second, oneMsg);
-            }
+            node->PushMessageWithCookie(
+                NetMsgType::CAPDMSG, first.second, PtrVectorOf1<const CapdMsg *>(first.first.get()));
+            pendingSendBytes -= CapdReplyBytes(*first.first);
+            i++;
+            continue;
         }
 
-        sendMsgs.clear();
+        std::vector<const CapdMsg *> chunk;
+        uint64_t chunkBytes = 0;
+        uint64_t chunkWireBytes = 0;
+        uint64_t reserved = 0;
+        while (i < sendMsgs.size() && (sendMsgs[i].second & 0xFFFF0000) == 0)
+        {
+            const CapdMsg &m = *sendMsgs[i].first;
+            const uint64_t bytes = CapdReplyBytes(m);
+            if (!chunk.empty() && (chunkBytes >= CAPD_MAX_SEND_CHUNK_BYTES || chunk.size() >= CAPD_MAX_MSG_TO_SEND ||
+                                      chunkWireBytes + bytes - CMessageHeader::HEADER_SIZE > GetMaxAllowedNetMessage()))
+                break;
+            chunk.push_back(&m);
+            chunkBytes += m.RamSize();
+            chunkWireBytes += bytes - CMessageHeader::HEADER_SIZE;
+            reserved += bytes;
+            i++;
+        }
+        node->PushMessage(NetMsgType::CAPDMSG, PtrVectorSpan<const CapdMsg *>(chunk, 0, chunk.size()));
+        pendingSendBytes -= reserved;
     }
+    sendMsgs.erase(sendMsgs.begin(), sendMsgs.begin() + i);
 
     return true;
 }
 
-void CapdNode::installNotification(uint32_t cookie,
+bool CapdNode::installNotification(uint32_t cookie,
     uint32_t maxQuantityPerMessage,
     uint8_t type,
     const std::vector<unsigned char> &content)
 {
     LOCK(csCapdNode);
+    if (notifications.size() >= CAPD_MAX_NOTIFICATIONS && notifications.count(content) == 0)
+        return false;
     notifications[content] = {cookie, maxQuantityPerMessage, type};
+    return true;
 }
 
 
@@ -812,7 +931,7 @@ void CapdNode::checkNotification(const CapdMsgRef msg)
     if (msg == nullptr)
         return;
     LOCK(csCapdNode);
-    if (node == nullptr)
+    if (node == nullptr || node->IsDisconnecting())
         return; // In case the node has disconnected
     auto len = msg->data.size();
 
@@ -824,6 +943,12 @@ void CapdNode::checkNotification(const CapdMsgRef msg)
             auto elems = notifications.equal_range(std::vector<uint8_t>(msg->data.begin(), msg->data.begin() + srch));
             for (auto it = elems.first; it != elems.second; ++it)
             {
+                // Make missed notifications visible to the subscriber, and stop growing its backlog.
+                if (node->nSendSize.load() + pendingSendBytes.load() >= nMaxSendBufferSize)
+                {
+                    node->CloseSocketDisconnect("CAPD notification send buffer full");
+                    return;
+                }
                 const CapdNode::NotificationInfo &ni = it->second;
                 LOG(CAPD, "Capd: notification match node %s Id %d\n", node->GetLogName(), ni.cookie);
                 if (ni.type == CapdProtocol::CAPD_QUERY_TYPE_MSG)

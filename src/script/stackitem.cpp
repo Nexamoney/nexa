@@ -84,14 +84,32 @@ bool StackItem::within(const StackItem &gte, const StackItem &lt, const BigNum &
         BigNum bthis = this->asBigNum(bmd);
         BigNum bgte = gte.asBigNum(bmd);
         BigNum blt = lt.asBigNum(bmd);
-        return (bthis <= bgte && bthis < blt);
+        return (bthis >= bgte && bthis < blt);
     }
     else
     {
         CScriptNum nthis(this->data(), false, CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT);
         CScriptNum ngte(gte.data(), false, CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT);
         CScriptNum nlt(lt.data(), false, CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT);
-        return (nthis <= ngte && nthis < nlt);
+        return (nthis >= ngte && nthis < nlt);
+    }
+}
+
+bool StackItem::withinChanged(const StackItem &gte, const StackItem &lt, const BigNum &bmd)
+{
+    if (this->isBigNum() || gte.isBigNum() || lt.isBigNum())
+    {
+        BigNum bthis = this->asBigNum(bmd);
+        BigNum bgte = gte.asBigNum(bmd);
+        BigNum blt = lt.asBigNum(bmd);
+        return (bthis < blt && bthis != bgte);
+    }
+    else
+    {
+        CScriptNum nthis(this->data(), false, CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT);
+        CScriptNum ngte(gte.data(), false, CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT);
+        CScriptNum nlt(lt.data(), false, CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT);
+        return (nthis < nlt && nthis != ngte);
     }
 }
 

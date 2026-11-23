@@ -141,7 +141,6 @@ bool CompactBlock::HandleMessage(CDataStream &vRecv, uint32_t msgCookie, CNode *
     pblock->cmpctblock = std::make_shared<CompactBlock>(std::forward<CompactBlock>(tmp));
 
     std::shared_ptr<CompactBlock> compactBlock = pblock->cmpctblock;
-    bool fSummaryBlock = IsSummaryBlock(compactBlock->header);
 
     // Message consistency checking
     if (!IsCompactBlockValid(pfrom, compactBlock))
@@ -153,7 +152,7 @@ bool CompactBlock::HandleMessage(CDataStream &vRecv, uint32_t msgCookie, CNode *
 
     // Is there a previous block or header to connect with?
     CBlockIndex *pprev = LookupBlockIndex(compactBlock->header.hashPrevBlock);
-    if (fSummaryBlock && !pprev)
+    if (!pprev)
         return error("compact block from peer %s will not connect, unknown previous block %s", pfrom->GetLogName(),
             compactBlock->header.hashPrevBlock.ToString());
 
@@ -573,6 +572,14 @@ static bool ReconstructBlock(CNode *pfrom,
     int &unnecessaryCount,
     std::shared_ptr<CBlockThinRelay> pblock)
 {
+    // An attacker may attempt to send us a duplicate thintype block and trigger a second
+    // reconstruction on the same dataset. This can cause a block to become invalidated
+    // and so must not be allowed to happen.
+    if (!pblock->vtx.empty())
+    {
+        return error("WARNING: a block reconstruction is already in progress, peer=%s", pfrom->GetLogName());
+    }
+
     // We must have all the full tx hashes by this point.  We first check for any duplicate
     // transaction ids.  This is a possible attack vector and has been used in the past.
     {
@@ -671,6 +678,10 @@ static bool ReconstructBlock(CNode *pfrom,
     // Now that we've rebuilt the block successfully we can set the XVal flag which is used in
     // ConnectBlock() to determine which if any inputs we can skip the checking of inputs.
     pblock->fXVal = DEFAULT_XVAL_ENABLED;
+
+    // Now that the block is fully reconstruced we can delete all the thinblock data
+    // and the thinblock in flight.
+    thinrelay.ClearAllBlockData(pfrom, pblock->GetHash());
 
     return true;
 }

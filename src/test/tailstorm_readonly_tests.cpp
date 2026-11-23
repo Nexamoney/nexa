@@ -36,15 +36,21 @@
 #include "consensus/validation.h"
 #include "daa.h"
 #include "main.h"
+#include "net.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "script/sighashtype.h"
 #include "test/test_nexa.h"
+#include "tweak.h"
 #include "validation/dag.h"
+#include "validation/parallel.h"
 #include "validation/tailstorm.h"
 #include "validation/validation.h"
 
 #include <boost/test/unit_test.hpp>
+#include <boost/thread.hpp>
+
+extern CTweak<bool> pvtest;
 
 namespace
 {
@@ -61,12 +67,10 @@ bool ConnectForTest(const ConstCBlockRef &pblock,
     CAmount nFees = 0;
     CBlockUndo blockundo;
     std::vector<std::pair<uint256, CDiskTxPos> > vPos;
-    std::map<CGroupTokenID, CAmount> accumulatedMintages;
-    std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
+    CTokenIndexUpdates tokenUpdates;
 
     return ConnectBlockCanonicalOrdering(pblock, state, pindex, view, *pcoinsTip, Params(), false /* fJustCheck */,
-        SINGLE_THREADED, true /* fScriptChecks */, nFees, blockundo, vPos, accumulatedMintages,
-        accumulatedAuthorities, mapDagTxns, nullptr);
+        SINGLE_THREADED, true /* fScriptChecks */, nFees, blockundo, vPos, tokenUpdates, mapDagTxns, nullptr);
 }
 
 /* Assemble a block on top of pindexPrev holding the passed transactions in canonical (LTOR)
@@ -399,6 +403,64 @@ BOOST_AUTO_TEST_CASE(subblock_outputs_use_the_epoch_height)
     BOOST_CHECK(summaryView.GetCoin(created, summaryCoin));
     BOOST_CHECK_EQUAL(summaryCoin.height(), nEpochHeight);
     BOOST_CHECK_EQUAL(dagCoin.height(), summaryCoin.height());
+}
+
+/* With parallel validation cs_main is released while a block's inputs are checked, and a competing
+   block can change pcoinsTip in the meantime.  Read only inputs must still be checked against the
+   state the block builds on, or a valid block is marked invalid (NX-14).
+ */
+BOOST_AUTO_TEST_CASE(readonly_input_is_stable_during_parallel_validation)
+{
+    CBlockIndex *pindexPrev = nullptr;
+    {
+        LOCK(cs_main);
+        pindexPrev = chainActive.Tip();
+    }
+    const COutPoint roPrevout = coinbaseTxns[2].OutpointAt(0);
+    CBlockRef block = MakeTestBlock(pindexPrev, {MakeSpend(1, &roPrevout)}, 1, {});
+    BOOST_CHECK(block->IsSummaryBlock() && !block->IsTailstormSummaryBlock());
+    CBlockIndex index(*block);
+    index.pprev = pindexPrev;
+
+    // pvtest sleeps a second after each transaction, so the competing spend lands while the block's
+    // inputs are being checked
+    pvtest.Set(true);
+    std::atomic<bool> fStarted{false};
+    bool fConnected = false;
+    CValidationState state;
+    boost::thread validator(
+        [&]
+        {
+            const boost::thread::id this_id = boost::this_thread::get_id();
+            CNode node(INVALID_SOCKET, CAddress(), "", true);
+            PV->InitThread(this_id, &node, block);
+            {
+                LOCK(cs_main);
+                fStarted = true;
+                CCoinsViewCache view(pcoinsTip);
+                CAmount nFees = 0;
+                CBlockUndo blockundo;
+                std::vector<std::pair<uint256, CDiskTxPos> > vPos;
+                CTokenIndexUpdates tokenUpdates;
+                fConnected = ConnectBlockCanonicalOrdering(block, state, &index, view, *pcoinsTip, Params(),
+                    true /* fJustCheck */, IN_PARALLEL, true /* fScriptChecks */, nFees, blockundo, vPos, tokenUpdates,
+                    nullptr, nullptr);
+            }
+            PV->Erase(this_id);
+        });
+
+    while (!fStarted)
+        MilliSleep(1);
+    {
+        // Granted once the validator has released cs_main
+        LOCK(cs_main);
+        BOOST_CHECK(pcoinsTip->SpendCoin(roPrevout));
+    }
+    validator.join();
+    pvtest.Set(false);
+
+    BOOST_CHECK_MESSAGE(fConnected, "block failed validation: " << state.GetLogString());
+    BOOST_CHECK(!state.IsInvalid());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

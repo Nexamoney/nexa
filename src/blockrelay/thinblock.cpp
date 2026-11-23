@@ -80,7 +80,6 @@ bool CThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom)
     pblock->thinblock = std::make_shared<CThinBlock>(std::forward<CThinBlock>(tmp));
 
     std::shared_ptr<CThinBlock> thinBlock = pblock->thinblock;
-    bool fSummaryBlock = IsSummaryBlock(thinBlock->header);
 
     // Message consistency checking
     if (!IsThinBlockValid(pfrom, thinBlock->vMissingTx, thinBlock->header, thinBlock->vTxHashes.size()))
@@ -92,7 +91,7 @@ bool CThinBlock::HandleMessage(CDataStream &vRecv, CNode *pfrom)
 
     // Is there a previous block or header to connect with?
     CBlockIndex *pprev = LookupBlockIndex(thinBlock->header.hashPrevBlock);
-    if (fSummaryBlock && !pprev)
+    if (!pprev)
         return error("thinblock from peer %s will not connect, unknown previous block %s", pfrom->GetLogName(),
             thinBlock->header.hashPrevBlock.ToString());
 
@@ -769,6 +768,14 @@ static bool ReconstructBlock(CNode *pfrom,
     const std::vector<uint256> &vHashes,
     std::shared_ptr<CBlockThinRelay> pblock)
 {
+    // An attacker may attempt to send us a duplicate thintype block and trigger a second
+    // reconstruction on the same dataset. This can cause a block to become invalidated
+    // and so must not be allowed to happen.
+    if (!pblock->vtx.empty())
+    {
+        return error("WARNING: a block reconstruction is already in progress, peer=%s", pfrom->GetLogName());
+    }
+
     // We must have all the full tx hashes by this point.  We first check for any duplicate
     // transaction ids.  This is a possible attack vector and has been used in the past.
     {
@@ -870,6 +877,10 @@ static bool ReconstructBlock(CNode *pfrom,
     // Now that we've rebuilt the block successfully we can set the XVal flag which is used in
     // ConnectBlock() to determine which if any inputs we can skip the checking of inputs.
     pblock->fXVal = DEFAULT_XVAL_ENABLED;
+
+    // Now that the block is fully reconstruced we can delete all the thinblock data
+    // and the thinblock in flight.
+    thinrelay.ClearAllBlockData(pfrom, pblock->GetHash());
 
     return true;
 }

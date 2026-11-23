@@ -68,92 +68,119 @@ RespendDetector::~RespendDetector()
     }
 }
 
+int ClaimOrphanProof(DoubleSpendProofStorage &storage,
+    const COutPoint &outpoint,
+    uint256 &proofHash,
+    const std::function<DoubleSpendProof::Validity(const DoubleSpendProof &)> &validate)
+{
+    auto orphans = storage.findOrphans(outpoint);
+    if (!orphans.empty())
+    {
+        for (auto iter = orphans.begin(); iter != orphans.end(); iter++)
+        {
+            const int proofId = iter->first;
+            auto dsp = storage.proof(proofId);
+            // the orphan may have been evicted or expired after findOrphans(), don't penalize peer
+            if (dsp.isEmpty())
+                continue;
+            LOG(DSPROOF, "Rescued a DoubleSpendProof orphan %d", proofId);
+            auto rc = validate(dsp);
+
+            if (rc == DoubleSpendProof::Valid)
+            {
+                LOG(DSPROOF, "DoubleSpendProof for orphan validated correctly %d", proofId);
+                // the orphan may also have been evicted or expired while it was validated
+                if (!storage.claimOrphan(proofId))
+                    continue;
+
+                // remove all other orphans since we only need one
+                while (++iter != orphans.end())
+                {
+                    storage.remove(iter->first);
+                    LOG(DSPROOF, "Removing DoubleSpendProof orphan, we only need one %d", proofId);
+                }
+                proofHash = dsp.GetHash();
+                return proofId;
+            }
+            else if (rc == DoubleSpendProof::Invalid)
+            {
+                LOG(DSPROOF, "DoubleSpendProof did not validate %s", dsp.GetHash().ToString());
+                storage.remove(proofId);
+                dosMan.Misbehaving(iter->second, 5, BanReasonInvalidDSProof);
+            }
+            // Otherwise the spent coin is not visible yet (e.g. its transaction has not arrived, or the other spend
+            // was mined), so keep the orphan for a later rescue or expiry
+        }
+    }
+    return -1;
+}
+
 void RespendDetector::CheckForRespend(const CTxMemPool &pool, const CTransactionRef ptx)
 {
-    READLOCK(pool.cs_txmempool); // protect pool.mapNextTx
-
-    for (const CTxIn &in : ptx->vin)
+    std::vector<uint256> dspToBroadcast;
     {
-        const COutPoint outpoint = in.prevout;
-        // a read only input cannot conflict with anything
-        if (in.IsReadOnly())
-            continue;
+        READLOCK(pool.cs_txmempool); // protect pool.mapNextTx
 
-        if (doubleSpendProofs.Value())
+        for (const CTxIn &in : ptx->vin)
         {
-            // Check first if there are already double spend orphans. If there are
-            // then we can broadcast them here and continue without needing to check
-            // further for conflicts for this outpoint.
-            auto orphans = pool.doubleSpendProofStorage()->findOrphans(outpoint);
-            if (!orphans.empty())
+            const COutPoint outpoint = in.prevout;
+            // a read only input cannot conflict with anything
+            if (in.IsReadOnly())
+                continue;
+
+            if (doubleSpendProofs.Value())
             {
-                for (auto iter = orphans.begin(); iter != orphans.end(); iter++)
+                // Check first if there are already double spend orphans. If there are
+                // then we can broadcast them here and continue without needing to check
+                // further for conflicts for this outpoint.
+                uint256 proofHash;
+                const int proofId = ClaimOrphanProof(*pool.doubleSpendProofStorage(), outpoint, proofHash,
+                    [&pool, &ptx](const DoubleSpendProof &dsp) { return dsp.validate(pool, ptx); });
+                if (proofId != -1)
                 {
-                    const int proofId = iter->first;
-                    auto dsp = pool.doubleSpendProofStorage()->proof(proofId);
-                    LOG(DSPROOF, "Rescued a DoubleSpendProof orphan %d", proofId);
-                    auto rc = dsp.validate(pool, ptx);
-                    DbgAssert(rc == DoubleSpendProof::Valid || rc == DoubleSpendProof::Invalid, );
-
-                    if (rc == DoubleSpendProof::Valid)
                     {
-                        LOG(DSPROOF, "DoubleSpendProof for orphan validated correctly %d", proofId);
-                        pool.doubleSpendProofStorage()->claimOrphan(proofId);
-                        {
-                            std::lock_guard<std::mutex> lock(respentBeforeMutex);
-                            dsproof = proofId;
-                        }
-
-                        // remove all other orphans since we only need one
-                        while (++iter != orphans.end())
-                        {
-                            pool.doubleSpendProofStorage()->remove(iter->first);
-                            LOG(DSPROOF, "Removing DoubleSpendProof orphan, we only need one %d", proofId);
-                        }
-
-                        // Finally, send the dsp inventory message
-                        broadcastDspInv(ptx, dsp.GetHash());
-                        break;
+                        std::lock_guard<std::mutex> lock(respentBeforeMutex);
+                        dsproof = proofId;
                     }
-                    else
-                    {
-                        LOG(DSPROOF, "DoubleSpendProof did not validate %s", dsp.GetHash().ToString());
-                        pool.doubleSpendProofStorage()->remove(proofId);
-                        dosMan.Misbehaving(iter->second, 5, BanReasonInvalidDSProof);
-                    }
+
+                    // Broadcast after releasing cs_txmempool (takes cs_wallet, cs_vNodes)
+                    dspToBroadcast.push_back(proofHash);
                 }
             }
+
+            // Is there a conflicting spend?
+            auto spendIter = pool.mapNextTx.find(outpoint);
+            if (spendIter == pool.mapNextTx.end())
+                continue;
+
+            conflictingOutpoints.push_back(outpoint);
+
+            auto &tainer = pool.mapTx.get<txidem_tag>();
+            auto poolIter = tainer.find(spendIter->second.ptx->GetIdem());
+            if (poolIter == tainer.end())
+                continue;
+
+            bool collectMore = false;
+            bool seen;
+            {
+                std::lock_guard<std::mutex> lock(respentBeforeMutex);
+                seen = respentBefore->contains(outpoint);
+            }
+            for (auto &a : actions)
+            {
+                // Actions can return true if they want to check more
+                // outpoints for conflicts.
+                bool m = a->AddOutpointConflict(
+                    outpoint, poolIter->GetSharedTx()->GetId(), ptx, seen, ptx->IsEquivalentTo(poolIter->GetTx()));
+                collectMore = collectMore || m;
+            }
+            if (!collectMore)
+                break;
         }
-
-        // Is there a conflicting spend?
-        auto spendIter = pool.mapNextTx.find(outpoint);
-        if (spendIter == pool.mapNextTx.end())
-            continue;
-
-        conflictingOutpoints.push_back(outpoint);
-
-        auto &tainer = pool.mapTx.get<txidem_tag>();
-        auto poolIter = tainer.find(spendIter->second.ptx->GetIdem());
-        if (poolIter == tainer.end())
-            continue;
-
-        bool collectMore = false;
-        bool seen;
-        {
-            std::lock_guard<std::mutex> lock(respentBeforeMutex);
-            seen = respentBefore->contains(outpoint);
-        }
-        for (auto &a : actions)
-        {
-            // Actions can return true if they want to check more
-            // outpoints for conflicts.
-            bool m = a->AddOutpointConflict(
-                outpoint, poolIter->GetSharedTx()->GetId(), ptx, seen, ptx->IsEquivalentTo(poolIter->GetTx()));
-            collectMore = collectMore || m;
-        }
-        if (!collectMore)
-            return;
     }
+
+    for (const uint256 &hash : dspToBroadcast)
+        broadcastDspInv(ptx, hash);
 }
 
 void RespendDetector::SetValid(bool valid)

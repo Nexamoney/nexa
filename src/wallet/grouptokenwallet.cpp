@@ -214,7 +214,7 @@ void GetAllGroupDescriptions(const CWallet *wallet,
         for (const CTxOut &out : wtx->vout)
         {
             // find op_return associated with the tx if there is one
-            if (out.scriptPubKey[0] == OP_RETURN)
+            if (!out.scriptPubKey.empty() && out.scriptPubKey[0] == OP_RETURN)
             {
                 fOpReturn = true;
                 std::vector<std::string> vDesc;

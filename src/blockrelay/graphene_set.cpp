@@ -190,8 +190,11 @@ double CGrapheneSet::BruteForceSymDiff(uint64_t nBlockTxs,
      * The total size in bytes of a graphene block is given by T(a) = F(a) + L(a) as defined
      * in the code below. (Note that meta parameters for the Bloom Filter and IBLT are ignored).
      */
-    assert(nReceiverExcessTxs <= nReceiverPoolTx); // Excess contained in mempool
-    assert(nReceiverMissingTxs <= nBlockTxs); // Can't be missing more txs than are in block
+    // Callers catch these, so a bad peer supplied count cannot abort the node
+    if (nReceiverExcessTxs > nReceiverPoolTx) // Excess contained in mempool
+        throw std::runtime_error("Receiver excess txs exceed receiver mempool size");
+    if (nReceiverMissingTxs > nBlockTxs) // Can't be missing more txs than are in block
+        throw std::runtime_error("Receiver missing txs exceed block size");
 
     if (nReceiverPoolTx > LARGE_MEM_POOL_SIZE)
         throw std::runtime_error("Receiver mempool is too large for optimization");
@@ -221,8 +224,14 @@ double CGrapheneSet::BruteForceSymDiff(uint64_t nBlockTxs,
 
     uint64_t optSymDiff = 1;
     double optT = std::numeric_limits<double>::max();
+    // F(a) >= 0 and L(a) needs at least one cell per item, so once that bound reaches optT no larger a
+    // can do better. This keeps a large peer supplied mempool count from costing millions of iterations.
+    const uint64_t nCellBytes = nChecksumBits / 8 + IBLT_FIXED_CELL_SIZE;
     for (uint64_t a = 1; a < nReceiverPoolTx; a++)
     {
+        if (nCellBytes * a >= optT)
+            break;
+
         double T = F(a) + L(a);
 
         if (T < optT)
@@ -343,7 +352,7 @@ std::vector<uint64_t> CGrapheneSet::Reconcile(const std::set<uint64_t> &setSende
 
     std::vector<uint64_t> receiverSetItems(receiverSet.begin(), receiverSet.end());
 
-    if (!_ordered)
+    if (!_ordered || receiverSetItems.empty())
         return receiverSetItems;
 
     // Place items in order
@@ -351,8 +360,15 @@ std::vector<uint64_t> CGrapheneSet::Reconcile(const std::set<uint64_t> &setSende
     std::vector<uint64_t> itemRank = CGrapheneSet::DecodeRank(_encodedRank, receiverSetItems.size(), nBits);
     std::sort(receiverSetItems.begin(), receiverSetItems.end(), [](uint64_t i1, uint64_t i2) { return i1 < i2; });
     std::vector<uint64_t> orderedSetItems(itemRank.size(), 0);
+    // Ranks come from the peer and must be a permutation of the item positions
+    std::vector<bool> rankSeen(itemRank.size(), false);
     for (size_t i = 0; i < itemRank.size(); i++)
+    {
+        if (itemRank[i] >= orderedSetItems.size() || rankSeen[itemRank[i]])
+            throw std::runtime_error("Graphene set has invalid item rank");
+        rankSeen[itemRank[i]] = true;
         orderedSetItems[itemRank[i]] = receiverSetItems[i];
+    }
 
     return orderedSetItems;
 }
@@ -508,11 +524,13 @@ CIblt CGrapheneSet::FailureRecoveryIblt(std::set<uint64_t> &relevantCheapHashes,
 std::vector<unsigned char> CGrapheneSet::EncodeRank(std::vector<uint64_t> items, uint16_t nBitsPerItem)
 {
     size_t nItems = items.size();
-    size_t nEncodedWords = int(ceil(nBitsPerItem * nItems / float(WORD_BITS)));
+    // Integer math: float rounding undersizes the buffer for large sets
+    size_t nEncodedWords = (nBitsPerItem * nItems + WORD_BITS - 1) / WORD_BITS;
     std::vector<unsigned char> encoded(nEncodedWords, 0);
 
     // form boolean array (low-order first)
-    std::unique_ptr<bool[]> bits(new bool[nEncodedWords * WORD_BITS]);
+    // Zeroed so the padding bits past the last item are deterministic
+    std::unique_ptr<bool[]> bits(new bool[nEncodedWords * WORD_BITS]());
     for (size_t i = 0; i < items.size(); i++)
     {
         uint64_t item = items[i];
@@ -536,7 +554,9 @@ std::vector<unsigned char> CGrapheneSet::EncodeRank(std::vector<uint64_t> items,
 
 std::vector<uint64_t> CGrapheneSet::DecodeRank(std::vector<unsigned char> encoded, size_t nItems, uint16_t nBitsPerItem)
 {
-    size_t nEncodedWords = int(ceil(nBitsPerItem * nItems / float(WORD_BITS)));
+    size_t nEncodedWords = (nBitsPerItem * nItems + WORD_BITS - 1) / WORD_BITS;
+    if (encoded.size() != nEncodedWords)
+        throw std::runtime_error("Graphene set has invalid encoded rank size");
 
     // decode into boolean array (low-order first)
     std::unique_ptr<bool[]> bits(new bool[nEncodedWords * WORD_BITS]);
@@ -575,13 +595,15 @@ GrapheneSetOptimizationParams CGrapheneSet::DetermineGrapheneSetOptimizationPara
     uint64_t nItems,
     uint64_t version)
 {
-    // Infer various receiver quantities
-    uint64_t nReceiverExcessItems =
-        std::max((int)(nReceiverUniverseItems - nItems), (int)(nSenderUniverseItems - nItems));
-    nReceiverExcessItems = std::max(0, (int)nReceiverExcessItems); // must be non-negative
-    nReceiverExcessItems =
-        std::min((int)nReceiverUniverseItems, (int)nReceiverExcessItems); // must not exceed total mempool size
-    uint64_t nReceiverMissingItems = std::max(1, (int)(nItems - (nReceiverUniverseItems - nReceiverExcessItems)));
+    // Infer various receiver quantities. The receiver count comes from the peer, so stay unsigned
+    // rather than truncating to int.
+    uint64_t nReceiverExcessItems = std::max(nReceiverUniverseItems > nItems ? nReceiverUniverseItems - nItems : 0,
+        nSenderUniverseItems > nItems ? nSenderUniverseItems - nItems : 0);
+    // must not exceed total mempool size
+    nReceiverExcessItems = std::min(nReceiverUniverseItems, nReceiverExcessItems);
+    uint64_t nReceiverHaveItems = nReceiverUniverseItems - nReceiverExcessItems;
+    uint64_t nReceiverMissingItems =
+        std::max<uint64_t>(1, nItems > nReceiverHaveItems ? nItems - nReceiverHaveItems : 0);
 
     LOG(GRAPHENE, "receiver expected to have at most %d excess txs in mempool\n", nReceiverExcessItems);
     LOG(GRAPHENE, "receiver expected to be missing at most %d txs from block\n", nReceiverMissingItems);

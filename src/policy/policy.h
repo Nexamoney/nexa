@@ -45,7 +45,12 @@ static const unsigned int DEFAULT_DUST_THRESHOLD = 546;
 
 /* clang-format off */
 static const unsigned int STANDARD_SCRIPT_VERIFY_FLAGS = MANDATORY_SCRIPT_VERIFY_FLAGS |
-                                                         SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS;
+                                                         SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS |
+                                                         SCRIPT_GROUP_GENESIS_SPENDS_INPUT |
+                                                         SCRIPT_VERIFY_UNAMBIGUOUS_WITHIN |
+                                                         SCRIPT_LIMIT_HASHED_BYTES |
+                                                         SCRIPT_LIMIT_VISITED_BYTES |
+                                                         SCRIPT_LIMIT_BIGNUM_CONVERSION;
 /* clang-format on */
 
 /** For convenience, standard but not mandatory verify flags. */

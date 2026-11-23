@@ -8,6 +8,7 @@
 #include "protocol.h"
 
 #include "compat.h"
+#include "script/script.h"
 #include "streams.h"
 #include "util.h"
 #include "utilstrencodings.h"
@@ -385,6 +386,14 @@ CExtInv::CExtInv(const std::string &strType, const std::vector<uint8_t> &hashIn)
 }
 
 bool CExtInv::IsKnownType() const { return (type >= MSG_FIRST_EXT_TYPE && type <= MSG_LAST_EXT_TYPE); }
+bool CExtInv::HasValidHashSize() const
+{
+    if (type == MSG_EXT_TX)
+        return hash.size() == sizeof(uint64_t); // cheap hash
+    if (type == MSG_TOKENINFO) // group id: 32 bytes, longer for subgroups, but always inside an output script
+        return hash.size() >= 32 && hash.size() <= MAX_SCRIPT_SIZE;
+    return false;
+}
 const char *CExtInv::GetCommand() const
 {
     if (!IsKnownType())

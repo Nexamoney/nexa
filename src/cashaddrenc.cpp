@@ -187,12 +187,20 @@ CTxDestination DecodeCashAddrDestination(const CashAddrContent &content)
     case PUBKEY_TYPE:
     {
         uint160 hash;
+        if (content.hash.size() != hash.size())
+        {
+            return CNoDestination{};
+        }
         std::copy(begin(content.hash), end(content.hash), hash.begin());
         return CKeyID(hash);
     }
     case SCRIPT_TYPE:
     {
         uint160 hash;
+        if (content.hash.size() != hash.size())
+        {
+            return CNoDestination{};
+        }
         std::copy(begin(content.hash), end(content.hash), hash.begin());
         return CScriptID(hash);
     }

@@ -27,9 +27,9 @@ bool GetTokenDescription(const CScript &script, std::vector<std::string> &_vDesc
     if (grpId != DEFAULT_OP_RETURN_GROUP_ID)
         return false;
 
-    // Get labels
-    int count = 0;
-    while (script.GetOp(pc, op, vchRet))
+    // Get labels: ticker, name, url, hash and decimals. Anything after them is ignored.
+    unsigned int count = 0;
+    while (count < NUM_GROUP_ID_OP_RETURN_FIELDS && script.GetOp(pc, op, vchRet))
     {
         if (op != OP_0)
         {
@@ -38,8 +38,10 @@ bool GetTokenDescription(const CScript &script, std::vector<std::string> &_vDesc
                 if (count == 3)
                 {
                     // Convert hash stored as a vector of unsigned chars to a string.
-                    uint256 hash(&vchRet.data()[0]);
-                    _vDesc.push_back(hash.ToString());
+                    if (vchRet.size() == 32)
+                        _vDesc.push_back(uint256(vchRet).ToString());
+                    else
+                        _vDesc.push_back(std::string(""));
                 }
                 else
                 {
@@ -52,7 +54,11 @@ bool GetTokenDescription(const CScript &script, std::vector<std::string> &_vDesc
                 uint8_t amt;
                 if (0 <= op && op <= OP_PUSHDATA4)
                 {
-                    amt = CScriptNum(vchRet, false, CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT).getint64();
+                    // Longer pushes would make CScriptNum throw
+                    if (vchRet.size() <= CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT)
+                        amt = CScriptNum(vchRet, false, CScriptNum::MAXIMUM_ELEMENT_SIZE_64_BIT).getint64();
+                    else
+                        amt = 0;
                 }
                 else if (op == 0)
                     amt = 0;
@@ -75,7 +81,7 @@ bool GetTokenDescription(const CScript &script, std::vector<std::string> &_vDesc
         {
             _vDesc.push_back("");
         }
-        while (_vDesc.size() < 5)
+        while (_vDesc.size() < NUM_GROUP_ID_OP_RETURN_FIELDS)
         {
             _vDesc.push_back("0");
         }

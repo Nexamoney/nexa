@@ -28,9 +28,6 @@ public:
     void Stop(int timeoutInSeconds = 60);
     bool IsRunning() const;
 
-    // signal to the electrum server that a new block is avaialable.
-    void NotifyNewBlock();
-
     ~ElectrumServer();
 
 private:

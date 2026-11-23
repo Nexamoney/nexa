@@ -216,6 +216,12 @@ public:
     /** Maximum number of items in both stacks */
     unsigned int maxStackItems = 0;
 
+    /** Bytes fed to the hash ops */
+    uint64_t hashedBytes = 0;
+
+    /** Bytes of the stack items visited: pushed, copied, moved, rewritten, compared or parsed */
+    uint64_t visitedBytes = 0;
+
     ScriptMachineResourceTracker() {}
     /** Combine the results of this tracker and another tracker.
         @param parentsCurrentStackUse: you may provide a baseline of stack use which gets added to the stats to
@@ -226,6 +232,8 @@ public:
         consensusSigCheckCount += stats.consensusSigCheckCount;
         nOpCount += stats.nOpCount;
         nOpExec += stats.nOpExec;
+        hashedBytes += stats.hashedBytes;
+        visitedBytes += stats.visitedBytes;
         // Update the max used stack bytes if it exceeds ours (plus a baseline use)
         unsigned int totalUse = parentsCurrentStackUse + stats.maxStackBytes;
         if (maxStackBytes < totalUse)
@@ -241,6 +249,8 @@ public:
         nOpExecDepth = 0;
         maxStackBytes = 0;
         maxStackItems = 0;
+        hashedBytes = 0;
+        visitedBytes = 0;
     }
 };
 
@@ -250,8 +260,9 @@ protected:
     unsigned int flags;
     Stack stack;
     Stack altstack;
-    unsigned int stackSize = 0;
-    unsigned int altStackSize = 0;
+    // Bytes held in each stack.  Signed so that accounting underflow is detectable (< 0) rather than wrapping.
+    int64_t stackSize = 0;
+    int64_t altStackSize = 0;
     const CScript *script;
     ScriptError error = SCRIPT_ERR_INITIAL_STATE;
 
@@ -358,8 +369,12 @@ public:
     unsigned int maxOps;
     /** Maximum number of 2020-05-15 sigchecks allowed -- script will abort with error if this number is exceeded */
     unsigned int maxConsensusSigOps;
+    /** Maximum number of hashed bytes allowed under SCRIPT_LIMIT_HASHED_BYTES */
+    uint64_t maxHashedBytes = MAX_HASHED_BYTES_BASE;
+    /** Maximum number of visited bytes allowed under SCRIPT_LIMIT_VISITED_BYTES */
+    uint64_t maxVisitedBytes = MAX_VISITED_BYTES_BASE;
     /** Maximum combined size of both stacks allowed -- script will abort with error if this number is exceeded */
-    unsigned int maxStackUse = 0;
+    int64_t maxStackUse = 0;
     /** Maximum combined number of elements in both stacks -- script will abort with error if this number is exceeded */
     unsigned int maxStackItems = 0;
     /** The maximum number of allowed op_exec calls */
@@ -380,6 +395,8 @@ public:
         vfExec = from.vfExec;
         maxOps = from.maxOps;
         maxConsensusSigOps = from.maxConsensusSigOps;
+        maxHashedBytes = from.maxHashedBytes;
+        maxVisitedBytes = from.maxVisitedBytes;
         maxStackUse = from.maxStackUse;
         maxStackItems = from.maxStackItems;
         bigNumModulo = from.bigNumModulo;
@@ -401,6 +418,15 @@ public:
             maxStackUse = std::numeric_limits<unsigned int>::max();
             maxStackItems = GENESIS_MAX_STACK_ITEMS;
         }
+        // Like the sigchecks rule, the allowances grow with the scriptSig
+        if (sis.tx && sis.nIn < sis.tx->vin.size())
+        {
+            const uint64_t scriptSigSize = sis.tx->vin[sis.nIn].scriptSig.size();
+            maxHashedBytes += scriptSigSize;
+            maxVisitedBytes += MAX_VISITED_BYTES_PER_SCRIPTSIG_BYTE * scriptSigSize;
+        }
+        if (sis.nIn < sis.spentCoins.size())
+            maxHashedBytes += sis.spentCoins[sis.nIn].scriptPubKey.size();
     }
 
     const VchType &stacktop(int i);
@@ -465,6 +491,36 @@ public:
 
     bool withinStackWidth(unsigned int size) { return ::withinStackWidth(size, flags); }
 
+    /** Count bytes fed to a hash op. Throws if the input is over its allowance */
+    void countHashedBytes(uint64_t size)
+    {
+        stats.hashedBytes += size;
+        if ((flags & SCRIPT_LIMIT_HASHED_BYTES) && stats.hashedBytes > maxHashedBytes)
+            throw script_error(SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED, "ScriptMachine: hashed bytes exceeded");
+    }
+
+    /** Count the bytes an opcode visits: that it pushes, copies, moves, rewrites, compares or parses.
+        Throws if the input is over its allowance */
+    void countVisitedBytes(uint64_t size)
+    {
+        stats.visitedBytes += size;
+        if ((flags & SCRIPT_LIMIT_VISITED_BYTES) && stats.visitedBytes > maxVisitedBytes)
+            throw script_error(SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED, "ScriptMachine: visited bytes exceeded");
+    }
+
+    /** Convert a stack item to a BigNum modulo the BMD.
+        Throws if the item holds a number wider than SCRIPT_LIMIT_BIGNUM_CONVERSION allows */
+    BigNum toBigNum(const StackItem &item)
+    {
+        if (!item.isVch())
+            return item.asBigNum(bigNumModulo);
+        BigNum bn;
+        bn.deserialize(item.data());
+        if ((flags & SCRIPT_LIMIT_BIGNUM_CONVERSION) && bn.magSize() > MAX_BIGNUM_CONVERSION_MAGNITUDE_SIZE)
+            throw script_error(SCRIPT_ERR_BIGNUM_CONVERSION_SIZE, "ScriptMachine: number too wide for a BigNum");
+        return bn.tdiv(bigNumModulo);
+    }
+
     // Returns info about the next instruction to be run:
     // first bool is true if the instruction will be executed (false if this is passing across a not-taken branch)
     std::tuple<bool, opcodetype, StackItem, ScriptError> Peek();
@@ -489,12 +545,12 @@ public:
     /** remove a single item negative 1-indexed from the stack top (stack.end() + idx). */
     void EraseStackItemAt(int idx);
 
-    /* Throw an error if the passed item size causes the stack to exceed limits,
-       otherwise, update the current values (under the assumption that the caller will place an item
-       of the passed size onto the stack when this function is complete).
-       Its possible for itemSize to be negative if the caller intends to replace a stack item with a shorter one
+    /* Throw an error if changing the main stack size by sizeChange bytes causes the stack to exceed limits
+       (or to drop below zero), otherwise, update the current values (under the assumption that the caller will
+       place an item of the passed size onto the stack when this function is complete).
+       sizeChange is negative if the caller intends to replace a stack item with a shorter one.
     */
-    void CheckAndUpdateStackSize(int itemSize);
+    void CheckAndUpdateStackSize(int64_t sizeChange);
 
     /* Push an item to the main stack */
     void PushStack(const StackItem &item);
@@ -529,7 +585,7 @@ public:
         // This is done without calling the Push and Pop member functions so that the
         // stack bytes checks are not done
         auto &elem = altstack.at(altstack.size() - 1);
-        int elemSize = elem.size();
+        int64_t elemSize = elem.size();
         stackSize += elemSize;
         altStackSize -= elemSize;
         stack.push_back(elem);
@@ -546,7 +602,7 @@ public:
             throw std::runtime_error("ScriptMachine.PopStack: stack empty");
         }
         auto &elem = stack.at(stack.size() - 1);
-        int elemSize = elem.size();
+        int64_t elemSize = elem.size();
         altStackSize += elemSize;
         stackSize -= elemSize;
         altstack.push_back(elem);
@@ -592,11 +648,11 @@ public:
     }
 
     // Set the main stack to the passed data
-    void setStack(const Stack &stk, int newSize = -1)
+    void setStack(const Stack &stk, int64_t newSize = -1)
     {
-        if (newSize == -1)
+        if (newSize < 0)
         {
-            int count = 0;
+            int64_t count = 0;
             for (auto &item : stk)
             {
                 count += item.size();
@@ -626,8 +682,8 @@ public:
             // Now grab the item at that index
             StackItem &cur = stack.at(index);
             // Get the sizes of the items that we are removing and adding
-            int curSize = cur.size();
-            int itemSize = item.size();
+            int64_t curSize = cur.size();
+            int64_t itemSize = item.size();
             // Check the total based on those sizes
             CheckAndUpdateStackSize(itemSize - curSize);
             // finally replace the item
@@ -648,26 +704,32 @@ public:
             // idxFromEnd labels elements in the array backwards.  0 refers to altstack[altstack.size()-1].
             // So first convert idxFromEnd to indexing from the beginning of the std::vector
             int index = altstack.size() - idxFromEnd - 1;
-            if ((index >= (int)stack.size()) || (index < 0))
+            if ((index >= (int)altstack.size()) || (index < 0))
             {
                 throw std::runtime_error("ScriptMachine.setAltstackItem: access beyond the end of the altstack");
             }
             // Now grab the item at that index
             StackItem &cur = altstack.at(index);
             // Get the sizes of the items that we are removing and adding
-            unsigned int curSize = cur.size();
-            unsigned int itemSize = item.size();
+            int64_t curSize = cur.size();
+            int64_t itemSize = item.size();
             // Check the total based on those sizes
-            unsigned int currentTotal = altStackSize + stackSize + itemSize - curSize;
+            int64_t newAltStackSize = altStackSize + itemSize - curSize;
+            if (newAltStackSize < 0)
+            {
+                throw std::runtime_error("ScriptMachine.setAltStackItem: altstack memory underflow");
+            }
+            int64_t currentTotal = newAltStackSize + stackSize;
             if (currentTotal > maxStackUse)
             {
                 throw std::runtime_error("ScriptMachine.setAltStackItem: stack memory exceeded");
             }
             // Update the stats if we have a new max altstack use
+            // currentTotal <= maxStackUse <= UINT_MAX, so this narrowing cannot truncate
             if (currentTotal > stats.maxStackBytes)
-                stats.maxStackBytes = currentTotal;
+                stats.maxStackBytes = (unsigned int)currentTotal;
             // update the total altstack size
-            altStackSize += itemSize - curSize;
+            altStackSize = newAltStackSize;
             // finally replace the item
             altstack.at(index) = item;
         }
@@ -678,11 +740,11 @@ public:
     // Load or modify the alt stack
     // Stack &modifyAltStack() { return altstack; }
     // Set the alt stack to the passed data
-    void setAltStack(const Stack &stk, int newSize = -1)
+    void setAltStack(const Stack &stk, int64_t newSize = -1)
     {
-        if (newSize == -1)
+        if (newSize < 0)
         {
-            int count = 0;
+            int64_t count = 0;
             for (auto &item : stk)
             {
                 count += item.size();
@@ -735,6 +797,19 @@ bool EvalScript(Stack &stack,
     const ScriptImportedState &sis,
     ScriptError *error = nullptr);
 
+/**
+ * Most sigchecks an input may perform, given the length of its scriptSig.
+ *
+ * Per-input density rule: an input that performs n sigchecks must have a scr0 bytes.
+ * The -60 is a fixed allowance, so 1 sigcheck is always allowed (43 - 60 is negative), 2 need 26 bytes, 3 need 69,
+ * and each further one 43 more. Solving the rule for n gives n <= (len + 60)urns; it
+ * is at least 1 for any length.
+ *
+ * Consensus: CScriptCheck applies it to every input after the script has run, for blocks and mempool alike, and
+ * VerifyScript passes it to the interpreter as the sigcheck cap so a script  it.
+ */
+inline uint64_t MaxSigChecksForScriptSig(size_t scriptSigLen) { return (scriptSigLen + 60) / 43; }
+
 bool VerifyScript(const CScript &scriptSig,
     const CScript &scriptPubKey,
     unsigned int flags,
@@ -768,5 +843,8 @@ bool CheckPubKeyEncoding(const std::vector<uint8_t> &vchSig, unsigned int flags,
 
 extern uint64_t maxSatoScriptOps;
 extern uint64_t maxScriptTemplateOps;
+
+// Visited byte cost of shifting one stack slot when OP_ROLL moves an item past it
+const uint64_t ROLL_COST_PER_ITEM = 16;
 
 #endif // NEXA_SCRIPT_INTERPRETER_H

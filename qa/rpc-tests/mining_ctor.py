@@ -123,6 +123,12 @@ class CTORMiningTest(BitcoinTestFramework):
             assert(last_txid == 0 or last_txid < txid_decoded)
             last_txid = txid_decoded
 
+        # The template's header fields must match the block mined on the same tip
+        header = mining_node.getblockheader(mining_node.generate(1)[0])
+        assert_equal(tmpl['height'], header['height'])
+        assert_equal(tmpl['hashAncestor'], header['ancestorhash'])
+        assert_equal(tmpl['chainWork'], header['chainwork'])
+
 
 if __name__ == '__main__':
     CTORMiningTest().main()

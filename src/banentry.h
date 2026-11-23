@@ -34,7 +34,7 @@ typedef enum BanReason
     BanReasonNotAnExpeditedNode = 19,
     BanReasonInvalidBlock = 20,
     BanReasonInvalidPriority = 21,
-    BanReasonDSProofOrphanExpiry = 22,
+    BanReasonDSProofOrphanExpiry = 22, // unused; keeps the later values in place
     BanReasonInvalidDSProof = 23,
     BanReasonUnsupportedPeer = 24,
     BanReasonMessageRequestsTooFrequent = 25,

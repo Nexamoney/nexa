@@ -40,8 +40,13 @@ static const uint32_t BEGIN_PRUNING_PEERS = 4;
 // How many blocks forward to download during IBD
 static const uint32_t DEFAULT_BLOCK_DOWNLOAD_WINDOW = 1024;
 
-// How many requests can be active in the request manager at any one time
+// How many transaction requests can be active in the request manager at any one time when traffic is low.
+// The limit grows with throughput (10 s of measured tx/s), so this only applies below 10,000 tx/s, or
+// while the measured rate lags a sudden burst.
 static const uint64_t MAX_IN_FLIGHT_REQS = 100000;
+
+// Baseline peer share; with fewer full nodes connected each may use a larger fraction, light clients never.
+static const unsigned int DEFAULT_TX_REQUEST_PEER_SHARE = 25;
 
 // How many object sources can we add to the new request.  This will prevent
 // too many re-requests from happening and also prevent the unnecessary adding
@@ -111,7 +116,6 @@ class CUnknownObj
 public:
     typedef std::list<CNodeRequestData> ObjectSourceList;
     CInv obj;
-    bool rateLimited;
     int64_t nDownloadingSince; // last time we started downloading the object
     bool fProcessing; // object was received but is still being processed
     int64_t lastRequestTime; // In stopwatch time microseconds, 0 means no request
@@ -120,10 +124,10 @@ public:
     int64_t nEntryTime;
     int objType;
     CNodeRef prevRequestNode; // The last node we made a request from
+    CNodeRef announcer; // For transactions, the node whose announcement created this request
 
     CUnknownObj()
     {
-        rateLimited = false;
         nDownloadingSince = 0;
         fProcessing = false;
         outstandingReqs = 0;
@@ -165,6 +169,7 @@ struct CRequestManagerNodeState
 
     // How many blocks are currently in flight and requested by this node.
     uint64_t nBlocksInFlight;
+    bool fTxnAnnouncementsSeen;
 
     CRequestManagerNodeState();
 };
@@ -193,6 +198,7 @@ protected:
     // take the lock in the mempool.
     std::atomic<uint64_t> nApproximateTxnPerSec{0};
     std::atomic<int64_t> nLastCheckForTPS{0};
+    std::atomic<uint64_t> nTxnRequestCount{0};
 
     // Data structures for making and tracking requests
     CCriticalSection cs_objDownloader;
@@ -215,6 +221,10 @@ protected:
     // The map of transaction requests to add.
     CCriticalSection cs_addTxn;
     OdMap mapTxnToAdd GUARDED_BY(cs_addTxn);
+    uint64_t nTxnRequestLimit GUARDED_BY(cs_addTxn) = MAX_IN_FLIGHT_REQS;
+    uint64_t nTxnRequestPeerLimit GUARDED_BY(cs_addTxn) = MAX_IN_FLIGHT_REQS;
+    uint64_t nTxnRequestClientLimit GUARDED_BY(cs_addTxn) = MAX_IN_FLIGHT_REQS * DEFAULT_TX_REQUEST_PEER_SHARE / 100;
+    size_t nTxnRequestPeers GUARDED_BY(cs_addTxn) = 1;
 
     // The set of transaction requests to delete
     CCriticalSection cs_deleteTxn;
@@ -228,6 +238,7 @@ protected:
 
     void cleanup(OdMap::iterator &item);
     void cleanup(const CInv &item);
+    void ReleaseTxnAnnouncer(CUnknownObj &item);
 
 public:
     CRequestManager();
@@ -255,6 +266,9 @@ public:
     header commitment are both cryptographic hashes in the same identifier space, so MSG_BLOCK carrying the
     commitment in inv.hash is unambiguous, and the peer's getdata handler resolves it via tailstormForest.Find(). */
     void RequestMissingSubblocks(const ConstCBlockRef &pblock, CNode *pfrom = nullptr);
+
+    // Update once per INV batch, before requesting transactions from its sender.
+    void UpdateTxnRequestLimits(size_t nPeers, CNode *from = nullptr);
 
     // Get this object from somewhere, asynchronously.
     void AskFor(const CInv &obj, CNode *from, int objType);
@@ -351,6 +365,9 @@ public:
     // Returns a bool if successful in indicating we received this block.
     bool MarkBlockAsReceived(const uint256 &hash, CNode *pnode);
 
+    // Returns true if we have a request for this block in flight from this node.
+    bool IsBlockInFlightFrom(const uint256 &hash, NodeId nodeid);
+
     // Somebody else gave me this block so stop tracking it.
     void MarkBlockAsReceivedByAnother(const uint256 &hash);
 
@@ -388,5 +405,8 @@ public:
 
 
 extern CRequestManager requester; // Singleton class
+
+// Connected full nodes that share the transaction request limit, counting the announcing peer if it is one.
+size_t CountTxnRequestPeers(CNode *from);
 
 #endif

@@ -410,19 +410,6 @@ static void BlockNotifyCallback(bool initialSync, const CBlockIndex *pBlockIndex
     boost::thread t(runCommand, strCmd); // thread runs free
 }
 
-static void NotifyElectrumCallback(bool initialSync, const CBlockIndex *pBlockIndex, bool)
-{
-    if (initialSync || !pBlockIndex)
-        return;
-
-    if (!GetArg("-electrum.blocknotify", true))
-    {
-        return;
-    }
-
-    electrum::ElectrumServer::Instance().NotifyNewBlock();
-}
-
 struct CImportingNow
 {
     CImportingNow()
@@ -1015,6 +1002,10 @@ bool AppInit2(Config &config)
                                 "or winsocket fd_set limitations (windows). If you are a windows user there is a hard "
                                 "upper limit of 1024 which cannot be changed by adjusting the node's configuration."),
             nUserMaxConnections, nMaxConnections));
+
+    if (mapArgs.count("-electrum.blocknotify"))
+        InitWarning(_("The -electrum.blocknotify option is no longer used and will be removed in a future release. "
+                      "Please remove it from your configuration."));
 
     // ********************************************************* Step 3: parameter-to-internal-flags
 
@@ -1801,11 +1792,6 @@ bool AppInit2(Config &config)
 
     if (mapArgs.count("-blocknotify"))
         uiInterface.NotifyBlockTip.connect(BlockNotifyCallback);
-
-    if (mapArgs.count("-electrum"))
-    {
-        uiInterface.NotifyBlockTip.connect(NotifyElectrumCallback);
-    }
 
     std::vector<fs::path> vImportFiles;
     if (mapArgs.count("-loadblock"))

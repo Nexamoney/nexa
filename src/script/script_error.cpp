@@ -138,6 +138,14 @@ const char *ScriptErrorString(const ScriptError serror)
         return "JUMP is invalid";
     case SCRIPT_ERR_INVALID_PARAMETER: // one of the opcode parameters is invalid
         return "Invalid parameter";
+    case SCRIPT_ERR_AMBIGUOUS_WITHIN:
+        return "OP_WITHIN result differs between node versions";
+    case SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED:
+        return "Validation resources exceeded (hashed bytes)";
+    case SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED:
+        return "Validation resources exceeded (visited bytes)";
+    case SCRIPT_ERR_BIGNUM_CONVERSION_SIZE:
+        return "Number too wide to convert to a BigNum";
 
     case SCRIPT_ERR_UNKNOWN_ERROR:
     case SCRIPT_ERR_ERROR_COUNT:

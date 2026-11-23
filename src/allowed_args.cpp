@@ -615,7 +615,7 @@ static void addElectrumOptions(AllowedArgs &allowedArgs)
             "Port electrum Websocket listens on (default: mainnet 20003, testnet: "
             "30003, regtest: 30403)")
         .addArg("electrum.shutdownonerror", optionalBool, "Shutdown if the electrum server exits unexpectedly")
-        .addArg("electrum.blocknotify", optionalBool, "Instantly notify electrum server of new blocks.")
+        .addArg("electrum.blocknotify", optionalBool, "Deprecated and unused. Will be removed in a future release")
         .addDebugArg("electrum.exec", requiredStr, "Path to electrum daemon executable")
         .addDebugArg("electrum.monitoring.port", requiredStr, "Port to bind monitoring service")
         .addDebugArg("electrum.monitoring.host", requiredStr, "Host to bind monitoring service")
@@ -658,7 +658,7 @@ static void addTweaks(AllowedArgs &allowedArgs, CTweakMap *pTweaks)
             "test.parallel", "test.pvtest", "test.blockLookAheadInterval", "test.maxAllowedNetMessage",
             "test.nextMaxBlockSize", "test.enforceMinTxSize", "test.avoidReconsiderMostWorkChain", "test.extVersion",
             "consensus.fork1Time", "consensus.fork2Time", "test.maxReorgDepth", "cache.maxHeaders",
-            "test.requestMissingSubblocks"};
+            "test.requestMissingSubblocks", "net.txRequestPeerShare"};
         if (hiddenTweaks.count(optName))
             fDebugArg = true;
 

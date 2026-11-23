@@ -215,11 +215,20 @@ testScripts = [ RpcTest(t) for t in [
     Disabled('hardfork1_activation_blocksizelimit', "Already activated on fork1"),
     'hardfork2_activation_tailstorm',
     'tailstorm_cross_branch',
+    'inv_getheaders_resources',
     'headerPath',
     'rejectReply',
+    'handshake_timeout',
+    'extgetdata_deferred',
+    'txn_request_cap',
+    'inv_block_getheaders',
+    'inv_block_getheaders_recovery',
     'msgCookie',
     'tailstorm_uncle_sync',
     'capd',
+    'capd_future_createtime',
+    'bidirectional_getdata',
+    'getdata_queue_limit',
     'testpynode',
     'grouptokens',
     Disabled('sigchecks_inputstandardness_activation', 'Already activated, and mempool bad sigcheck mempool cleanup removed so test will fail'),
@@ -275,6 +284,9 @@ testScripts = [ RpcTest(t) for t in [
     'blockchain',
     'disablewallet',
     'sendheaders',
+    'recut_block_body',
+    'rerequest_bad_block_body',
+    'low_work_fork_headers',
     'keypool',
     'prioritise_transaction',
     Disabled('invalidblockrequest', "TODO"),
@@ -299,6 +311,7 @@ testScripts = [ RpcTest(t) for t in [
     'schnorrmultisig',
     'uptime',
     'op_reversebytes',
+    'script_byte_limits',
     'bip69',
     'op_store_load',
 ] ]
@@ -615,19 +628,22 @@ class RPCTestHandler:
                 if retval is not None:
 
                     coreOutputs = []
+                    coreDirs = ["/tmp/cores"]
                     if inGitLabCI():
-                        coreDir = os.path.join(os.environ.get("CI_PROJECT_DIR", None), "cores")
-                    else:
-                        coreDir = "/tmp/cores"
-                    try:
-                        cores = os.listdir(coreDir)
-                    except Exception as e:
-                        print("Exception trying to list core files in " + coreDir + " :" + str(e))
-                        cores = []
+                        coreDirs.insert(0, os.path.join(os.environ["CI_PROJECT_DIR"], "cores"))
+                    cores = []
+                    for coreDir in coreDirs:
+                        try:
+                            for core in os.listdir(coreDir):
+                                fullCoreFile = os.path.join(coreDir, core)
+                                if os.path.isfile(fullCoreFile):
+                                    cores.append(fullCoreFile)
+                        except Exception as e:
+                            print("Exception trying to list core files in " + coreDir + " :" + str(e))
 
-                    for core in cores:
+                    for fullCoreFile in cores:
+                        core = os.path.basename(fullCoreFile)
                         print("Trying to analyze core file: " + str(core))
-                        fullCoreFile = os.path.join(coreDir, core)
                         try:
                             nexadBin = os.environ["NEXAD"]
                             if os.path.isfile(CORE_ANALYSIS_SCRIPT):

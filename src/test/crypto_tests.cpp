@@ -312,6 +312,25 @@ BOOST_AUTO_TEST_CASE(sha512_testvectors)
                       "37de8c3ef5459d76a52cedc02dc499a3c9ed9dedbfb3281afd9653b8a112fafc");
 }
 
+// An empty script stack item gives the hashers a null pointer with zero length
+BOOST_AUTO_TEST_CASE(hash_null_empty_input)
+{
+    std::vector<unsigned char> out;
+    out.resize(CSHA1::OUTPUT_SIZE);
+    CSHA1().Write(nullptr, 0).Finalize(out.data());
+    BOOST_CHECK_EQUAL(HexStr(out), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+    out.resize(CRIPEMD160::OUTPUT_SIZE);
+    CRIPEMD160().Write(nullptr, 0).Finalize(out.data());
+    BOOST_CHECK_EQUAL(HexStr(out), "9c1185a5c5e9fc54612808977ee8f548b2258d31");
+    out.resize(CSHA256::OUTPUT_SIZE);
+    CSHA256().Write(nullptr, 0).Finalize(out.data());
+    BOOST_CHECK_EQUAL(HexStr(out), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    out.resize(CSHA512::OUTPUT_SIZE);
+    CSHA512().Write(nullptr, 0).Finalize(out.data());
+    BOOST_CHECK_EQUAL(HexStr(out), "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8"
+                                   "318d2877eec2f63b931bd47417a81a538327af927da3e");
+}
+
 BOOST_AUTO_TEST_CASE(hmac_sha256_testvectors)
 {
     // test cases 1, 2, 3, 4, 6 and 7 of RFC 4231

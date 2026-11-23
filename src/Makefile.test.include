@@ -51,6 +51,7 @@ NEXA_TEST_SUITE = \
 NEXA_TESTS =\
   respend/test/respendrelayer_tests.cpp \
   respend/test/respenddetector_tests.cpp \
+  respend/test/dsproof_tests.cpp \
   test/grouptoken_tests.cpp \
   test/uahf_test.cpp \
   test/stat_tests.cpp \
@@ -192,7 +193,12 @@ test_test_nexa_LDADD += $(LIBNEXA_CONSENSUS) $(BDB_LIBS) $(MINIUPNPC_LIBS)
 test_test_nexa_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS) $(PTHREAD_FLAGS) -static
 
 if ENABLE_ZMQ
-test_test_nexa_LDADD += $(ZMQ_LIBS)
+test_test_nexa_SOURCES += test/zmq_publish_tests.cpp
+test_test_nexa_CPPFLAGS += $(ZMQ_CFLAGS)
+test_test_nexa_LDADD += $(LIBNEXA_ZMQ) $(ZMQ_LIBS)
+if !TARGET_DARWIN
+test_test_nexa_LDFLAGS += -Wl,--wrap=zmq_msg_send -Wl,--wrap=zmq_msg_init_size
+endif
 endif
 #
 

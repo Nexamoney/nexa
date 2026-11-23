@@ -27,6 +27,7 @@
 #include "extversionkeys.h"
 #include "hashwrapper.h"
 #include "iblt.h"
+#include "main.h"
 #include "policy/policy.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
@@ -37,6 +38,7 @@
 #include "utiltranslate.h"
 
 extern CTweak<bool> ignoreNetTimeouts;
+extern CTweak<bool> banLocalPeers;
 extern uint64_t nMaxReceiveBufferSize;
 extern uint64_t nMaxSendBufferSize;
 extern CTweak<bool> syncMempoolWithPeers;
@@ -398,6 +400,17 @@ CNodeRef FindNodeRef(const std::string &addrName)
     return CNodeRef(FindNode(addrName));
 }
 
+CNodeRef FindNodeRef(const NodeId id)
+{
+    LOCK(cs_vNodes);
+    for (CNode *node : vNodes)
+    {
+        if (node->GetId() == id)
+            return CNodeRef(node);
+    }
+    return CNodeRef();
+}
+
 CNodeRef FindNodeRef(const CNetAddr &ip)
 {
     LOCK(cs_vNodes);
@@ -713,7 +726,9 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes)
             if (strCommand != NetMsgType::PONG && strCommand != NetMsgType::PING && strCommand != NetMsgType::ADDR &&
                 strCommand != NetMsgType::VERSION && strCommand != NetMsgType::VERACK)
             {
-                nActivityBytes.fetch_add(msg.hdr.nMessageSize);
+                // Messages sent before the handshake completes wait unprocessed, so they do not count.
+                if (fSuccessfullyConnected)
+                    nActivityBytes.fetch_add(msg.hdr.nMessageSize);
 
                 // If the message is a priority message then move it into the priority queue.
                 if (IsPriorityMsg(strCommand))
@@ -1580,8 +1595,10 @@ void ThreadSocketHandler()
             if (FD_ISSET(hSocket, &fdsetRecv) || FD_ISSET(hSocket, &fdsetError))
             {
                 TRY_LOCK(pnode->cs_vRecvMsg, lockRecv);
+                // If traffic shaping says we can grab some bytes, and we don't have full send messages buffers
+                // (that is, the receiver is reading our responses), then grab some more requests to process
                 int64_t amt2Recv = receiveShaper.available(RECV_SHAPER_MIN_FRAG);
-                if (lockRecv && amt2Recv > 0)
+                if (lockRecv && (amt2Recv > 0))
                 {
                     {
                         progress++;
@@ -1720,6 +1737,14 @@ void ThreadSocketHandler()
                 {
                     progress += SocketSendData(pnode);
                 }
+            }
+
+            // The handshake must complete in time even if the peer sends nothing we process.
+            if (!pnode->fSuccessfullyConnected && !pnode->IsDisconnecting() && ignoreNetTimeouts.Value() == false &&
+                GetTime() - pnode->nTimeConnected > VERACK_TIMEOUT)
+            {
+                LOG(NET, "Node %s: handshake not completed within %d seconds\n", pnode->GetLogName(), VERACK_TIMEOUT);
+                pnode->CloseSocketDisconnect("Handshake timeout");
             }
 
             //
@@ -2534,7 +2559,8 @@ static bool threadProcessMessages(CNode *pnode)
         {
             // If already locked some other thread is working on it, so no work for this thread
             TRY_LOCK(pnode->csRecvGetData, lockRecv);
-            if (lockRecv && (!pnode->vRecvGetData.empty()))
+            if (lockRecv &&
+                (!pnode->vRecvGetData.empty() || !pnode->vRecvGetData2.empty() || !pnode->vRecvExtGetData.empty()))
                 fSleep = false;
         }
         if (fSleep)
@@ -3504,7 +3530,7 @@ void CNode::DisconnectIfBanned()
         {
             LOG(THIN, "Warning: not banning expedited peer %s!\n", GetLogName());
         }
-        else if (addr.IsLocal())
+        else if (addr.IsLocal() && !banLocalPeers.Value())
         {
             nMisbehavior.store(0);
             nBanType.store(-1);

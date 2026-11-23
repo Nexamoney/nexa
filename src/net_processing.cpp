@@ -40,6 +40,7 @@
 #include "wallet/grouptokencache.h"
 
 #include <limits>
+#include <new>
 
 
 extern std::atomic<int64_t> nTimeBestReceived;
@@ -47,13 +48,13 @@ extern std::atomic<int> nPreferredDownload;
 extern std::atomic<int> nSyncStarted;
 extern uint64_t nMaxReceiveBufferSize;
 extern uint64_t nMaxSendBufferSize;
-extern CTweak<unsigned int> maxBlocksInTransitPerPeer;
+extern CTweak<uint64_t> maxBlocksInTransitPerPeer;
 extern CTweak<uint64_t> grapheneMinVersionSupported;
 extern CTweak<uint64_t> grapheneMaxVersionSupported;
 extern CTweak<uint64_t> grapheneFastFilterCompatibility;
 extern CTweak<uint64_t> mempoolSyncMinVersionSupported;
 extern CTweak<uint64_t> mempoolSyncMaxVersionSupported;
-extern CTweak<uint64_t> syncMempoolWithPeers;
+extern CTweak<bool> syncMempoolWithPeers;
 extern CTweak<uint32_t> randomlyDontInv;
 extern CTweak<bool> doubleSpendProofs;
 extern CTweak<bool> extVersionEnabled;
@@ -69,6 +70,20 @@ static size_t MaxTailstormSubblockHeadersPerPeer()
 static size_t MaxTailstormFallbackHeaders() { return MaxTailstormSubblockHeadersPerPeer(); }
 
 static size_t MaxTailstormFallbackHeadersPerPeer() { return Params().GetConsensus().tailstorm_k; }
+
+// Bytes of CAPD replies queued for a peer but not yet serialized into its send queue
+static uint64_t PendingCapdBytes(CNode *pnode) { return pnode->capd ? pnode->capd->pendingSendBytes.load() : 0; }
+
+static bool WithinBudget(CNode *pfrom, size_t nAdditionalRequests)
+{
+    LOCK(pfrom->csRecvGetData);
+    if ((pfrom->vRecvGetData.size() + pfrom->vRecvGetData2.size() + pfrom->vRecvExtGetData.size() +
+            nAdditionalRequests) < MAX_QUEUED_GETDATA)
+    {
+        return true;
+    }
+    return false;
+}
 
 CSubblockHeaderCache::CSubblockHeaderCache()
     : maxSize(MAX_UNCONNECTED_SUBBLOCK_HEADERS), maxPerPeer(0), maxFallbackSize(0), maxFallbackPerPeer(0),
@@ -275,7 +290,28 @@ void BlockReceivedPostProcessing(CNode *pfrom, ConstCBlockRef pblock)
     // we do not hold from the peer that sent the summary, whether or not it
     // extends the current tip (a competing-tip summary still needs them to reorg).
     if (IsChainNearlySyncd() && IsTailstormSummaryBlock(pblock))
+    {
+        // Only a summary with K-1 proofs and matching declared counts may request sub-blocks.
+        const CSummaryBlockMinerData minerData = ParseSummaryBlockMinerData(pblock->minerData);
+        const uint32_t nExpectedProofs = Params().GetConsensus().tailstorm_k - 1;
+        if ((minerData.vSubblockProofs.size() != nExpectedProofs) ||
+            (uint32_t(minerData.nUncles) + minerData.nSubblocks != nExpectedProofs))
+            return;
+
+        // This runs before block validation. Require a known parent and its required difficulty
+        // before a summary can fill the sub-block request tables.
+        CValidationState state;
+        if (!CheckBlockHeader(Params().GetConsensus(), *pblock, state, true))
+            return;
+        CBlockIndex *pindexPrev = LookupBlockIndex(pblock->hashPrevBlock);
+        if (!pindexPrev)
+            return;
+        if (!IsUpgrade2Pending(pindexPrev) && !IsUpgrade2Activated(pindexPrev))
+            return;
+        if (!ContextualCheckBlockHeader(Params(), *pblock, state, pindexPrev))
+            return;
         requester.RequestMissingSubblocks(pblock, pfrom);
+    }
 }
 
 bool CanDirectFetch(const Consensus::Params &consensusParams)
@@ -417,6 +453,9 @@ void static ProcessGetData(CNode *pfrom,
     const Consensus::Params &consensusParams,
     std::deque<std::pair<T, uint32_t> > &vInv)
 {
+    if (pfrom->pauseGetDataForTest.load())
+        return;
+
     std::vector<T> vNotFound;
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
 
@@ -450,6 +489,7 @@ void static ProcessGetData(CNode *pfrom,
             // I am in the middle of communicating with this node, so I want to make sure it gets an explicit close
             // rather than timing out since I am breaking the request/reply protocol by quitting.
             pfrom->CloseSocketDisconnect("all threads shutdown");
+            vInv.clear(); // I can do this because I am immediately returning without using the iterator.
             return;
         }
 
@@ -725,6 +765,9 @@ void static ProcessExtGetData(CNode *pfrom,
     const Consensus::Params &consensusParams,
     std::deque<std::pair<T, uint32_t> > &vInv)
 {
+    if (pfrom->pauseGetDataForTest.load())
+        return;
+
     std::vector<T> vNotFound;
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
 
@@ -760,6 +803,7 @@ void static ProcessExtGetData(CNode *pfrom,
             // I am in the middle of communicating with this node, so I want to make sure it gets an explicit close
             // rather than timing out since I am breaking the request/reply protocol by quitting.
             pfrom->CloseSocketDisconnect("all threads shutdown");
+            vInv.clear(); // I can do this because I am immediately returning without using the iterator.
             return;
         }
 
@@ -935,6 +979,52 @@ void static ProcessExtGetData(CNode *pfrom,
     }
 }
 
+static void SendInvHeaderRequest(CNode *pfrom, const uint256 &hash = uint256())
+{
+    LOCK(pfrom->cs_invHeaderRequests);
+    if (pfrom->IsDisconnecting())
+        return;
+    const int64_t nNow = GetStopwatchMicros();
+    const int64_t nextCheck = pfrom->nNextInvHeaderRequestTime.load();
+    if (hash.IsNull() && (nextCheck == 0 || nNow < nextCheck))
+        return;
+    auto &requests = pfrom->vInvHeaderRequests;
+    auto &pending = pfrom->vPendingInvHeaderRequests;
+    if (!hash.IsNull())
+        pending.push_back(hash);
+    while (!requests.empty() && nNow - requests.front().nTime >= INV_HEADER_REQUEST_TIMEOUT)
+        requests.pop_front();
+    // Only the header frees a slot: a peer could send any number of empty replies.
+    requests.erase(
+        std::remove_if(requests.begin(), requests.end(),
+            [](const CNode::InvHeaderRequest &request) { return LookupBlockIndex(request.hash) != nullptr; }),
+        requests.end());
+
+    while (!pending.empty())
+    {
+        if (LookupBlockIndex(pending.front()) != nullptr)
+        {
+            pending.pop_front();
+            continue;
+        }
+        if (requests.size() >= MAX_INV_HEADER_REQUESTS || pfrom->nSendSize >= nMaxSendBufferSize)
+            break;
+        pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), pending.front());
+        requests.push_back({pending.front(), nNow});
+        pending.pop_front();
+    }
+    if (pending.size() > MAX_PENDING_INV_HEADER_REQUESTS)
+    {
+        // Bound retained work without silently losing announcements on a live connection.
+        pfrom->CloseSocketDisconnect("pending INV header request limit exceeded");
+        pending.clear();
+        requests.clear();
+        pfrom->nNextInvHeaderRequestTime = 0;
+        return;
+    }
+    pfrom->nNextInvHeaderRequestTime = pending.empty() ? 0 : nNow + 1000000;
+}
+
 template <class T>
 static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vInv)
 {
@@ -951,6 +1041,8 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
         return error("message inv size() = %u", vInvSize);
     }
 
+    bool fTxnLimitsUpdated = false;
+    uint256 hashLastUnknownBlock;
     for (unsigned int nInv = 0; nInv < vInvSize; nInv++)
     {
         if (shutdown_threads.load() == true)
@@ -989,7 +1081,7 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
                 // we will instead request the header rather than the block.  This is safer and prevents an
                 // attacker from sending us fake INV's for blocks that do not exist or try to get us to request
                 // and download fake blocks.
-                pfrom->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexBestHeader), inv.hash);
+                hashLastUnknownBlock = inv.hash;
             }
             else
             {
@@ -1019,6 +1111,11 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
             // full node connections is ALWAYS marked as in IBD).
             else if (!fMayAlreadyHaveTx && (!IsInitialBlockDownload() || Params().NetworkIDString() == "regtest"))
             {
+                if (!fTxnLimitsUpdated)
+                {
+                    requester.UpdateTxnRequestLimits(CountTxnRequestPeers(pfrom), pfrom);
+                    fTxnLimitsUpdated = true;
+                }
                 requester.AskFor(CInv(inv.type, inv.hash), pfrom, objType::TXN);
             }
         }
@@ -1032,6 +1129,10 @@ static bool processInvMsgs(CNode *pfrom, CDataStream &vRecv, std::vector<T> &vIn
         // Track requests for our stuff.
         GetMainSignals().Inventory(inv.hash);
     }
+
+    // One request is enough: the peer replies with its headers from our locator up to the last announced block.
+    if (!hashLastUnknownBlock.IsNull())
+        SendInvHeaderRequest(pfrom, hashLastUnknownBlock);
 
     return true;
 }
@@ -1297,6 +1398,9 @@ bool ProcessMessage(CNode *pfrom,
         LOG(NET, "receive version message: %s: version %d, blocks=%d, us=%s, peer=%s\n", pfrom->cleanSubVer,
             pfrom->nVersion, pfrom->nStartingHeight, addrMe.ToString(), pfrom->GetLogName());
 
+        // A negative peer time would overflow the subtraction
+        if (nTime < 0)
+            nTime = 0;
         int64_t nTimeOffset = nTime - GetTime();
         pfrom->nTimeOffset = nTimeOffset;
         AddTimeData(pfrom->addr, nTimeOffset);
@@ -1326,6 +1430,12 @@ bool ProcessMessage(CNode *pfrom,
     {
         // set expected to false, we got the message
         pfrom->extversionExpected = false;
+        if (pfrom->fExtversionReceived.exchange(true))
+        {
+            dosMan.Misbehaving(pfrom, 1, BanReasonBadConnectionHandshake);
+            pfrom->CloseSocketDisconnect("Duplicate EXTVERSION messages");
+            return error("duplicate extversion messages");
+        }
         if (pfrom->fSuccessfullyConnected == true)
         {
             dosMan.Misbehaving(pfrom, 1, BanReasonBadConnectionHandshake);
@@ -1696,11 +1806,17 @@ bool ProcessMessage(CNode *pfrom,
 
         // Run process getdata and process as much of the getdata's as we can before taking the lock
         // and appending the remainder to the vRecvGetData queue.
-        ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
-        if (!invDeque.empty())
+        if (WithinBudget(pfrom, invDeque.size()))
         {
-            LOCK(pfrom->csRecvGetData);
-            pfrom->vRecvGetData.insert(pfrom->vRecvGetData.end(), invDeque.begin(), invDeque.end());
+            ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
+            if (!invDeque.empty())
+            {
+                LOCK(pfrom->csRecvGetData);
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvGetData.insert(pfrom->vRecvGetData.end(), invDeque.begin(), invDeque.end());
+                }
+            }
         }
     }
 
@@ -1747,12 +1863,18 @@ bool ProcessMessage(CNode *pfrom,
             LOG(NET, "received getdata for: %s peer=%s\n", invDeque[0].first.ToString(), pfrom->GetLogName());
 
         // Run process getdata and process as much of the getdata's as we can before taking the lock
-        // and appending the remainder to the vRecvGetData queue.
-        ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
-        if (!invDeque.empty())
+        // and appending the remainder to the vRecvGetData2 queue.
+        if (WithinBudget(pfrom, invDeque.size()))
         {
-            LOCK(pfrom->csRecvGetData);
-            pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.end(), invDeque.begin(), invDeque.end());
+            ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
+            if (!invDeque.empty())
+            {
+                LOCK(pfrom->csRecvGetData);
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.end(), invDeque.begin(), invDeque.end());
+                }
+            }
         }
     }
 
@@ -1784,6 +1906,11 @@ bool ProcessMessage(CNode *pfrom,
                 dosMan.Misbehaving(pfrom, 20, BanReasonInvalidInventory);
                 return error("message extinv invalid type = %u", inv.type);
             }
+            if (!inv.HasValidHashSize())
+            {
+                dosMan.Misbehaving(pfrom, 20, BanReasonInvalidInventory);
+                return error("message extinv invalid id length %u for type %u", inv.hash.size(), inv.type);
+            }
 
             invDeque.push_back(std::pair<CExtInv, uint32_t>(inv, msgCookie));
         }
@@ -1796,11 +1923,17 @@ bool ProcessMessage(CNode *pfrom,
 
         // Run process extgetdata and process as much of the extgetdata's as we can before taking the lock
         // and appending the remainder to the vRecvExtGetData queue.
-        ProcessExtGetData(pfrom, chainparams.GetConsensus(), invDeque);
-        if (!invDeque.empty())
+        if (WithinBudget(pfrom, invDeque.size()))
         {
-            LOCK(pfrom->csRecvGetData);
-            pfrom->vRecvExtGetData.insert(pfrom->vRecvExtGetData.end(), invDeque.begin(), invDeque.end());
+            ProcessExtGetData(pfrom, chainparams.GetConsensus(), invDeque);
+            if (!invDeque.empty())
+            {
+                LOCK(pfrom->csRecvGetData);
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvExtGetData.insert(pfrom->vRecvExtGetData.end(), invDeque.begin(), invDeque.end());
+                }
+            }
         }
     }
 
@@ -2161,6 +2294,17 @@ bool ProcessMessage(CNode *pfrom,
                 // cache.
                 if (fNewUnconnectedHeaders)
                 {
+                    // Cached headers get no contextual checks until they connect, so require valid proof of work now
+                    CValidationState state;
+                    if (!CheckBlockHeader(chainparams.GetConsensus(), header, state, true))
+                    {
+                        int nDos = 0;
+                        if (state.IsInvalid(nDos) && nDos > 0)
+                            dosMan.Misbehaving(pfrom, nDos, BanReasonInvalidHeader);
+                        return error("unconnected header %s from peer %s is invalid: %s", hash.ToString(),
+                            pfrom->GetLogName(), state.GetRejectReason());
+                    }
+
                     // LOG(NET, "Header %s from %s is unconnected\n", hash.ToString(), pfrom->GetLogName());
                     if (mapUnConnectedHeaders.size() < MAX_UNCONNECTED_HEADERS)
                         mapUnConnectedHeaders[hash] = std::make_pair(header, GetTime());
@@ -2188,14 +2332,21 @@ bool ProcessMessage(CNode *pfrom,
             {
                 // If possible add any previously unconnected headers to the headers vector and remove any expired
                 // entries.
+                // Hash the message once: the cache can hold MAX_UNCONNECTED_HEADERS entries.
+                std::set<uint256> setHeaderHashes;
+                for (const CBlockHeader &header : headers)
+                    setHeaderHashes.insert(header.GetHash());
+                uint256 hashLast = headers.back().GetHash();
+
                 std::map<uint256, std::pair<CBlockHeader, int64_t> >::iterator mi = mapUnConnectedHeaders.begin();
                 while (mi != mapUnConnectedHeaders.end())
                 {
                     std::map<uint256, std::pair<CBlockHeader, int64_t> >::iterator toErase = mi;
 
                     // Add the header if it connects to the previous header
-                    if (headers.back().GetHash() == (*mi).second.first.hashPrevBlock)
+                    if (hashLast == (*mi).second.first.hashPrevBlock)
                     {
+                        hashLast = (*mi).first;
                         headers.push_back((*mi).second.first);
                         mapUnConnectedHeaders.erase(toErase);
 
@@ -2219,14 +2370,7 @@ bool ProcessMessage(CNode *pfrom,
                     // cache.
                     else
                     {
-                        for (const CBlockHeader &header : headers)
-                        {
-                            if (header.GetHash() == headerHash)
-                            {
-                                fErase = true;
-                                break;
-                            }
-                        }
+                        fErase = setHeaderHashes.count(headerHash) != 0;
                     }
 
                     if (fErase)
@@ -3273,42 +3417,53 @@ bool ProcessMessages(CNode *pfrom)
     bool fOk = true;
 
     // Check getdata requests first if there are no priority messages waiting.
-    if (!fPriorityRecvMsg.load())
+    if (!fPriorityRecvMsg.load() && !pfrom->pauseGetDataForTest.load())
     {
-        if (!pfrom->vRecvGetData.empty())
+        // Other handler threads append to these queues, so only read them under the lock
+        std::deque<std::pair<CInv, uint32_t> > invDeque;
+        std::deque<std::pair<CInv2, uint32_t> > invDeque2;
+        std::deque<std::pair<CExtInv, uint32_t> > extInvDeque;
         {
-            std::deque<std::pair<CInv, uint32_t> > invDeque;
-            {
-                // Quickly lock and swap
-                LOCK(pfrom->csRecvGetData);
-                if (!pfrom->vRecvGetData.empty())
-                {
-                    pfrom->vRecvGetData.swap(invDeque);
-                }
-            }
+            LOCK(pfrom->csRecvGetData);
+            pfrom->vRecvGetData.swap(invDeque);
+            pfrom->vRecvGetData2.swap(invDeque2);
+            pfrom->vRecvExtGetData.swap(extInvDeque);
+        }
+        if (!invDeque.empty())
+        {
             ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
             if (!invDeque.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                pfrom->vRecvGetData.insert(pfrom->vRecvGetData.end(), invDeque.begin(), invDeque.end());
+                if (WithinBudget(pfrom, invDeque.size()))
+                {
+                    pfrom->vRecvGetData.insert(pfrom->vRecvGetData.begin(), invDeque.begin(), invDeque.end());
+                }
             }
         }
-        if (!pfrom->vRecvGetData2.empty())
+        if (!invDeque2.empty())
         {
-            std::deque<std::pair<CInv2, uint32_t> > invDeque;
+            ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque2);
+            if (!invDeque2.empty())
             {
-                // Quickly lock and swap
                 LOCK(pfrom->csRecvGetData);
-                if (!pfrom->vRecvGetData2.empty())
+                if (WithinBudget(pfrom, invDeque2.size()))
                 {
-                    pfrom->vRecvGetData2.swap(invDeque);
+                    pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.begin(), invDeque2.begin(), invDeque2.end());
                 }
             }
-            ProcessGetData(pfrom, chainparams.GetConsensus(), invDeque);
-            if (!invDeque.empty())
+        }
+        if (!extInvDeque.empty())
+        {
+            ProcessExtGetData(pfrom, chainparams.GetConsensus(), extInvDeque);
+            if (!extInvDeque.empty())
             {
                 LOCK(pfrom->csRecvGetData);
-                pfrom->vRecvGetData2.insert(pfrom->vRecvGetData2.end(), invDeque.begin(), invDeque.end());
+                if (WithinBudget(pfrom, extInvDeque.size()))
+                {
+                    pfrom->vRecvExtGetData.insert(
+                        pfrom->vRecvExtGetData.begin(), extInvDeque.begin(), extInvDeque.end());
+                }
             }
         }
     }
@@ -3317,7 +3472,8 @@ bool ProcessMessages(CNode *pfrom)
     // Don't bother if send buffer is too full to respond anyway
     CNode *pfrom_original = pfrom;
     std::deque<std::pair<CNodeRef, CNetMessage> > vPriorityRecvQ_delay;
-    while ((!pfrom->fDisconnect) && (pfrom->nSendSize < nMaxSendBufferSize) && (shutdown_threads.load() == false))
+    while ((!pfrom->fDisconnect) && (pfrom->nSendSize + PendingCapdBytes(pfrom) < nMaxSendBufferSize) &&
+           (shutdown_threads.load() == false))
     {
         CNodeRef noderef;
         bool fIsPriority = false;
@@ -3512,6 +3668,12 @@ bool ProcessMessages(CNode *pfrom)
                 LOG(NET, "%s(%s, %u bytes): Exception '%s' caught\n", __func__, SanitizeString(strCommand),
                     nMessageSize, e.what());
             }
+            else if (strstr(e.what(), "malformed scriptSig"))
+            {
+                // A peer sent a transaction whose scriptSig does not parse
+                LOG(NET, "%s(%s, %u bytes): Exception '%s' caught\n", __func__, SanitizeString(strCommand),
+                    nMessageSize, e.what());
+            }
             else
             {
                 PrintExceptionContinue(&e, "ProcessMessages()");
@@ -3546,7 +3708,7 @@ bool ProcessMessages(CNode *pfrom)
     {
         // re-add the priority messages we delayed back to the queue so that we can try them again later
         LOCK(cs_priorityRecvQ);
-        vPriorityRecvQ.insert(vPriorityRecvQ.end(), vPriorityRecvQ_delay.begin(), vPriorityRecvQ_delay.end());
+        vPriorityRecvQ.insert(vPriorityRecvQ.begin(), vPriorityRecvQ_delay.begin(), vPriorityRecvQ_delay.end());
         if (!vPriorityRecvQ.empty())
             fPriorityRecvMsg.store(true);
     }
@@ -3557,6 +3719,7 @@ bool ProcessMessages(CNode *pfrom)
 bool SendMessages(CNode *pto)
 {
     const Consensus::Params &consensusParams = Params().GetConsensus();
+    try
     {
         // First set fDisconnect if appropriate.
         pto->DisconnectIfBanned();
@@ -3610,6 +3773,10 @@ bool SendMessages(CNode *pto)
         // Check for block download timeout and disconnect node if necessary. Does not require cs_main.
         int64_t nNow = GetStopwatchMicros();
         requester.DisconnectOnDownloadTimeout(pto, consensusParams, nNow);
+
+        const int64_t nextInvHeaderRequest = pto->nNextInvHeaderRequestTime.load();
+        if (nextInvHeaderRequest != 0 && nNow >= nextInvHeaderRequest)
+            SendInvHeaderRequest(pto);
 
         // Address refresh broadcast
         if (!IsInitialBlockDownload() && pto->nNextLocalAddrSend < nNow)
@@ -4120,6 +4287,18 @@ bool SendMessages(CNode *pto)
             }
         }
     }
+    catch (const std::bad_alloc &)
+    {
+        // Assembling this peer's outgoing data ran out of memory (for example a peer requesting many copies of large
+        // CAPD messages).  Drop the peer rather than let the exception escape ThreadMessageHandler and terminate the
+        // node.  Clear its pending CAPD sends so that we do not retry the same allocation before the disconnect
+        // completes.
+        if (pto->capd)
+            pto->capd->clear();
+        pto->CloseSocketDisconnect("out of memory while sending messages");
+        LOGA("Disconnecting peer %s: out of memory while preparing messages to send\n", pto->GetLogName());
+        return false;
+    }
     return true;
 }
 
@@ -4153,7 +4332,7 @@ bool HandleHeaderPathMessage(CDataStream &vRecv, CNode *pfrom, uint32_t msgCooki
 
         if (toHeight == std::numeric_limits<uint32_t>::max())
             to = chainActive.Tip();
-        else if (toHeight != 0 || fromHash == uint256())
+        else if (toHeight != 0 || toHash == uint256())
             to = chainActive._idx(toHeight); // returns nullptr if too big
         else
             to = chainActive._lookup(toHash);

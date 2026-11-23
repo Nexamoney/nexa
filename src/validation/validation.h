@@ -20,8 +20,13 @@
 // The group token cache can and should be compiled even when the wallet is disabled.
 #include "wallet/grouptokencache.h"
 
+#include <optional>
+
 /** Default for -blockchain.maxReorgDepth. A value less than zero disables the feature */
 static const int DEFAULT_MAX_REORG_DEPTH = 200;
+/** Headers with less chain work than the active chain had this many blocks (about a day) below its tip, or
+    test.maxReorgDepth blocks if that is deeper, are not stored */
+static const unsigned int LOW_WORK_HEADER_DEPTH = 720;
 
 /** Is express validation turned on/off */
 static const bool DEFAULT_XVAL_ENABLED = false;
@@ -147,6 +152,33 @@ bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork);
 
 CBlockIndex *FindMostWorkChain();
 
+/** Blocks whose stored body failed satisfier dependent checks, and the peers that sent those bodies.
+ *  The merkle root does not commit to exact satisfier bytes, so repeated body failures cannot establish header
+ *  invalidity. */
+class CSuspectBlockBodies
+{
+private:
+    mutable CCriticalSection cs_suspect;
+    std::set<uint256> setSuspect GUARDED_BY(cs_suspect);
+    // Peers that sent a body failing these checks are not asked for the block again until it connects
+    std::map<uint256, std::set<NodeId> > mapBadSources GUARDED_BY(cs_suspect);
+
+public:
+    /** True if the stored body of this block failed satisfier dependent checks and is waiting to be fetched again */
+    bool IsSuspect(const uint256 &hash) const;
+    /** The stored body failed satisfier dependent checks; source is the peer that sent it, if known */
+    void MarkSuspect(const uint256 &hash, std::optional<NodeId> source);
+    /** A new body was stored */
+    void ClearSuspect(const uint256 &hash);
+
+    /** True if this peer sent a body of this block that failed satisfier dependent checks */
+    bool IsBadSource(const uint256 &hash, NodeId nodeid) const;
+
+    /** The block connected */
+    void Forget(const uint256 &hash);
+};
+extern CSuspectBlockBodies suspectBlockBodies;
+
 /** Mark a block as invalid. */
 bool InvalidateBlock(CValidationState &state, const Consensus::Params &consensusParams, CBlockIndex *pindex);
 
@@ -183,8 +215,7 @@ bool ConnectBlock(ConstCBlockRef pblock,
     CCoinsViewCache &view,
     const CCoinsViewCache &beginningTipView,
     const CChainParams &chainparams,
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages,
-    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
+    CTokenIndexUpdates &tokenUpdates,
     bool fJustCheck = false,
     bool fParallel = false);
 
@@ -202,8 +233,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     CAmount &nFees,
     CBlockUndo &blockundo,
     std::vector<std::pair<uint256, CDiskTxPos> > &vPos,
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages,
-    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
+    CTokenIndexUpdates &tokenUpdates,
     const std::map<uint256, CTransactionRef> *mapDagTxns = nullptr,
     const std::set<uint256> *setTxnExclusions = nullptr);
 
@@ -214,16 +244,14 @@ bool DisconnectTip(CValidationState &state, const Consensus::Params &consensusPa
 bool ActivateBestChain(CValidationState &state,
     const CChainParams &chainparams,
     ConstCBlockRef pblock = nullptr,
-    bool fParallel = false,
-    CNode *pfrom = nullptr);
+    bool fParallel = false);
 
 /** Find the best known block, and make it the tip of the block chain.  Expects that cs_main is taken and
     tx admission is paused. */
 bool _ActivateBestChain(CValidationState &state,
     const CChainParams &chainparams,
     ConstCBlockRef pblock = nullptr,
-    bool fParallel = false,
-    CNode *pfrom = nullptr);
+    bool fParallel = false);
 
 /** Initially performs a re-org if necessary before connecting all the blocks to the most work chain */
 bool ActivateBestChainSummaryBlocks(CValidationState &state,

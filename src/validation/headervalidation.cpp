@@ -10,6 +10,13 @@
 #include "timedata.h"
 #include "validation/tailstorm.h"
 
+bool IsSummaryProofCountValid(const Consensus::Params &consensusParams, const CSummaryBlockMinerData &data)
+{
+    // Chain work and the summary target are computed from the declared counts, so they must match the proofs
+    return (data.vSubblockProofs.size() == consensusParams.tailstorm_k - 1) &&
+           (size_t(data.nUncles) + data.nSubblocks == data.vSubblockProofs.size());
+}
+
 bool CheckTailstormSummaryBlockProofOfWork(const Consensus::Params &consensusParams,
     const CBlockHeader &block,
     CValidationState &state)
@@ -18,8 +25,7 @@ bool CheckTailstormSummaryBlockProofOfWork(const Consensus::Params &consensusPar
     auto ret = ParseSummaryBlockMinerData(block.minerData);
 
     // A summary block must reference K-1 subblocks, -1 because it is *itself* a subblock.
-    if ((ret.vSubblockProofs.size() != consensusParams.tailstorm_k - 1) &&
-        (ret.vSubblockProofs.size() != (ret.nUncles + ret.nSubblocks)))
+    if (!IsSummaryProofCountValid(consensusParams, ret))
     {
         return state.DoS(100,
             error(
@@ -90,6 +96,12 @@ bool CheckTailstormSummaryBlockProofOfWork(const Consensus::Params &consensusPar
         }
         setExists.insert(powHash);
         count++;
+    }
+
+    if (nUnclesFound != ret.nUncles || nSubblocksFound != ret.nSubblocks)
+    {
+        return state.DoS(100, error("%s: verified proofs do not match declared counts", __func__), REJECT_INVALID,
+            "bad-blk-wrong-number-of-subblocks");
     }
 
     // If ret.prevOfprevhash is nothing, there can be no uncles

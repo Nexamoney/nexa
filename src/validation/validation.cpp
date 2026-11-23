@@ -174,6 +174,12 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
         return state.DoS(100, error("%s: premature miner data use", __func__), REJECT_INVALID, "bad-miner-data");
     }
 
+    // Accept sub-blocks only when the HF2 fork is pending or active for the parent
+    if (!fSummaryBlock && !IsUpgrade2Pending(pindexPrev) && !IsUpgrade2Activated(pindexPrev))
+    {
+        return state.DoS(100, error("%s: premature subblock", __func__), REJECT_INVALID, "bad-subblock-premature");
+    }
+
     // Once the fork is activated then old style legacy blocks are no longer accepted.
     if (IsUpgrade2Activated(pindexPrev) && fSummaryBlock && !IsTailstormSummaryBlock(block))
     {
@@ -283,8 +289,7 @@ bool ContextualCheckBlockHeader(const CChainParams &chainparams,
 
         if (IsTailstormSummaryBlock(block))
         {
-            if ((ret.vSubblockProofs.size() != chainparams.GetConsensus().tailstorm_k - 1) &&
-                (ret.vSubblockProofs.size() != (ret.nUncles + ret.nSubblocks)))
+            if (!IsSummaryProofCountValid(chainparams.GetConsensus(), ret))
             {
                 return state.DoS(
                     100, error("%s(): incomplete miner data", __func__), REJECT_INVALID, "bad-miner-data-size");
@@ -513,6 +518,12 @@ bool AcceptBlockHeader(const CBlockHeader &block,
     if (pindex == nullptr)
     {
         LOCK(cs_main);
+        // ASERT eases a fork from an old block down to the minimum difficulty, so a header far behind our chain's
+        // work is nearly free to make. Do not store one (NX-19), unless a deeper reorg limit lets us reorg to it.
+        const int nWorkHeight = chainActive.Height() - std::max((int)LOW_WORK_HEADER_DEPTH, maxReorgDepth.Value());
+        if (nWorkHeight > 0 && (UintToArith256(block.chainWork) < chainActive[nWorkHeight]->chainWork()))
+            return state.Invalid(
+                error("%s: block %s has too little chain work", __func__, hash.ToString()), 0, "low-work-header");
         pindex = AddToBlockIndex(chainparams, block);
     }
 
@@ -1514,7 +1525,7 @@ bool CheckInputs(const CTransactionRef &tx,
         }
         // Its ok to only check Group semantics if this is not a coinbase transaction because coinbase transactions
         // MUST NOT have any grouped outputs (see CheckTransaction(...)).
-        if (!CheckGroupTokens(*tx, state, inputs, readonlyinputs))
+        if (!CheckGroupTokens(*tx, state, inputs, readonlyinputs, flags & SCRIPT_GROUP_GENESIS_SPENDS_INPUT))
         {
             if (debugger)
             {
@@ -1653,6 +1664,20 @@ bool CheckInputs(const CTransactionRef &tx,
                         if (!check())
                         {
                             ScriptError scriptError = check.GetScriptError();
+                            // Nodes without !77 compute the other OP_WITHIN result, so the relaying peer is not at
+                            // fault even when the fixed rule fails the script
+                            // Nor when a byte or BigNum conversion limit fails it: the retry below would run the
+                            // script without those limits, at the cost they are there to avoid
+                            if ((scriptError == SCRIPT_ERR_AMBIGUOUS_WITHIN ||
+                                    scriptError == SCRIPT_ERR_HASHED_BYTES_LIMIT_EXCEEDED ||
+                                    scriptError == SCRIPT_ERR_VISITED_BYTES_LIMIT_EXCEEDED ||
+                                    scriptError == SCRIPT_ERR_BIGNUM_CONVERSION_SIZE) &&
+                                !debugger)
+                            {
+                                return state.DoS(0, false, REJECT_NONSTANDARD,
+                                    strprintf("non-mandatory-script-verify-flag (%s)", ScriptErrorString(scriptError)),
+                                    true);
+                            }
                             // Compute flags without the optional standardness flags.
                             // This differs from MANDATORY_SCRIPT_VERIFY_FLAGS as it contains
                             // additional upgrade flags (see ParallelAcceptToMemoryPool variable
@@ -1679,9 +1704,11 @@ bool CheckInputs(const CTransactionRef &tx,
                                     }
                                     else
                                     {
-                                        return state.Invalid(false, REJECT_NONSTANDARD,
+                                        // Satisfier failures may come from a body altered in transit
+                                        return state.DoS(0, false, REJECT_NONSTANDARD,
                                             strprintf("non-mandatory-script-verify-flag (%s)",
-                                                ScriptErrorString(scriptError)));
+                                                ScriptErrorString(scriptError)),
+                                            true);
                                     }
                                 }
                                 // update the error message to reflect the mandatory violation.
@@ -1707,9 +1734,10 @@ bool CheckInputs(const CTransactionRef &tx,
                                 }
                                 else
                                 {
-                                    return state.Invalid(false, REJECT_INVALID,
+                                    return state.DoS(0, false, REJECT_INVALID,
                                         strprintf("upgrade-conditional-script-failure (%s)",
-                                            ScriptErrorString(check.GetScriptError())));
+                                            ScriptErrorString(check.GetScriptError())),
+                                        true);
                                 }
                             }
 
@@ -1731,7 +1759,8 @@ bool CheckInputs(const CTransactionRef &tx,
                             {
                                 return state.DoS(100, false, REJECT_INVALID,
                                     strprintf(
-                                        "mandatory-script-verify-flag-failed (%s)", ScriptErrorString(scriptError)));
+                                        "mandatory-script-verify-flag-failed (%s)", ScriptErrorString(scriptError)),
+                                    true);
                             }
                         }
                     }
@@ -1879,10 +1908,8 @@ bool TestBlockValidity(CValidationState &state,
     if (!ContextualCheckBlock(pblock, state, pindexPrev))
         return false;
 
-    std::map<CGroupTokenID, CAmount> dummyMintages;
-    std::map<CGroupTokenID, CAuth> dummyAuthorities;
-    if (!ConnectBlock(
-            pblock, state, &indexDummy, viewNew, *pcoinsTip, chainparams, dummyMintages, dummyAuthorities, true))
+    CTokenIndexUpdates dummyTokenUpdates;
+    if (!ConnectBlock(pblock, state, &indexDummy, viewNew, *pcoinsTip, chainparams, dummyTokenUpdates, true))
         return false;
     assert(state.IsValid());
 
@@ -1981,6 +2008,40 @@ bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork)
     return false;
 }
 
+bool CSuspectBlockBodies::IsSuspect(const uint256 &hash) const
+{
+    LOCK(cs_suspect);
+    return setSuspect.count(hash) != 0;
+}
+
+void CSuspectBlockBodies::MarkSuspect(const uint256 &hash, std::optional<NodeId> source)
+{
+    LOCK(cs_suspect);
+    setSuspect.insert(hash);
+    if (source)
+        mapBadSources[hash].insert(*source);
+}
+
+void CSuspectBlockBodies::ClearSuspect(const uint256 &hash)
+{
+    LOCK(cs_suspect);
+    setSuspect.erase(hash);
+}
+
+bool CSuspectBlockBodies::IsBadSource(const uint256 &hash, NodeId nodeid) const
+{
+    LOCK(cs_suspect);
+    auto it = mapBadSources.find(hash);
+    return it != mapBadSources.end() && it->second.count(nodeid) != 0;
+}
+
+void CSuspectBlockBodies::Forget(const uint256 &hash)
+{
+    LOCK(cs_suspect);
+    setSuspect.erase(hash);
+    mapBadSources.erase(hash);
+}
+
 /**
  * Return the tip of the chain with the most work in it, that isn't
  * known to be invalid (it's however far from certain to be valid).
@@ -2009,6 +2070,7 @@ CBlockIndex *FindMostWorkChain()
         uint64_t depth = 0;
         bool fFailedChain = false;
         bool fMissingData = false;
+        bool fSuspectBody = false;
         bool fReorgInRange = true;
 
         // follow the chain all the way back to where it joins the current active chain.
@@ -2027,7 +2089,8 @@ CBlockIndex *FindMostWorkChain()
             // to a chain unless we have all the non-active-chain parent blocks.
             fFailedChain = pindexTest->nStatus & BLOCK_FAILED_MASK;
             fMissingData = !(pindexTest->nStatus & BLOCK_HAVE_DATA);
-            if (fFailedChain | fMissingData)
+            fSuspectBody = suspectBlockBodies.IsSuspect(pindexTest->GetBlockHash());
+            if (fFailedChain | fMissingData | fSuspectBody)
                 break;
             pindexTest = pindexTest->pprev;
             depth++;
@@ -2036,8 +2099,9 @@ CBlockIndex *FindMostWorkChain()
         // We don't want to mark a chain that exceeds the reorg limit as bad. Just skip it.
         fReorgInRange = IsReorgInRange(chainActive.Tip(), pindexTest);
 
-        // Conditions where we want to reject the chain
-        if (fFailedChain || fMissingData || !fReorgInRange)
+        // Conditions where we want to reject the chain. A suspect body only drops the candidates until it is
+        // replaced, so its status is left alone.
+        if (fFailedChain || fMissingData || fSuspectBody || !fReorgInRange)
         {
             // Candidate chain is not usable (either invalid or missing data)
             CBlockIndex *pBestInvalid = pindexBestInvalid.load();
@@ -2499,16 +2563,19 @@ static bool AcceptBlock(ConstCBlockRef pblock,
         // not process unrequested blocks.
         bool fTooFarAhead = (pindex->height() > int(chainActive.Height() + MIN_BLOCKS_TO_KEEP));
 
+        // A suspect body is replaced by the next one received
+        const bool fSuspectBody = suspectBlockBodies.IsSuspect(pindex->GetBlockHash());
+
         // TODO: deal better with return value and error conditions for duplicate
         // and unrequested blocks.
-        if (fAlreadyHave)
+        if (fAlreadyHave && !fSuspectBody)
         {
             return true;
         }
         // If we didn't ask for it:
         if (!fRequested)
         {
-            if (pindex->processed())
+            if (pindex->processed() && !fSuspectBody)
                 return true; // This is a previously-processed block that was pruned
             if (!fHasEnoughWork)
                 return true; // Don't process chains with a lot less work
@@ -2519,7 +2586,8 @@ static bool AcceptBlock(ConstCBlockRef pblock,
 
     if ((!CheckBlock(chainparams.GetConsensus(), pblock, state)))
     {
-        if (state.IsInvalid() && !state.CorruptionPossible())
+        // Sub-blocks have no block index entry to mark
+        if (pindex && state.IsInvalid() && !state.CorruptionPossible())
         {
             {
                 WRITELOCK(cs_mapBlockIndex);
@@ -2583,6 +2651,21 @@ static bool AcceptBlock(ConstCBlockRef pblock,
             {
                 return error("AcceptBlock(): ReceivedBlockTransactions failed");
             }
+            if (suspectBlockBodies.IsSuspect(pindex->GetBlockHash()))
+            {
+                suspectBlockBodies.ClearSuspect(pindex->GetBlockHash());
+                // Stored descendants were dropped as candidates while this body was distrusted
+                WRITELOCK(cs_mapBlockIndex);
+                for (const auto &item : mapBlockIndex)
+                {
+                    CBlockIndex *p = item.second;
+                    if (p != pindex && p->height() > pindex->height() && (p->nStatus & BLOCK_HAVE_DATA) &&
+                        p->IsValid(BLOCK_VALID_TRANSACTIONS) && p->IsLinked() && !(p->nStatus & BLOCK_FAILED_MASK) &&
+                        p->GetAncestor(pindex->height()) == pindex &&
+                        !setBlockIndexCandidates.value_comp()(p, chainActive.Tip()))
+                        setBlockIndexCandidates.insert(p);
+                }
+            }
         }
         catch (const std::runtime_error &e)
         {
@@ -2609,18 +2692,39 @@ bool ProcessAcceptBlock(CNode *pfrom,
     const uint256 &hash = pblock->GetHash();
 
     bool fRequested = false;
+    bool fRequestedFromPeer = false;
     if (pfrom)
     {
         bool forceProcessing = pfrom->fWhitelisted && !IsInitialBlockDownload();
+        fRequestedFromPeer = requester.IsBlockInFlightFrom(hash, pfrom->GetId()) || forceProcessing;
         fRequested = requester.MarkBlockAsReceived(hash, pfrom);
         fRequested |= forceProcessing;
+    }
+
+    // A bad source is not asked again, so this body was pushed and would most likely fail the same way. fRequested
+    // does not tell: it is also true while another peer is asked for the block. Accepted() is not called so a
+    // pending request to another peer is kept.
+    if (pfrom && suspectBlockBodies.IsBadSource(hash, pfrom->GetId()))
+    {
+        LOG(BLK, "Ignoring body of %s from peer=%d, which sent a bad one\n", hash.ToString(), pfrom->GetId());
+        requester.BlockRejected(CInv(MSG_BLOCK, hash), pfrom);
+        return true;
+    }
+
+    // Only a peer we asked may replace a suspect body, so pushed copies cost no disk writes
+    if (pfrom && !fRequestedFromPeer && suspectBlockBodies.IsSuspect(hash))
+    {
+        LOG(BLK, "Ignoring unrequested body of suspect block %s from peer=%d\n", hash.ToString(), pfrom->GetId());
+        requester.BlockRejected(CInv(MSG_BLOCK, hash), pfrom);
+        return true;
     }
 
     CBlockIndex *&pindex = *ppindex;
     bool ret = AcceptBlock(pblock, state, chainparams, ppindex, fRequested, dbp);
     if (pindex && pfrom)
     {
-        mapBlockSource[pindex->GetBlockHash()] = pfrom->GetId();
+        // Blame the peer whose body is validated: the first one stored, or the one replacing a suspect body
+        mapBlockSource.emplace(pindex->GetBlockHash(), pfrom->GetId());
     }
     const auto &cparams = chainparams.GetConsensus();
     CheckBlockIndex(cparams);
@@ -2767,15 +2871,15 @@ DisconnectResult DisconnectBlock(const ConstCBlockRef pblock, const CBlockIndex 
     {
         // Before removing the outputs check through the block again for
         // any token mint/melt transactions and undo them
-        std::map<CGroupTokenID, CAmount> accumulatedMintages;
-        std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
+        CTokenIndexUpdates tokenUpdates;
         for (unsigned int i = 1; i < pblock->vtx.size(); i++)
         {
-            AccumulateTokenData(pblock->vtx[i], view, accumulatedAuthorities, accumulatedMintages);
+            AccumulateTokenData(pblock->vtx[i], view, tokenUpdates);
         }
-        // Remove token mintages and authorities if there are any
-        tokenmint.RemoveTokenMintages(accumulatedMintages);
-        tokencache.RemoveTokenAuthorities(accumulatedAuthorities);
+        // Remove token mintages and authorities if there are any. Descriptions and genesis
+        // entries are left in place.
+        tokenmint.RemoveTokenMintages(tokenUpdates.mintages);
+        tokencache.RemoveTokenAuthorities(tokenUpdates.authorities);
     }
 
     // remove outputs
@@ -2873,8 +2977,7 @@ static bool ConnectBlockPrevalidations(ConstCBlockRef pblock,
                 100, error("%s : incorrect miner data", __func__), REJECT_INVALID, "bad-subblock-difficulty");
         }
 
-        if ((ret.vSubblockProofs.size() != chainparams.GetConsensus().tailstorm_k - 1) &&
-            (ret.vSubblockProofs.size() != (ret.nUncles + ret.nSubblocks)))
+        if (!IsSummaryProofCountValid(chainparams.GetConsensus(), ret))
         {
             return state.DoS(100, error("%s : incorrect miner data", __func__), REJECT_INVALID, "bad-miner-data-size");
         }
@@ -3081,8 +3184,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     CAmount &nFees,
     CBlockUndo &blockundo,
     std::vector<std::pair<uint256, CDiskTxPos> > &vPos,
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages,
-    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
+    CTokenIndexUpdates &tokenUpdates,
     const std::map<uint256, CTransactionRef> *mapDagTxns,
     const std::set<uint256> *setTxnExclusions)
 {
@@ -3141,6 +3243,22 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
     if (!PV->BeginValidation(this_id, pindexEpoch, fParallel))
         return false;
 
+    // Read only inputs come from the shared tip, which a competing block can change once cs_main is released.
+    // Copy them now so the checks below see the state this block builds on.
+    CCoinsView noCoins;
+    CCoinsViewCache readonlySnapshot(&noCoins);
+    for (const CTransactionRef &txref : pblock->vtx)
+    {
+        for (const CTxIn &txin : txref->vin)
+        {
+            if (!txin.IsReadOnly())
+                continue;
+            CoinAccessor coin(readonlyinputs, txin.prevout);
+            if (!coin->IsSpent())
+                readonlySnapshot.AddCoin(txin.prevout, Coin(*coin), true);
+        }
+    }
+
     /*********************************************************************************************
      If in PV, unlock cs_main here so we have no contention when we're checking inputs and scripts
      *********************************************************************************************/
@@ -3176,7 +3294,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                 {
                     bool fReadOnlyUnavailable = false;
                     {
-                        CoinAccessor coin(readonlyinputs, txref->vin[j].prevout);
+                        CoinAccessor coin(readonlySnapshot, txref->vin[j].prevout);
                         fReadOnlyUnavailable = coin->IsSpent();
                     }
                     if (fReadOnlyUnavailable)
@@ -3277,7 +3395,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
             {
                 if (!fJustCheck && !fVerifyDB.load())
                 {
-                    if (!AccumulateTokenData(txref, view, accumulatedAuthorities, accumulatedMintages))
+                    if (!AccumulateTokenData(txref, view, tokenUpdates))
                     {
                         // We could abort here; but we don't want AccumulateTokenData to be part of consensus
                         // and the double spend will be caught below during the explicit doublespend checking when
@@ -3324,8 +3442,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                 // The helper walks the inputs once: presence, amount match, fee
                 // accumulation, BIP68 and CheckInputs. On an input failure it sets
                 // state.relevantInput / relevantTxid for the diagnostics below.
-                if (!CheckTxFinalAndInputs(txref, state, view, readonlyinputs, *pindexEpoch, chainparams, fCheckInputs,
-                        fScriptChecks, fJustCheck, fCheckInputs ? &txResourceTracker[i] : nullptr,
+                if (!CheckTxFinalAndInputs(txref, state, view, readonlySnapshot, *pindexEpoch, chainparams,
+                        fCheckInputs, fScriptChecks, fJustCheck, fCheckInputs ? &txResourceTracker[i] : nullptr,
                         (fCheckInputs && PV->ThreadCount()) ? &vChecks : nullptr, &nFees))
                 {
                     // The helper reports an input failure by setting relevantInput; the code then
@@ -3434,7 +3552,8 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
         if (!control.Wait())
         {
             // if we end up here then the signature verification failed and we must re-lock cs_main before returning.
-            return state.DoS(100, false, REJECT_INVALID, "bad-blk-signatures", false, "parallel script check failed");
+            // The merkle root does not commit to the exact satisfier bytes, so the body may have been altered
+            return state.DoS(100, false, REJECT_INVALID, "bad-blk-signatures", true, "parallel script check failed");
         }
 
         // Validate we are within sigcheck limits.
@@ -3449,7 +3568,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
                 // LOG(BENCH, "Tx SigChecks performed: %d\n", txSigChecks);
                 if (txSigChecks > MAX_TX_SIGCHECK_COUNT)
                 {
-                    return state.DoS(100, false, REJECT_INVALID, "bad-tx-sigchecks", false,
+                    return state.DoS(100, false, REJECT_INVALID, "bad-tx-sigchecks", true,
                         "per transaction sigcheck limit exceeded");
                 }
             }
@@ -3461,7 +3580,7 @@ bool ConnectBlockCanonicalOrdering(ConstCBlockRef pblock,
             if (blockSigChecks > maxSigChecksAllowed)
             {
                 return state.DoS(
-                    100, false, REJECT_INVALID, "bad-blk-sigchecks", false, "block sigcheck limit exceeded");
+                    100, false, REJECT_INVALID, "bad-blk-sigchecks", true, "block sigcheck limit exceeded");
             }
         }
 
@@ -3492,8 +3611,7 @@ bool ConnectBlock(ConstCBlockRef pblock,
     CCoinsViewCache &view,
     const CCoinsViewCache &beginningTipView,
     const CChainParams &chainparams,
-    std::map<CGroupTokenID, CAmount> &accumulatedMintages,
-    std::map<CGroupTokenID, CAuth> &accumulatedAuthorities,
+    CTokenIndexUpdates &tokenUpdates,
     bool fJustCheck,
     bool fParallel)
 {
@@ -3550,7 +3668,7 @@ bool ConnectBlock(ConstCBlockRef pblock,
 
     // When connecting a summary block, the read-only inputs come directly from the tip we are building on.
     if (!ConnectBlockCanonicalOrdering(pblock, state, pindex, view, beginningTipView, chainparams, fJustCheck,
-            fParallel, fScriptChecks, nFees, blockundo, vPos, accumulatedMintages, accumulatedAuthorities))
+            fParallel, fScriptChecks, nFees, blockundo, vPos, tokenUpdates))
     {
         return false;
     }
@@ -3665,21 +3783,35 @@ void InvalidBlockFound(CBlockIndex *pindex, const CValidationState &state)
 
             if (node)
             {
-                // External blocks are never rejected with internal reject codes
-                // It is possible for an internal block to be rejected with bad-txns-inputs-missingorspent,
-                // specifically REJECT_CONFLICT, because the candidate being mined was stale.
-                assert(state.GetRejectCode() < REJECT_INTERNAL);
+                // Peer blocks can fail with internal codes, e.g. REJECT_CONFLICT for missing inputs.
+                // These do not fit the wire format, so report them as invalid.
+                unsigned char rejectCode =
+                    state.GetRejectCode() < REJECT_INTERNAL ? state.GetRejectCode() : REJECT_INVALID;
 
                 // TODO get the block request's msgCookie
-                node->PushMessage(NetMsgType::REJECT, (std::string)NetMsgType::BLOCK,
-                    (unsigned char)state.GetRejectCode(), state.GetRejectReason().substr(0, MAX_REJECT_MESSAGE_LENGTH),
-                    pindex->GetBlockHash());
+                node->PushMessage(NetMsgType::REJECT, (std::string)NetMsgType::BLOCK, rejectCode,
+                    state.GetRejectReason().substr(0, MAX_REJECT_MESSAGE_LENGTH), pindex->GetBlockHash());
                 if (nDoS > 0)
                     dosMan.Misbehaving(node.get(), nDoS, BanReasonInvalidBlock);
             }
         }
     }
-    if (!state.CorruptionPossible())
+    if (state.CorruptionPossible())
+    {
+        // The body may have been altered in transit: drop it so the block is downloaded again
+        const uint256 hash = pindex->GetBlockHash();
+        auto it = mapBlockSource.find(hash);
+        suspectBlockBodies.MarkSuspect(
+            hash, it != mapBlockSource.end() ? std::optional<NodeId>(it->second) : std::nullopt);
+        nodestate.RewindBlockDownloadState(pindex);
+        {
+            WRITELOCK(cs_mapBlockIndex);
+            setBlockIndexCandidates.erase(pindex);
+        }
+        mapBlockSource.erase(hash);
+        blockcache.EraseBlock(hash);
+    }
+    else
     {
         {
             WRITELOCK(cs_mapBlockIndex);
@@ -4094,10 +4226,8 @@ bool ConnectTip(CValidationState &state,
     LOG(BENCH, "  - Load block from disk: %.2fms [%.2fs]\n", (nTime2 - nTime1) * 0.001, nTimeReadFromDisk * 0.000001);
 
     CCoinsViewCache view(pcoinsTip);
-    std::map<CGroupTokenID, CAmount> accumulatedMintages;
-    std::map<CGroupTokenID, CAuth> accumulatedAuthorities;
-    bool rv = ConnectBlock(pblock, state, pindexNew, view, *pcoinsTip, chainparams, accumulatedMintages,
-        accumulatedAuthorities, false, fParallel);
+    CTokenIndexUpdates tokenUpdates;
+    bool rv = ConnectBlock(pblock, state, pindexNew, view, *pcoinsTip, chainparams, tokenUpdates, false, fParallel);
     GetMainSignals().BlockChecked(*pblock, state);
     if (!rv)
     {
@@ -4175,14 +4305,13 @@ bool ConnectTip(CValidationState &state,
         CheckAndAlertUnknownVersionbits(chainparams, pindexNew);
 
         // Notify external zmq listeners about the new tip.
-        GetMainSignals().UpdatedBlockTip(pindexNew);
+        GetMainSignals().UpdatedBlockTip(pindexNew, pblock);
     }
 
-    // Apply token mintages if there are any
+    // Apply token index updates if there are any
     if (!fVerifyDB.load())
     {
-        tokenmint.ApplyTokenMintages(accumulatedMintages);
-        tokencache.ApplyTokenAuthorities(accumulatedAuthorities);
+        ApplyTokenIndexUpdates(tokenUpdates);
     }
 
     // Write the blockchain state to disk. This should be done after UpdateTip to make sure the tip
@@ -4223,6 +4352,7 @@ bool ConnectTip(CValidationState &state,
 
     // Block has been received and processed so no need to keep this entry.
     mapBlockSource.erase(pindexNew->GetBlockHash());
+    suspectBlockBodies.Forget(pindexNew->GetBlockHash());
 
     // When we're in IBD or reindexing then once the block is connected we don't need it in the cache anymore.
     if (IsInitialBlockDownload())
@@ -4528,21 +4658,13 @@ bool ActivateBestChainSummaryBlocks(CValidationState &state,
  * or an activated best chain. pblock is either nullptr or a pointer to a block
  * that is already loaded (to avoid loading it again from disk).
  */
-bool ActivateBestChain(CValidationState &state,
-    const CChainParams &chainparams,
-    ConstCBlockRef pblock,
-    bool fParallel,
-    CNode *pfrom)
+bool ActivateBestChain(CValidationState &state, const CChainParams &chainparams, ConstCBlockRef pblock, bool fParallel)
 {
     LOCK(cs_main);
-    return _ActivateBestChain(state, chainparams, pblock, fParallel, pfrom);
+    return _ActivateBestChain(state, chainparams, pblock, fParallel);
 }
 
-bool _ActivateBestChain(CValidationState &state,
-    const CChainParams &chainparams,
-    ConstCBlockRef pblock,
-    bool fParallel,
-    CNode *pfrom)
+bool _ActivateBestChain(CValidationState &state, const CChainParams &chainparams, ConstCBlockRef pblock, bool fParallel)
 {
     bool result = true;
     CBlockIndex *pindexMostWork = nullptr;
@@ -4642,22 +4764,12 @@ bool _ActivateBestChain(CValidationState &state,
         if (!ActivateBestChainSummaryBlocks(state, chainparams, pindexMostWork,
                 ((pblock) && pblock->GetHash() == pindexMostWork->GetBlockHash() ? pblock : nullptr), fParallel, false))
         {
-            // If we fail to activate a chain because it is bad, send a reject message
-            // but keep iterating to reactivate the best known chain.
-            int nDoS = 0;
-            if (state.IsInvalid(nDoS))
+            // If we fail to activate a chain because it is bad, keep iterating to reactivate the best known chain.
+            // InvalidBlockFound() already sent the reject to the peer that sent the block.
+            if (state.IsInvalid())
             {
                 LOGA("Chain activation failed, returning to next best choice\n");
                 result = false;
-
-                if (pfrom)
-                {
-                    if (pblock)
-                        pfrom->PushMessage(NetMsgType::REJECT, (std::string)NetMsgType::BLOCK, state.GetRejectCode(),
-                            state.GetRejectReason().substr(0, MAX_REJECT_MESSAGE_LENGTH), pblock->GetHash());
-                    if (nDoS > 0)
-                        dosMan.Misbehaving(pfrom, nDoS, BanReasonInvalidBlock);
-                }
             }
             else
             {
@@ -4706,6 +4818,8 @@ bool ProcessSummaryBlock(CValidationState &state,
     // Preliminary checks
     if (!CheckBlockHeader(cparams, *pblock, state, true))
     {
+        // Let the request manager ask other peers for this block again.
+        requester.BlockRejected(CInv(MSG_BLOCK, pblock->GetHash()), pfrom);
         LOG(BLK, "Invalid block %s:  from:%s  Bad header:%s\n", hexHash, fromName, state.GetLogString());
         return error("%s: CheckBlockHeader FAILED", __func__);
     }
@@ -4718,8 +4832,11 @@ bool ProcessSummaryBlock(CValidationState &state,
     {
         LOG(BLK, "Invalid block %s: time:%d Tx size:%d len:%d CheckBlock: %s\n", hexHash, pblock->nTime,
             pblock->vtx.size(), pblock->GetBlockSize(), state.GetLogString());
+        // A body that doesn't match its header must not stop us from fetching the real one.
+        requester.BlockRejected(CInv(MSG_BLOCK, pblock->GetHash()), pfrom);
+        return error("%s: CheckBlock FAILED", __func__);
     }
-    else if (IsInitialBlockDownload())
+    if (IsInitialBlockDownload())
     {
         LOCK(cs_BlocksAlreadyChecked);
         setBlocksAlreadyChecked.insert(pblock->GetHash());
@@ -4736,11 +4853,6 @@ bool ProcessSummaryBlock(CValidationState &state,
     //                called from other places.  Currently it seems best to leave cs_main here as is.
     CBlockIndex *pindex = nullptr;
     {
-        if (!checked)
-        {
-            return error("%s: CheckBlock FAILED", __func__);
-        }
-
         // Store to disk
         LOCK(cs_main);
         bool ret = ProcessAcceptBlock(pfrom, pblock, state, chainparams, &pindex, dbp);

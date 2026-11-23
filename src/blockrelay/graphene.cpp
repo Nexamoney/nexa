@@ -131,6 +131,12 @@ bool CGrapheneBlock::ValidateAndRecontructBlock(const uint256 &blockhash,
     CDataStream &vRecv)
 {
     size_t msgSize = vRecv.size();
+    // A failure recovery reply can also reconcile to no transactions
+    if (vTxHashes256.empty())
+    {
+        thinrelay.ClearAllBlockData(pfrom, pblock->GetHash());
+        return error("Graphene block %s has no transactions, peer=%s", blockhash.ToString(), pfrom->GetLogName());
+    }
     OrderTxHashes(pfrom);
 
     // At this point we should have all the full hashes in the block. Check that the merkle
@@ -348,7 +354,15 @@ bool CGrapheneBlock::HandleMessage(CDataStream &vRecv,
 {
     // Deserialize grapheneblock and store a block to reconstruct
     CGrapheneBlock tmp(NegotiateGrapheneVersion(pfrom), NegotiateFastFilterSupport(pfrom));
-    vRecv >> tmp;
+    try
+    {
+        vRecv >> tmp;
+    }
+    catch (const std::exception &e)
+    {
+        dosMan.Misbehaving(pfrom, 20, BanReasonBadBlockData);
+        return error("%s from peer %s: %s\n", strCommand, pfrom->GetLogName(), e.what());
+    }
     std::shared_ptr<CBlockThinRelay> pblock;
     {
         // Keep admission and allocation atomic with timeout cleanup.
@@ -621,6 +635,9 @@ bool CGrapheneBlock::process(CNode *pfrom, std::string strCommand, std::shared_p
             setHashesToRequest = grapheneBlock->UpdateResolvedTxsAndIdentifyMissing(
                 mapPartialTxHash, blockCheapHashes, NegotiateGrapheneVersion(pfrom));
             grapheneBlock->SituateCoinbase(coinbase);
+            // The peer can send a set that reconciles to nothing
+            if (grapheneBlock->vTxHashes256.empty())
+                throw std::runtime_error("Graphene set reconciled to no transactions");
 
             // coinbase is always first
             std::sort(grapheneBlock->vTxHashes256.begin() + 1, grapheneBlock->vTxHashes256.end());
@@ -721,6 +738,14 @@ static bool ReconstructBlock(CNode *pfrom,
 {
     std::shared_ptr<CGrapheneBlock> grapheneBlock = pblock->grapheneblock;
 
+    // An attacker may attempt to send us a duplicate thintype block and trigger a second
+    // reconstruction on the same dataset. This can cause a block to become invalidated
+    // and so must not be allowed to happen.
+    if (!pblock->vtx.empty())
+    {
+        return error("WARNING: a block reconstruction is already in progress, peer=%s", pfrom->GetLogName());
+    }
+
     // We must have all the full tx hashes by this point.  We first check for any repeating
     // sequences in transaction id's.  This is a possible attack vector and has been used in the past.
     {
@@ -805,6 +830,10 @@ static bool ReconstructBlock(CNode *pfrom,
     // Now that we've rebuilt the block successfully we can set the XVal flag which is used in
     // ConnectBlock() to determine which if any inputs we can skip the checking of inputs.
     pblock->fXVal = DEFAULT_XVAL_ENABLED;
+
+    // Now that the block is fully reconstruced we can delete all the thinblock data
+    // and the thinblock in flight.
+    thinrelay.ClearAllBlockData(pfrom, pblock->GetHash());
 
     return true;
 }
@@ -1383,6 +1412,8 @@ bool HandleGrapheneBlockRequest(CDataStream &vRecv, CNode *pfrom, uint32_t msgCo
     }
 
     graphenedata.UpdateInBoundMemPoolInfo(::GetSerializeSize(mempoolinfo, SER_NETWORK, PROTOCOL_VERSION));
+    // The receiver rejects a set built for more items than this, so a larger count is never useful
+    mempoolinfo.nTx = std::min<uint64_t>(mempoolinfo.nTx, LARGE_MEM_POOL_SIZE);
 
     // Message consistency checking
     if (hash.IsNull())
@@ -1422,7 +1453,17 @@ bool HandleGrapheneBlockRecoveryRequest(CDataStream &vRecv,
     const CChainParams &chainparams)
 {
     CRequestGrapheneReceiverRecover recoveryRequest;
-    vRecv >> recoveryRequest;
+    try
+    {
+        vRecv >> recoveryRequest;
+    }
+    catch (const std::exception &e)
+    {
+        dosMan.Misbehaving(pfrom, 20, BanReasonBadBlockData);
+        return error("Graphene recovery request from peer %s: %s\n", pfrom->GetLogName(), e.what());
+    }
+    recoveryRequest.nSenderFilterPositives =
+        std::min<uint64_t>(recoveryRequest.nSenderFilterPositives, LARGE_MEM_POOL_SIZE);
 
     std::shared_ptr<CGrapheneBlock> grapheneBlock = thinrelay.GetSentGrapheneBlocks(pfrom->GetId());
     if (!grapheneBlock)
@@ -1442,12 +1483,24 @@ bool HandleGrapheneBlockRecoveryRequest(CDataStream &vRecv,
 bool HandleGrapheneBlockRecoveryResponse(CDataStream &vRecv, CNode *pfrom, const CChainParams &chainparams)
 {
     CGrapheneReceiverRecover recoveryResponse;
-    vRecv >> recoveryResponse;
+    try
+    {
+        vRecv >> recoveryResponse;
+    }
+    catch (const std::exception &e)
+    {
+        dosMan.Misbehaving(pfrom, 20, BanReasonBadBlockData);
+        return error("Graphene recovery response from peer %s: %s\n", pfrom->GetLogName(), e.what());
+    }
 
     auto pblock = thinrelay.GetBlockToReconstruct(pfrom, recoveryResponse.blockhash);
     if (pblock == nullptr)
         return error("No block available to reconstruct for grrec");
     DbgAssert(pblock->grapheneblock != nullptr, return false);
+    // One response per request: each one costs a full IBLT decode
+    if (!pblock->grapheneblock->fRecoveryRequested)
+        return error("Unrequested graphene recovery response from peer=%s", pfrom->GetLogName());
+    pblock->grapheneblock->fRecoveryRequested = false;
     CGrapheneBlock grapheneBlock = *(pblock->grapheneblock);
 
     CIblt localIblt((*recoveryResponse.pRevisedIblt));
@@ -1504,7 +1557,7 @@ bool HandleGrapheneBlockRecoveryResponse(CDataStream &vRecv, CNode *pfrom, const
     }
 
     // Attempt to reconcile IBLT
-    static std::vector<uint64_t> blockCheapHashes;
+    std::vector<uint64_t> blockCheapHashes;
     try
     {
         blockCheapHashes = CGrapheneSet::Reconcile(setSenderFilterPositiveCheapHashes, localIblt,
@@ -1617,6 +1670,7 @@ void RequestFailureRecovery(CNode *pfrom,
     CRequestGrapheneReceiverRecover recoveryRequest = CRequestGrapheneReceiverRecover(
         vSenderFilterPositiveHahses, *grapheneBlock, vSenderFilterPositiveHahses.size());
 
+    grapheneBlock->fRecoveryRequested = true;
     pfrom->PushMessage(NetMsgType::GET_GRAPHENE_RECOVERY, recoveryRequest);
 }
 

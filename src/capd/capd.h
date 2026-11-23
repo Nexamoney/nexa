@@ -8,6 +8,8 @@
 
 // Counterparty and protocol discovery
 #include <array>
+#include <atomic>
+#include <cmath>
 #include <limits>
 #include <queue>
 
@@ -32,6 +34,8 @@ class CapdProtocol;
 extern const uint64_t CAPD_MAX_INV_TO_SEND;
 extern const uint64_t CAPD_MAX_MSG_TO_REQUEST;
 extern const uint64_t CAPD_MAX_MSG_TO_SEND;
+extern uint64_t CAPD_MAX_SEND_CHUNK_BYTES;
+extern const uint64_t CAPD_MAX_NOTIFICATIONS;
 
 extern bool StartCapd();
 extern void StopCapd();
@@ -43,7 +47,8 @@ extern uint64_t NOMINAL_MSG_SIZE; // A message of this size or less has no prior
 extern arith_uint256 MIN_FORWARD_MSG_DIFFICULTY;
 extern arith_uint256 MIN_LOCAL_MSG_DIFFICULTY;
 
-extern uint64_t MSG_LIFETIME_SEC; //!< expected message lifetime in seconds
+extern uint64_t MSG_LIFETIME_SEC; //!< expected message halflife in seconds
+extern uint64_t MSG_MAX_FUTURE_SEC; //!< clock skew beyond which a peer relaying a future message is penalised
 
 /** The minimum message priority accepted and forwarded by the network
     Having a minimum reduces spam even if the msg pool is under utilized */
@@ -205,6 +210,9 @@ protected:
 
 public:
     static const uint8_t CURRENT_VERSION = 0;
+    //! By spec, a message's nonce must be between MIN_NONCE_SIZE and MAX_NONCE_SIZE bytes inclusive
+    static const size_t MIN_NONCE_SIZE = 1;
+    static const size_t MAX_NONCE_SIZE = 8;
 
     // TODO version in CDataStream could replace this
     uint8_t version; //!< (not network serialized) The expected serialization version
@@ -218,6 +226,8 @@ public:
     std::vector<uint8_t> nonce; //!< needed to prove this message's POW
 
     mutable uint256 cachedHash = uint256();
+    //! (not serialized) InitialPriority() cache, NaN means not yet calculated
+    mutable PriorityType cachedInitialPriority = std::numeric_limits<PriorityType>::quiet_NaN();
 
     CapdMsg(uint8_t ver = CURRENT_VERSION) : version(ver) {}
     CapdMsg(const std::string &indata, uint8_t ver = CURRENT_VERSION)
@@ -289,6 +299,10 @@ public:
             READWRITE(createTime);
             READWRITE(difficultyBits);
             READWRITE(nonce);
+            // Allow serialization and deserialization of 0 sized nonces because that may be useful for unsolved
+            // messages.
+            if (nonce.size() > MAX_NONCE_SIZE)
+                throw std::ios_base::failure("CAPD nonce size too large");
             if (fields & Fields::EXPIRATION)
                 READWRITE(expiration);
             if (fields & Fields::RESCINDHASH)
@@ -316,7 +330,11 @@ public:
             return cachedHash;
         return CalcHash();
     }
-    /** Verify that the proof of work matches the difficulty claimed in the message */
+    /** Return true if the nonce length is within the spec's bounds (MIN_NONCE_SIZE..MAX_NONCE_SIZE inclusive) */
+    bool IsNonceSizeValid() const { return nonce.size() >= MIN_NONCE_SIZE && nonce.size() <= MAX_NONCE_SIZE; }
+
+    /** Verify that the proof of work matches the difficulty claimed in the message.
+        A message whose nonce length is outside the spec's bounds never meets its target. */
     bool DoesPowMeetTarget() const;
 
     /** Returns this message's advertised difficulty.
@@ -343,7 +361,11 @@ public:
     bool Solve(long int creationTime = 0);
 
     /** Set difficulty bits based on difficulty value */
-    void SetPowTarget(arith_uint256 target) { difficultyBits = target.GetCompact(); }
+    void SetPowTarget(arith_uint256 target)
+    {
+        difficultyBits = target.GetCompact();
+        cachedInitialPriority = std::numeric_limits<PriorityType>::quiet_NaN();
+    }
     void SetPowTarget(uint256 target) { SetPowTarget(UintToArith256(target)); }
     /** Sets the difficulty to be harder than the the provided priority.
     This function adjusts based on message size, and assumes no creation time penalty.
@@ -383,7 +405,12 @@ static inline CapdMsgRef MsgRefCopy(const CapdMsg &in) { return std::make_shared
 class CompareCapdMsgRefByPriority
 {
 public:
-    bool operator()(const CapdMsgRef &a, const CapdMsgRef &b) const { return (a->Priority() < b->Priority()); }
+    // Time-invariant form of a->Priority() < b->Priority() (see Priority()), so the sort order never changes
+    bool operator()(const CapdMsgRef &a, const CapdMsgRef &b) const
+    {
+        return a->InitialPriority() + (double)a->createTime / MSG_LIFETIME_SEC <
+               b->InitialPriority() + (double)b->createTime / MSG_LIFETIME_SEC;
+    }
 };
 
 // extracts a TxMemPoolEntry's transaction hash
@@ -392,6 +419,10 @@ struct MsgHashExtractor
     typedef uint256 result_type;
     result_type operator()(const CapdMsgRef &msg) const { return msg->GetHash(); }
 };
+
+//! Bytes of the network message limit kept for the P2P message that carries a CAPD message (a CAPDQUERYREPLY
+//! adds 10), so the largest CAPD message is that much smaller
+static const uint64_t CAPD_MSG_ENVELOPE_RESERVE = 128;
 
 class CapdMsgPoolException : public std::exception
 {
@@ -580,11 +611,13 @@ public:
     PriorityType _GetHighestPriority();
 
     /** Add a message into the message pool.  Throws CapdMsgPoolException if the message was not added.
+     *  Returns false if the message was already in the pool.
      */
-    void add(const CapdMsgRef &msg);
+    bool add(const CapdMsgRef &msg);
     /** Add a message into the message pool.  Throws CapdMsgPoolException if the message was not added.
+     *  Returns false if the message was already in the pool.
      */
-    void add(const CapdMsg &msg);
+    bool add(const CapdMsg &msg);
 
     /** Delete every message in the message pool */
     void clear();
@@ -706,6 +739,8 @@ public:
     std::vector<uint256> invMsgs;
     std::vector<uint256> requestMsgs;
     std::vector<std::pair<CapdMsgRef, uint32_t> > sendMsgs;
+    //! Bytes of the replies in sendMsgs, counted as part of the peer's send backlog
+    std::atomic<uint64_t> pendingSendBytes{0};
     CNode *node = nullptr; // The associated node.
 
     // Track all notifications
@@ -739,20 +774,17 @@ public:
             requestMsgs.push_back(inv.hash);
     }
 
-    void sendMsg(const CapdMsgRef m, uint32_t msgCookie)
-    {
-        LOCK(csCapdNode);
-        sendMsgs.push_back(std::pair<CapdMsgRef, uint32_t>(m, msgCookie));
-    }
+    //! Queue a reply; return false if it does not fit in a network message
+    bool sendMsg(const CapdMsgRef m, uint32_t msgCookie);
 
     void clear(void);
 
-    //! Send any enqueued messages
-    // Return true if anything needed to be sent.
+    //! Send any enqueued messages; replies are sent while the peer's send buffer has room, the rest wait
     bool FlushMessages();
 
-    //! Remember a request to notify this node about incoming matching messages
-    void installNotification(uint32_t cookie,
+    //! Remember a request to notify this node about incoming matching messages.
+    //! Returns false, installing nothing, if this node already has CAPD_MAX_NOTIFICATIONS for other content.
+    bool installNotification(uint32_t cookie,
         uint32_t maxQtyPerMessage,
         uint8_t type,
         const std::vector<unsigned char> &content);

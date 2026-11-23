@@ -80,6 +80,10 @@ static const int TIMEOUT_INTERVAL = 20 * 60;
 static const int FEELER_INTERVAL = 120;
 /** The maximum number of entries in an 'inv' protocol message */
 static const unsigned int MAX_INV_SZ = 50000;
+// Bound INV header requests per peer; a request ends when its header is known or after the timeout.
+static const size_t MAX_INV_HEADER_REQUESTS = 16;
+static const size_t MAX_PENDING_INV_HEADER_REQUESTS = 1024;
+static const int64_t INV_HEADER_REQUEST_TIMEOUT = 30 * 1000000;
 /** The maximum number of new addresses to accumulate before announcing. */
 static const unsigned int MAX_ADDR_TO_SEND = 1000;
 /** The maximum # of bytes to receive at once */
@@ -352,6 +356,7 @@ public:
     std::atomic<bool> extversionEnabled{false};
     /** set to true if the next expected message is extversion */
     std::atomic<bool> extversionExpected{false};
+    std::atomic<bool> fExtversionReceived{false};
     /** set to true if this node is ok with no message checksum */
     std::atomic<bool> skipChecksum{false};
     /** Graphene min supported version */
@@ -380,6 +385,19 @@ public:
     std::atomic<uint64_t> nSendSize; // total size in bytes of all vSendMsg entries
     std::atomic<uint64_t> nSendBytes;
 
+    struct InvHeaderRequest
+    {
+        uint256 hash;
+        int64_t nTime;
+    };
+    CCriticalSection cs_invHeaderRequests;
+    std::deque<InvHeaderRequest> vInvHeaderRequests GUARDED_BY(cs_invHeaderRequests);
+    std::deque<uint256> vPendingInvHeaderRequests GUARDED_BY(cs_invHeaderRequests);
+    // Next monotonic check for deferred work, or zero when none is queued.
+    std::atomic<int64_t> nNextInvHeaderRequestTime{0};
+
+    // Regtest RPC control; ordinary peers cannot pause request servicing.
+    std::atomic<bool> pauseGetDataForTest{false};
     CCriticalSection csRecvGetData;
     std::deque<std::pair<CInv, uint32_t> > vRecvGetData GUARDED_BY(csRecvGetData);
     std::deque<std::pair<CInv2, uint32_t> > vRecvGetData2 GUARDED_BY(csRecvGetData);
@@ -400,6 +418,8 @@ public:
 
     /** Connection de-prioritization - Total useful bytes sent and received */
     std::atomic<uint64_t> nActivityBytes{0};
+    // Transaction requests in the request manager created by this peer's announcements
+    std::atomic<uint32_t> nTxnRequests{0};
     /** The last time bytes were sent to the remote peer */
     std::atomic<int64_t> nLastSend{0};
     /** The last time bytes were received from the remote peer */

@@ -3,12 +3,13 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "respend/dsproofstorage.h"
-#include "dosman.h"
 #include "hashwrapper.h"
 #include "util.h"
+#include "version.h"
 #include <primitives/transaction.h>
 #include <utiltime.h>
 
+#include <algorithm>
 #include <limits>
 
 static constexpr int64_t SECONDS_TO_KEEP_ORPHANS = 90;
@@ -59,13 +60,62 @@ std::pair<bool, int32_t> DoubleSpendProofStorage::add(const DoubleSpendProof &pr
 void DoubleSpendProofStorage::addOrphan(const DoubleSpendProof &proof, NodeId peerId)
 {
     LOCK(dsproofStorageLock);
+    // A repeated orphan must not go through add(), which would claim it and stop it from expiring
+    if (m_dspIdLookupTable.count(proof.GetHash()))
+        return;
+
+    const size_t proofSize = ::GetSerializeSize(proof, SER_NETWORK, PROTOCOL_VERSION);
+    // reject likely garbage orphan proofs that are very large
+    if (proofSize > MAX_ORPHAN_DSPROOF_SIZE)
+    {
+        LOG(DSPROOF, "Dropping orphan dsproof from peer:%d, it is larger than the orphan proof size limit\n", peerId);
+        return;
+    }
+
+    // Evict the oldest orphans. Ids increase as proofs are added, so the lowest id is the oldest.
+    auto evict = [this](int id)
+    {
+        LOG(DSPROOF, "Evicting orphan dsproof %d to stay within the orphan limits\n", id);
+        remove(id);
+        // remove() skips ids missing from m_proofs, so erase anyway so that the loop below always ends
+        eraseOrphan(id);
+    };
+    auto peerOrphans = m_orphansByPeer.find(peerId);
+    if (peerOrphans != m_orphansByPeer.end() && peerOrphans->second.size() >= MAX_ORPHAN_DSPROOFS_PER_PEER)
+        evict(*peerOrphans->second.begin());
+
+    while (!m_orphans.empty() && m_orphanBytes + proofSize > MAX_ORPHAN_DSPROOF_BYTES)
+        evict(m_orphans.begin()->first);
+
     const auto res = add(proof);
     if (!res.first) // it was already in the storage
         return;
 
     const int32_t id = res.second;
     m_orphans.emplace(id, std::make_pair(peerId, GetTime()));
+    m_orphanBytes += proofSize;
+    m_orphansByPeer[peerId].insert(id);
     m_prevTxIdLookupTable[proof.Outpoint().hash.GetCheapHash()].push_back(id);
+}
+
+void DoubleSpendProofStorage::eraseOrphan(int proofId)
+{
+    AssertLockHeld(dsproofStorageLock);
+    auto orphan = m_orphans.find(proofId);
+    if (orphan == m_orphans.end())
+        return;
+
+    auto proofIter = m_proofs.find(proofId);
+    if (proofIter != m_proofs.end())
+        m_orphanBytes -= ::GetSerializeSize(proofIter->second, SER_NETWORK, PROTOCOL_VERSION);
+    auto peerOrphans = m_orphansByPeer.find(orphan->second.first);
+    if (peerOrphans != m_orphansByPeer.end())
+    {
+        peerOrphans->second.erase(proofId);
+        if (peerOrphans->second.empty())
+            m_orphansByPeer.erase(peerOrphans);
+    }
+    m_orphans.erase(orphan);
 }
 
 std::list<std::pair<int, int> > DoubleSpendProofStorage::findOrphans(const COutPoint &prevOut)
@@ -99,13 +149,32 @@ std::list<std::pair<int, int> > DoubleSpendProofStorage::findOrphans(const COutP
 }
 
 int DoubleSpendProofStorage::orphanCount(int proofId) { return m_orphans.count(proofId); }
-void DoubleSpendProofStorage::claimOrphan(int proofId)
+size_t DoubleSpendProofStorage::orphanLookupCount() const
+{
+    LOCK(dsproofStorageLock);
+    size_t count = 0;
+    for (const auto &entry : m_prevTxIdLookupTable)
+        count += entry.second.size();
+    return count;
+}
+size_t DoubleSpendProofStorage::orphanBytes() const
+{
+    LOCK(dsproofStorageLock);
+    return m_orphanBytes;
+}
+size_t DoubleSpendProofStorage::peerOrphanCount(NodeId peerId) const
+{
+    LOCK(dsproofStorageLock);
+    auto peerOrphans = m_orphansByPeer.find(peerId);
+    return peerOrphans == m_orphansByPeer.end() ? 0 : peerOrphans->second.size();
+}
+bool DoubleSpendProofStorage::claimOrphan(int proofId)
 {
     LOCK(dsproofStorageLock);
     auto orphan = m_orphans.find(proofId);
     if (orphan != m_orphans.end())
     {
-        m_orphans.erase(orphan);
+        eraseOrphan(proofId);
 
         for (auto iter = m_prevTxIdLookupTable.begin(); iter != m_prevTxIdLookupTable.end(); ++iter)
         {
@@ -117,11 +186,13 @@ void DoubleSpendProofStorage::claimOrphan(int proofId)
                     list.erase(i);
                     if (list.size() == 0)
                         m_prevTxIdLookupTable.erase(iter);
-                    return;
+                    return true;
                 }
             }
         }
+        return true;
     }
+    return false;
 }
 
 void DoubleSpendProofStorage::remove(int proof)
@@ -134,28 +205,14 @@ void DoubleSpendProofStorage::remove(int proof)
     auto orphan = m_orphans.find(iter->first);
     if (orphan != m_orphans.end())
     {
-        m_orphans.erase(orphan);
+        eraseOrphan(proof);
         auto orphanLookup = m_prevTxIdLookupTable.find(iter->second.Outpoint().hash.GetCheapHash());
         if (orphanLookup != m_prevTxIdLookupTable.end())
         {
             std::deque<int> &queue = orphanLookup->second;
-            if (queue.size() == 1)
-            {
-                DbgAssert(queue.front() == proof, );
-                if (queue.front() != proof)
-                    LOG(DSPROOF, "ERROR: queue front did not equal dsproof\n");
+            queue.erase(std::remove(queue.begin(), queue.end(), proof), queue.end());
+            if (queue.empty())
                 m_prevTxIdLookupTable.erase(orphanLookup);
-            }
-            else
-            {
-                for (auto i = queue.begin(); i != queue.end(); ++i)
-                {
-                    if (*i == proof)
-                    {
-                        i = queue.erase(i);
-                    }
-                }
-            }
         }
     }
     auto hash = iter->second.GetHash();
@@ -192,12 +249,12 @@ void DoubleSpendProofStorage::periodicCleanup(const boost::system::error_code &e
     {
         if (iter->second.second <= expire)
         {
-            const int peerId = iter->second.first;
+            // Not penalized: an orphan that is never claimed could be a valid proof whose spend this node saw only in a
+            // block. Invalid proofs are penalized when ClaimOrphanProof() validates them.
             const int proofId = iter->first;
-            iter = m_orphans.erase(iter);
+            // remove() erases the orphan itself and needs it to clean the outpoint lookup table
+            ++iter;
             remove(proofId);
-
-            dosMan.Misbehaving(peerId, 1, BanReasonDSProofOrphanExpiry);
         }
         else
         {

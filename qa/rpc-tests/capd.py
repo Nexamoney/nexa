@@ -147,7 +147,7 @@ class MyTest (BitcoinTestFramework):
 
         testmsgs = [ CapdMsg(bytes([0,1,2,3,4,5])), CapdMsg(bytes([0,1]))]
         for m in testmsgs:
-            m.solve(4)
+            m.solve(2)
         msg = msg_capdqreply(12345, CAPD_QUERY_TYPE_MSG, testmsgs)
         data = msg.serialize()
         s = io.BytesIO(data)
@@ -170,8 +170,8 @@ class MyTest (BitcoinTestFramework):
             # Check the empty msg pool
             assert_equal(result['size'], 0)
             assert_equal(result['count'], 0)
-            assert_equal(result['relayPriority'], 2)
-            assert_equal(result['minPriority'], 1)
+            assert_equal(result['relayPriority'], CAPD_MIN_RELAY_PRIORITY)
+            assert_equal(result['minPriority'], CAPD_MIN_LOCAL_PRIORITY)
 
         hdlr = self.pynode.cnxns[0]
         self.conn.handle_write()
@@ -206,7 +206,7 @@ class MyTest (BitcoinTestFramework):
         # I sent a bogus hash, nothing to do except ignore the message request
 
         m = CapdMsg(b"this is a test..")
-        m.solve(4)
+        m.solve(2)
         logging.info("hash: " + m.calcHash().hex() )
         firstMsgHash = m.calcHash()
         msgHashes = [m.calcHash()]
@@ -254,9 +254,9 @@ class MyTest (BitcoinTestFramework):
         hdlr.send_message(msg_capdgetinfo())
         waitFor(TIMEOUT, lambda: hdlr.capdinfo != None)
         # we know these values because only 1 message inserted
-        assert hdlr.capdinfo.localPriority == 1.0
-        assert hdlr.capdinfo.relayPriority == 2.0
-        assert hdlr.capdinfo.highestPriority > 2.5  # might change since the priority of messages falls as time goes by so use >
+        assert hdlr.capdinfo.localPriority == CAPD_MIN_LOCAL_PRIORITY
+        assert hdlr.capdinfo.relayPriority == CAPD_MIN_RELAY_PRIORITY
+        assert hdlr.capdinfo.highestPriority > 1.5  # might change since the priority of messages falls as time goes by so use >
 
         # try a query asking for the message
         hdlr.sendHandleQuery(msg_capdquery(1234,CAPD_QUERY_TYPE_MSG,0,10,b"th"), lambda c,msg: qReply(c,msg, False, 1234,1, m))
@@ -280,7 +280,7 @@ class MyTest (BitcoinTestFramework):
 
         # See if it notifies us asynchronously: just sending a message should hand us a notification, no query required
         m1 = CapdMsg(b"this is another test..")
-        m1.solve(4)
+        m1.solve(2)
         msgHashes.append(m1.calcHash())
         hdlr.send_message(msg_capdmsg([m1]))
         waitFor(TIMEOUT, lambda: len(hdlr.todo)>0)
@@ -289,7 +289,7 @@ class MyTest (BitcoinTestFramework):
 
         # we shouldn't get an async notify because wrong pattern
         m1 = CapdMsg(b"his is another test..")
-        m1.solve(4)
+        m1.solve(2)
         msgHashes.append(m1.calcHash())
         hdlr.send_message(msg_capdmsg([m1]))
 
@@ -301,7 +301,7 @@ class MyTest (BitcoinTestFramework):
 
         # we shouldn't get an async notify because we removed it
         m1 = CapdMsg(b"this is another another test..")
-        m1.solve(4)
+        m1.solve(2)
         msgHashes.append(m1.calcHash())
         hdlr.send_message(msg_capdmsg([m1]))
 
@@ -352,7 +352,7 @@ class MyTest (BitcoinTestFramework):
         beginCount = self.nodes[0].capd()["count"]
         for i in range(0,EXP_MSGS):
             m = CapdMsg(b"m" + (b"%02d" % i) + b" a message")
-            m.solve(10)
+            m.solve(3.3)
             hdlr.msgs[m.getHash()] = m
 
         hdlr.send_message(msg_capdinv([ x.getHash() for x in hdlr.msgs.values()]))
@@ -503,9 +503,9 @@ class MyTest (BitcoinTestFramework):
         waitFor(TIMEOUT, lambda: worked[0] == 1)
 
         epoch_time = int(time.time())
+        m0 = self.nodes[0].capd("get", hashToHex(msgs[-1].getHash()))
         epoch_time += 300
         s0 = self.nodes[0].capd()
-        m0 = self.nodes[0].capd("get", hashToHex(msgs[-1].getHash()))
         try:
             mF0 = self.nodes[0].capd("get", hashToHex(msgs[0].getHash()))
             assert False, "first message should have aged out"
@@ -521,27 +521,32 @@ class MyTest (BitcoinTestFramework):
         m2 = self.nodes[0].capd("get", hashToHex(msgs[-1].getHash()))
 
         # check that the priority continues to fall.
-        assert s0["maxPriority"]/s1["maxPriority"] > 1.25, "time priority reduction issue"
-        # after half the time, the priority of every message will have halved
-        # This is the last message created so priority is falling quickly
-        assert m0['priority']/m1['priority'] > 1.99, "time priority reduction issue 2"
+        # priority is log2 based and falls by 1 every 10 minutes, so 5 minutes later it is ~0.5 lower
+        assert s0["maxPriority"] - s1["maxPriority"] > 0.4, "time priority reduction issue"
+        assert m0['priority'] - m1['priority'] > 0.4, "time priority reduction issue 2"
 
-        assert_equal(s2["maxPriority"], CAPD_MIN_RELAY_PRIORITY)
-        assert_equal(s2["relayPriority"], CAPD_MIN_RELAY_PRIORITY)
-        assert_equal(s2["minPriority"], CAPD_MIN_LOCAL_PRIORITY)
+        # Check long term aging
+        epoch_time += 7200
+        self.nodes[0].setmocktime(epoch_time)
+        s3 = self.nodes[0].capd()
+        m3 = self.nodes[0].capd("get", hashToHex(msgs[-1].getHash()))
+        assert_equal(s3["maxPriority"], CAPD_MIN_RELAY_PRIORITY)
+        assert_equal(s3["relayPriority"], CAPD_MIN_RELAY_PRIORITY)
+        assert s3["minPriority"] < 0.5, "min priority should be relaxing slowly"
 
-        # After 10 minutes the message is fully aged
-        assert(m2["priority"] <= 0)
+        # After 130 minutes the priority (log2 based) has fallen by about 13, so the linear priority is nearly 0 but never 0
+        assert m0["priority"] - m3["priority"] > 12.5, "long term priority reduction issue"
 
         logging.info("CAPD test finished")
-        # time.sleep(1)
-        # pdb.set_trace()
 
 
 
 if __name__ == '__main__':
-    logging.getLogger().setLevel(logging.ERROR)
-    MyTest ().main ()
+    logging.getLogger().setLevel(logging.INFO)
+    bitcoinConf = {
+        "debug": ["capd", "net"],
+    }
+    MyTest ().main (None, bitcoinConf)
 
 # Create a convenient function for an interactive python debugging session
 def Test():

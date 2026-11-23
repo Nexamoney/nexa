@@ -45,6 +45,19 @@ class UncleSyncTest(BitcoinTestFramework):
     def setup_network(self):
         self.nodes = [self.start_node(i) for i in range(2)]
         connect_nodes_bi(self.nodes, 0, 1)
+        # Complete a P2P round trip before advancing mock time past the handshake timeout.
+        waitFor(60, lambda: all(len(node.getpeerinfo()) == 2 for node in self.nodes))
+        for node in self.nodes:
+            node.ping()
+
+        def handshakes_complete():
+            for node in self.nodes:
+                peers = node.getpeerinfo()
+                if not peers or any(peer['pingtime'] <= 0 for peer in peers):
+                    return False
+            return True
+
+        waitFor(60, handshakes_complete)
 
     def start_node(self, index):
         return start_node(index, self.options.tmpdir, ['-debug=dag', '-debug=net'])

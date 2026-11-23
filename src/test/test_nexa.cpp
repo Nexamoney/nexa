@@ -31,6 +31,7 @@
 #include "validation/validation.h"
 
 #include <memory>
+#include <mutex>
 
 #include <boost/program_options.hpp>
 #include <boost/test/unit_test.hpp>
@@ -61,7 +62,8 @@ BasicTestingSetup::BasicTestingSetup(const std::string &chainName)
     fPrintToDebugLog = false; // don't want to write to debug.log file
     fCheckBlockIndex = true;
     SelectParams(chainName);
-    noui_connect();
+    static std::once_flag nouiConnectOnce;
+    std::call_once(nouiConnectOnce, noui_connect);
 
     // check args to see if user wants to accept non standard txs
     bool fAcceptNonStandard = GetBoolArg("-acceptnonstdtxn", !ModifiableParams().RequireStandard());

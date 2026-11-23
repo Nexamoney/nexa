@@ -17,7 +17,8 @@ const long int YEAR_OF_SECONDS = 31536000;
 arith_uint256 MIN_FORWARD_MSG_DIFFICULTY("007fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
 arith_uint256 MIN_LOCAL_MSG_DIFFICULTY("00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
 
-uint64_t MSG_LIFETIME_SEC = 60 * 10; // expected message lifetime in seconds
+uint64_t MSG_LIFETIME_SEC = 60 * 10; // expected message halflife in seconds
+uint64_t MSG_MAX_FUTURE_SEC = 60; // clock skew beyond which a peer relaying a future message is penalised
 uint64_t NOMINAL_MSG_SIZE = 100; // A message of this size or less has no penalty
 
 PriorityType MIN_RELAY_PRIORITY = Priority(MIN_FORWARD_MSG_DIFFICULTY, NOMINAL_MSG_SIZE, 0);
@@ -51,16 +52,14 @@ PriorityType Priority(arith_uint256 hashTarget, size_t msgContentSize, uint64_t 
         ret = (ret / msgContentSize) * NOMINAL_MSG_SIZE;
     }
 
-    // Next subtract the creation time based penalty
-    double penaltyPerSec = ret / MSG_LIFETIME_SEC;
-    double totalPenalty = penaltyPerSec * age;
-
-    ret -= totalPenalty;
-    return ret;
+    // Priority is log2 based, so it falls by 1 (halves) every MSG_LIFETIME_SEC.  Every message falls at the same rate,
+    // so relative order never changes, and a > MSG_LIFETIME_SEC old relay-minimum msg is below a new local-minimum msg.
+    return std::log2(ret) - (double)age / MSG_LIFETIME_SEC;
 }
 
 arith_uint256 aPriorityToPowTarget(PriorityType priority, size_t msgContentSize)
 {
+    priority = std::exp2(priority);
     if (msgContentSize > NOMINAL_MSG_SIZE)
     {
         priority = (priority * msgContentSize) / NOMINAL_MSG_SIZE;
@@ -101,9 +100,23 @@ uint256 CapdMsg::CalcHash() const
     return hash;
 }
 
-PriorityType CapdMsg::Priority() const { return ::Priority(difficultyBits, data.size(), GetTime() - createTime); }
-PriorityType CapdMsg::InitialPriority() const { return ::Priority(difficultyBits, data.size(), 0); }
-bool CapdMsg::DoesPowMeetTarget() const { return GetPowTarget() > GetHash(); }
+PriorityType CapdMsg::Priority() const
+{
+    // A negative age ranks a message created ahead of our clock slightly above its initial priority, as the index does
+    return InitialPriority() - ((double)GetTime() - (double)createTime) / MSG_LIFETIME_SEC;
+}
+PriorityType CapdMsg::InitialPriority() const
+{
+    if (std::isnan(cachedInitialPriority))
+        cachedInitialPriority = ::Priority(difficultyBits, data.size(), 0);
+    return cachedInitialPriority;
+}
+bool CapdMsg::DoesPowMeetTarget() const
+{
+    if (!IsNonceSizeValid())
+        return false;
+    return GetPowTarget() > GetHash();
+}
 std::string CapdMsg::EncodeHex()
 {
     CDataStream strmdata(SER_NETWORK, PROTOCOL_VERSION);
@@ -128,6 +141,7 @@ bool CapdMsg::checkNonce(unsigned char *stage1, const arith_uint256 &hashTarget)
 bool CapdMsg::Solve(long int time)
 {
     cachedHash = uint256(); // Clear the hash because we are changing the message
+    cachedInitialPriority = std::numeric_limits<PriorityType>::quiet_NaN();
     if (time < YEAR_OF_SECONDS)
         createTime = GetTime() - time;
     else
@@ -216,23 +230,25 @@ bool CapdMsg::Solve(long int time)
 
 void CapdMsg::SetPowTargetHarderThan(uint256 target)
 {
-    // Subtract 1 from the difficulty as a compact number.  By doing it this way we are certain
-    // that the change isn't rounded away.
+    // Make the target slightly smaller by subtracting from the mantissa of its compact form.  Working in the
+    // compact form guarantees the change is not rounded away when the target is stored as difficultyBits.
+    // The reduction is random (so solvers do not all pick the same target) but proportional to the mantissa,
+    // at most 1/256 of it, so the target is never more than ~0.4% harder (+0.006 priority) than asked.
+    // A fixed-size reduction made targets with a small mantissa, such as every exact integer priority, many
+    // times harder than requested.
     uint32_t cInt = UintToArith256(target).GetCompact();
-    uint32_t mantissaBits = ((1 << 23) - 1);
+    const uint32_t mantissaBits = ((1 << 23) - 1);
     uint32_t mantissa = (cInt & mantissaBits);
-    uint32_t expBits = ~mantissaBits;
-    uint32_t randomReduction = (std::rand() % 0x7FFF) + 0x8000;
-
-    if (mantissa > randomReduction) // subtract a bit from the mantissa if we won't underflow
+    // GetCompact normalizes the mantissa to at least 0x8000 for any nonzero target, so (mantissa >> 8) >= 0x80
+    // and the subtraction below cannot underflow.  The result may be unnormalized, which SetCompact accepts.
+    uint32_t maxReduction = mantissa >> 8;
+    if (maxReduction == 0) // zero target: nothing can be harder, so leave it as is
     {
-        cInt -= randomReduction;
+        SetPowTarget(target);
+        return;
     }
-    else // subtract one from the exponent and set the enough bits that its like 0x100 -> 0xff
-    {
-        randomReduction -= mantissa;
-        cInt = ((cInt - (1 << 25)) & expBits) | (mantissaBits - randomReduction);
-    }
+    uint32_t randomReduction = 1 + (uint32_t)(std::rand() % maxReduction);
+    cInt -= randomReduction;
 
     arith_uint256 num;
     SetPowTarget(num.SetCompact(cInt));

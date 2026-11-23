@@ -7,10 +7,16 @@
 #include "rpc/server.h"
 
 #include "base58.h"
+#include "coins.h"
+#include "core_io.h"
+#include "main.h"
 #include "net.h"
 #include "netbase.h"
 #include "rpc/blockchain.h"
+#include "script/scripttemplate.h"
+#include "txadmission.h"
 #include "unlimited.h"
+#include "validation/forks.h"
 
 #include "test/test_nexa.h"
 
@@ -438,6 +444,29 @@ BOOST_AUTO_TEST_CASE(rpc_help)
     BOOST_CHECK(s.substr(p + 1).find("== Mining ==") == string::npos);
 }
 
+BOOST_FIXTURE_TEST_CASE(rpc_gettxout_spent_in_cache, TestChain100Setup)
+{
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0] = coinbaseTxns[0].SpendOutput(0);
+    tx.vout.resize(1);
+    tx.vout[0].nValue = 11 * CENT;
+    tx.vout[0].scriptPubKey = coinbaseLockingScript;
+    tx.vin[0].scriptSig = SignCoinbaseSpend(tx, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
+    const COutPoint outpoint = tx.vin[0].prevout;
+    BOOST_CHECK(!CallRPC("gettxout " + outpoint.GetHex() + " -1 false").isNull());
+
+    // A coin also on disk leaves a spent entry in the cache when a block spends it
+    BOOST_REQUIRE(pcoinsTip->Flush());
+    CBlock block = CreateAndProcessBlock({tx}, coinbaseLockingScript);
+    BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == block.GetHash());
+    Coin coin;
+    BOOST_REQUIRE(pcoinsTip->GetCoin(outpoint, coin) && coin.IsSpent());
+
+    BOOST_CHECK(CallRPC("gettxout " + outpoint.GetHex() + " -1 false").isNull());
+    BOOST_CHECK(CallRPC("gettxout " + outpoint.GetHex() + " -1 true").isNull());
+}
+
 BOOST_AUTO_TEST_CASE(rpc_setlog)
 {
     CallRPC("log all on");
@@ -535,6 +564,54 @@ BOOST_AUTO_TEST_CASE(rpc_getblockstats_calculate_percentiles_by_size)
     {
         BOOST_CHECK_EQUAL(result4[i], 1);
     }
+}
+
+// signrawtransaction must check scripts with the flags the mempool uses, including the block before upgrade2
+BOOST_FIXTURE_TEST_CASE(rpc_signraw_upgrade2_pending_flags, TestChain100Setup)
+{
+    // The result is 05 before upgrade2 and 0500 after, where the sign has its own byte
+    const CScript templ = CScript() << VchType{0x05} << OP_1 << OP_NUM2BIN << VchType{0x05, 0x00} << OP_EQUALVERIFY;
+
+    CMutableTransaction fund;
+    fund.vin.push_back(coinbaseTxns[0].SpendOutput(0));
+    fund.vout.push_back(CTxOut(10 * COIN, ScriptTemplateLock(templ)));
+    fund.vin[0].scriptSig = SignCoinbaseSpend(fund, 0, defaultSigHashType, coinbaseTxns[0].vout[0].nValue);
+    // Space the blocks out so the median time past moves from one block to the next
+    const int64_t now = GetTime();
+    for (int i = 1; i <= 12; i++)
+    {
+        SetMockTime(now + 100 * i);
+        CBlock block =
+            CreateAndProcessBlock(i == 1 ? std::vector<CMutableTransaction>{fund} : std::vector<CMutableTransaction>{},
+                coinbaseLockingScript);
+        BOOST_REQUIRE(chainActive.Tip()->GetBlockHash() == block.GetHash());
+    }
+
+    CMutableTransaction spend;
+    spend.vin.push_back(CTransaction(fund).SpendOutput(0, ScriptTemplateUnlock(templ, CScript())));
+    spend.vout.push_back(CTxOut(9 * COIN, coinbaseLockingScript));
+    const std::string cmd = "signrawtransaction " + EncodeHexTx(CTransaction(spend));
+
+    const uint64_t forkTime = miningForkTime.Value();
+    const CBlockIndex *tip = chainActive.Tip();
+    BOOST_REQUIRE(tip->pprev->GetMedianTimePast() < tip->GetMedianTimePast());
+
+    BOOST_CHECK(!find_value(CallRPC(cmd).get_obj(), "complete").get_bool());
+
+    miningForkTime = tip->GetMedianTimePast();
+    BOOST_REQUIRE(IsUpgrade2Pending(tip));
+    BOOST_CHECK(find_value(CallRPC(cmd).get_obj(), "complete").get_bool());
+    CValidationState state;
+    BOOST_CHECK_MESSAGE(
+        AcceptToMemoryPool(mempool, state, MakeTransactionRef(spend), false, nullptr, false), state.GetRejectReason());
+    mempool.clear();
+
+    miningForkTime = tip->pprev->GetMedianTimePast();
+    BOOST_REQUIRE(IsUpgrade2Activated(tip));
+    BOOST_CHECK(find_value(CallRPC(cmd).get_obj(), "complete").get_bool());
+
+    miningForkTime = forkTime;
+    SetMockTime(0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

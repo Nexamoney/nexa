@@ -28,12 +28,14 @@ protected:
     // CValidationInterface
     void SyncTransaction(const CTransactionRef &ptx, const ConstCBlockRef pblock, int txIndex = -1) override;
     void SyncDoubleSpend(const CTransactionRef ptx) override;
-    void UpdatedBlockTip(const CBlockIndex *pindex) override;
+    void UpdatedBlockTip(const CBlockIndex *pindex, const ConstCBlockRef pblock) override;
 
 private:
     CZMQNotificationInterface();
 
     void *pcontext;
+    // Only modified during Initialize and Shutdown, so the notification callbacks can iterate it
+    // from multiple threads without a lock.
     std::list<CZMQAbstractNotifier *> notifiers;
 };
 

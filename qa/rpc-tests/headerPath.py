@@ -146,6 +146,16 @@ class HeaderPathTest (BitcoinTestFramework):
         waitFor(TIMEOUT, lambda: hdlr.numHeaderPaths == tmp)
         self.checkHeaderPath(hdlr.headerPath.headers, ah, bh)
 
+        logging.info(" try a path from a height to a hash")
+        # The end block is named by hash and the start by height, so fromHash is 0. The node used to test
+        # fromHash instead of toHash when picking the end block, and returned a path to the genesis block.
+        fromH = headerPath[0].height
+        assert bh > 0 and bh < fromH
+        tmp = hdlr.numHeaderPaths + 1
+        hdlr.get_header_path(fromH, bhash, hdlr.expectedCookie)
+        waitFor(TIMEOUT, lambda: hdlr.numHeaderPaths == tmp)
+        self.checkHeaderPath(hdlr.headerPath.headers, fromH, bh)
+
         # Degenerate case, ask for a single header at some height
         hdlr.expectedCookie = 3 << 16
         tmp = hdlr.numHeaderPaths + 1

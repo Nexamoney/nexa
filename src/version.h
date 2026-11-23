@@ -16,6 +16,6 @@ static const int PROTOCOL_VERSION = 80008;
 static const int INIT_PROTO_VERSION = 80006;
 
 //! disconnect from peers older than this proto version
-static const int MIN_PEER_PROTO_VERSION = 80006; // since nexa 2.0.0.0
+static const int MIN_PEER_PROTO_VERSION = 80003; // bump to 80006 (since nexa 2.0.0.0) once light clients upgrade
 
 #endif // NEXA_VERSION_H

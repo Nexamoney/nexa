@@ -28,6 +28,7 @@ workflow:
               on_new_commit: none
         - if: $CI_MERGE_REQUEST_IID
         - if: $CI_COMMIT_BRANCH == "dev"
+        - if: $CI_COMMIT_BRANCH =~ /^security-/
 
 default:
     interruptible: true
@@ -235,7 +236,14 @@ build-ubuntu-tests-nodeps:
           artifacts: true
     cache: {}
     script:
-        - (cd build/src; ./test/test_nexa)
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
+        - (cd build/src; ./test/test_nexa --log_level=test_suite)
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
+    artifacts:
+        when: on_failure
+        paths:
+            - ./cores/
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -297,7 +305,14 @@ build-ubuntu-tests-nodeps-nowallet:
           artifacts: true
     cache: {}
     script:
-        - (cd build/src; ./test/test_nexa;)
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
+        - (cd build/src; ./test/test_nexa --log_level=test_suite)
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
+    artifacts:
+        when: on_failure
+        paths:
+            - ./cores/
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -309,7 +324,14 @@ build-ubuntu-tests-nodeps-nowallet-qt:
           artifacts: true
     cache: {}
     script:
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
         - (cd build/src; ./qt/test/test_nexa-qt)
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
+    artifacts:
+        when: on_failure
+        paths:
+            - ./cores/
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -461,12 +483,12 @@ build-ubuntu-rostrum:
         # remove cache file to see if it catch new CXX and CC env
         - ../configure --prefix=$PWD/../depends/x86_64-linux-gnu > /dev/null
         - make rostrum
-        - git -C ../rostrum archive --format=tar.gz --prefix=rostrum-master/ --output="$CI_PROJECT_DIR/build/rostrum-master.tar.gz" HEAD
+        - git -C ../rostrum archive --format=tar.gz --prefix=rostrum-v15.0.0/ --output="$CI_PROJECT_DIR/build/rostrum-v15.0.0.tar.gz" HEAD
 
     artifacts:
         paths:
             - ./build/src/rostrum
-            - ./build/rostrum-master.tar.gz
+            - ./build/rostrum-v15.0.0.tar.gz
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 
@@ -478,10 +500,14 @@ build-ubuntu-tests:
           artifacts: true
     cache: []
     script:
-        - (cd build/src; ./test/test_nexa)
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
+        - (cd build/src; ./test/test_nexa --log_level=test_suite)
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
     artifacts:
         when: on_failure
         paths:
+            - ./cores/
             - ./build/src/test/
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
@@ -495,18 +521,16 @@ test-ubuntu-qa:
         - job: build-ubuntu
           artifacts: true
     script:
-        - mkdir -p $CI_PROJECT_DIR/cores
-        - mkdir -p $CI_PROJECT_DIR/saved-cores
-        - |
-            CORE_PATTERN="$CI_PROJECT_DIR/cores/core.%e.%p.%h.%t"
-            if ! printf '%s\n' "$CORE_PATTERN" > /proc/sys/kernel/core_pattern; then
-                echo "WARNING: runner does not permit configuring core dumps"
-            fi
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
+        - mkdir -p "$CI_PROJECT_DIR/saved-cores"
         - cd build;
         - ./qa/pull-tester/rpc-tests.py -shard="$CI_NODE_INDEX/$CI_NODE_TOTAL" --coverage --no-ipv6-rpc-listen --gitlab
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
     artifacts:
         when: on_failure
         paths:
+            - ./cores/
             - ./qa/qa_tests/
             - $CI_PROJECT_DIR/saved-cores
             - ./build/src/nexad
@@ -522,18 +546,16 @@ test-ubuntu-qa-extended:
         - job: build-ubuntu
           artifacts: true
     script:
-        - mkdir -p $CI_PROJECT_DIR/cores
-        - mkdir -p $CI_PROJECT_DIR/saved-cores
-        - |
-            CORE_PATTERN="$CI_PROJECT_DIR/cores/core.%e.%p.%h.%t"
-            if ! printf '%s\n' "$CORE_PATTERN" > /proc/sys/kernel/core_pattern; then
-                echo "WARNING: runner does not permit configuring core dumps"
-            fi
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
+        - mkdir -p "$CI_PROJECT_DIR/saved-cores"
         - cd build;
         - ./qa/pull-tester/rpc-tests.py --coverage --no-ipv6-rpc-listen --gitlab --extended-only
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
     artifacts:
         when: on_failure
         paths:
+            - ./cores/
             - ./qa/qa_tests/
             - $CI_PROJECT_DIR/saved-cores
             - ./build/src/nexad
@@ -572,23 +594,21 @@ test-ubuntu-qa-rostrum:
     before_script:
         - pip install -q psutil
     script:
-        - mkdir -p $CI_PROJECT_DIR/cores
-        - mkdir -p $CI_PROJECT_DIR/saved-cores
-        - |
-            CORE_PATTERN="$CI_PROJECT_DIR/cores/core.%e.%p.%h.%t"
-            if ! printf '%s\n' "$CORE_PATTERN" > /proc/sys/kernel/core_pattern; then
-                echo "WARNING: runner does not permit configuring core dumps"
-            fi
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
+        - mkdir -p "$CI_PROJECT_DIR/saved-cores"
 
         - export NODE_PATH=`pwd`/build/src/nexad
         - export ROSTRUM_PATH=`pwd`/build/src/rostrum
-        - tar -zxf build/rostrum-master.tar.gz
-        - python3 ci/shard-rostrum-tests.py rostrum-master/test/functional --index "$((CI_NODE_INDEX - 1))" --count "$CI_NODE_TOTAL"
+        - tar -zxf build/rostrum-v15.0.0.tar.gz
+        - python3 ci/shard-rostrum-tests.py rostrum-v15.0.0/test/functional --index "$((CI_NODE_INDEX - 1))" --count "$CI_NODE_TOTAL"
         # Keep tests within each isolated shard serial because some require exact txpool contents.
-        - ./rostrum-master/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab -parallel=1
+        - ./rostrum-v15.0.0/test/functional/test_runner.py --no-ipv6-rpc-listen --gitlab -parallel=1
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
     artifacts:
         when: on_failure
         paths:
+            - ./cores/
             - ./qa/qa_tests/
             - $CI_PROJECT_DIR/saved-cores
             - ./build/src/nexad
@@ -645,11 +665,59 @@ build-ubuntu-tests-clang:
           artifacts: true
     cache: {}
     script:
-        - (cd build/src; ./test/test_nexa)
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
+        - (cd build/src; ./test/test_nexa --log_level=test_suite)
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
     artifacts:
         when: on_failure
         paths:
+            - ./cores/
             - ./build/src/test/
+    rules:
+      - if: $CI_PIPELINE_SOURCE != "schedule"
+
+build-ubuntu-tests-ubsan:
+    stage: build_tests
+    extends: [.ubuntu-clang-env, .detect-cpus]
+    needs: []
+    # Keep advisory until the existing UBSan findings are resolved.
+    allow_failure: true
+    cache:
+        <<: *ccache_settings
+        key: ubuntu_cache_clang_ubsan
+    variables:
+        CFLAGS: "-O1 -g -fno-omit-frame-pointer -fsanitize=undefined"
+        CXXFLAGS: "-O1 -g -fno-omit-frame-pointer -fsanitize=undefined"
+        LDFLAGS: "-fsanitize=undefined"
+    script:
+        - ./autogen.sh
+        - mkdir build; cd build
+        - ../configure --with-gui=no --disable-bench
+        - make -j"$CPUS" -C src test/test_nexa
+        - . "$CI_PROJECT_DIR/ci/setup-core-dumps.sh"
+        - |
+            # UBSan recovers, so the run reports every finding instead of stopping at the first
+            mkdir -p ubsan
+            status=0
+            UBSAN_OPTIONS="print_stacktrace=1:log_path=$PWD/ubsan/report" ./src/test/test_nexa --log_level=test_suite || status=$?
+            cat ubsan/report.* 2>/dev/null || true
+            findings=$(cat ubsan/report.* 2>/dev/null | grep 'runtime error:' | sort | uniq -c | sort -rn || true)
+            if [ -n "$findings" ]; then
+                echo "UBSan findings (count, location, error):"
+                echo "$findings"
+                status=1
+            fi
+            exit $status
+    after_script:
+        - "$CI_PROJECT_DIR/ci/collect-core-dumps.sh"
+    artifacts:
+        when: on_failure
+        paths:
+            - ./cores/
+            - ./build/config.log
+            - ./build/src/test/test_nexa
+            - ./build/ubsan/
     rules:
       - if: $CI_PIPELINE_SOURCE != "schedule"
 

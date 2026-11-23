@@ -2455,6 +2455,23 @@ class msg_getheaders(object):
             % (repr(self.locator), self.hashstop)
 
 
+class msg_get_dag(object):
+    """get_dag carries the subblock hashes the sender already has."""
+    command = b"get_dag"
+
+    def __init__(self, hashes=None):
+        self.hashes = [] if hashes is None else hashes
+
+    def deserialize(self, f):
+        self.hashes = deser_uint256_vector(f)
+
+    def serialize(self, stype=SER_DEFAULT):
+        return ser_uint256_vector(self.hashes)
+
+    def __repr__(self):
+        return "msg_get_dag(hashes=%s)" % repr(self.hashes)
+
+
 class msg_headers(object):
     """
     headers message has

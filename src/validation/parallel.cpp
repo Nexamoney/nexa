@@ -65,16 +65,15 @@ bool CScriptCheck::operator()()
     {
         resourceTracker->UpdateConsensusSigChecks(smRes.consensusSigCheckCount);
     }
-    // input standardness rule
-    // if < 2 scriptsig len is allowed to be 0 (len formula goes negative)
+    // Per-input sigcheck density rule. Consensus, not just standardness: blocks run this check too, whatever the
+    // flags. VerifyScript already stops at the same limit for template scripts.
     {
-        auto lenScriptSig = scriptSig.size();
-        if ((smRes.consensusSigCheckCount > 1) && ((smRes.consensusSigCheckCount * 43) - 60 > lenScriptSig))
+        const uint64_t maxSigChecks = MaxSigChecksForScriptSig(scriptSig.size());
+        if (smRes.consensusSigCheckCount > maxSigChecks)
         {
             error = SCRIPT_ERR_SIGCHECKS_LIMIT_EXCEEDED;
-            LOG(SCRIPT,
-                "Sigchecks limit exceeded, with %d sigchecks: min script length (%d) > satisfier script len (%d)",
-                smRes.consensusSigCheckCount, (smRes.consensusSigCheckCount * 43) - 60, lenScriptSig);
+            LOG(SCRIPT, "Sigchecks limit exceeded, with %d sigchecks: satisfier script len (%d) allows %d",
+                smRes.consensusSigCheckCount, scriptSig.size(), maxSigChecks);
             return false;
         }
     }
@@ -222,6 +221,9 @@ void CParallelValidation::Cleanup(const ConstCBlockRef pblock, CBlockIndex *pind
         std::sort(vSequenceId.begin(), vSequenceId.end());
 
         WRITELOCK(cs_mapBlockIndex);
+        // nSequenceId is part of the setBlockIndexCandidates sort key, so take a block out of the set while
+        // its nSequenceId changes and put it back afterwards
+        const bool fWinnerCandidate = setBlockIndexCandidates.erase(pindex) > 0;
         std::vector<std::pair<uint32_t, uint256> >::reverse_iterator riter = vSequenceId.rbegin();
         while (riter != vSequenceId.rend())
         {
@@ -240,10 +242,17 @@ void CParallelValidation::Cleanup(const ConstCBlockRef pblock, CBlockIndex *pind
 
                 BlockMap::iterator it = mapBlockIndex.find((*riter).second);
                 if (it != mapBlockIndex.end())
+                {
+                    const bool fCandidate = setBlockIndexCandidates.erase(it->second) > 0;
                     it->second->nSequenceId = nId;
+                    if (fCandidate)
+                        setBlockIndexCandidates.insert(it->second);
+                }
             }
             riter++;
         }
+        if (fWinnerCandidate)
+            setBlockIndexCandidates.insert(pindex);
     }
 }
 
@@ -351,7 +360,7 @@ void CParallelValidation::WaitForAllValidationThreadsToStop()
         // that are quitting can grab the lock and cleanup
         {
             LOCK(cs_blockvalidationthread);
-            if (mapBlockValidationThreads.size() == 0)
+            if (mapBlockValidationThreads.size() == 0 && numLaunchedThreads == 0)
                 break;
         }
         MilliSleep(100);
@@ -670,7 +679,17 @@ bool CParallelValidation::HandleBlockMessageHelper(CNode *pfrom, const string &s
     // only launch block validation in a separate thread if PV is enabled.
     if (PV->Enabled() && !ShutdownRequested())
     {
-        boost::thread thread(boost::bind(&HandleBlockMessageThread, noderef, strCommand, pblock));
+        // Counted from launch, because the thread registers in mapBlockValidationThreads only once it runs
+        numLaunchedThreads++;
+        boost::thread thread(
+            [this, noderef, strCommand, pblock]() mutable
+            {
+                HandleBlockMessageThread(noderef, strCommand, pblock);
+                // Release the node and block before a waiter can see this thread as finished
+                noderef = nullptr;
+                pblock.reset();
+                numLaunchedThreads--;
+            });
         thread.detach();
     }
     else

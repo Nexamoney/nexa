@@ -1,7 +1,7 @@
-Release Notes for Nexa 2.2.0.0
+Release Notes for Nexa 2.2.0.1
 ======================================================
 
-Nexa version 2.2.0.0  is now available from:
+Nexa version 2.2.0.1 is now available from:
 
   <https://gitlab.com/nexa/nexa/-/releases>
 
@@ -9,225 +9,354 @@ Please report bugs using the issue tracker at gitlab:
 
   <https://gitlab.com/nexa/nexa/-/issues>
 
-This is a Nexa minor release, for more information about Nexa see:
+This is a security and bug fix release of Nexa. Full node operators and users of
+libnexa should upgrade. For more information about Nexa see:
 
 - https://spec.nexa.org/
 - https://nexa.org
 
-This release also contains a substantial body of work for the next network upgrade (Hard Fork 2),
-including Tailstorm consensus, the retargetable-range sighash types and others.
-None of it is active yet: every one of those changes is gated on the Hard Fork 2 activation and
-remains dormant until then. For that reason they are not listed individually in the Main Changes
-section below, which covers only the changes that take effect on this release.
-The Hard Fork 2 features are described in doc/hf2.md.
+This release does not activate Hard Fork 2. Changes for Tailstorm and other
+Hard Fork 2 features remain gated on activation. The Main changes section
+covers behavior that takes effect with this release; the commit list also
+includes preparation and tests for Hard Fork 2. See doc/hf2.md for that upgrade.
 
-Main changes in 2.2.0.0
+Main changes in 2.2.0.1
 -----------------------
 
-This is the list of the main changes that have been merged:
+- Upgrade the bundled Rostrum Electrum server to [15.0.0](https://gitlab.com/nexa/rostrum/-/blob/v15.0.0/RELEASE-NOTES.md).
+  Builds and CI tests use the same source revision, pinned to the release tag and exact commit.
+- Bound P2P request queues, transaction request shares, header requests and Graphene decoding work.
+  Disconnect peers that exceed GETDATA queue limits, and time out incomplete handshakes.
+- Reject GETBLOCKTXN requests with repeated or unordered indexes and EXTGETDATA ids whose length
+  does not fit their type. Select the end block of a GETHEADERPATH request from its stop hash.
+- Release thin-type block reconstruction state before validation and reject repeated reconstruction,
+  preventing duplicate compact-block messages from modifying a block already handed to validation.
+- Improve recovery when a received block body may have been altered, and prevent affected transaction
+  rejects from suppressing valid copies. Preserve deserialization of valid template spends.
+- Improve concurrency safety in parallel validation, block index header access and the deferred
+  GETDATA queues. Wait for block validation threads that have only just started before shutting down.
+- Fix Graphene, fast filter, Merkle proof and script parsing bounds and undefined behavior.
+- Fix fixed-size cashaddr destination decoding and libnexa Merkle-result buffer handling.
+- Harden token description parsing, update token indexes only when blocks connect, and correct
+  token mint and melt accounting in the indexes.
+- Improve double spend proof creation and relay, including template addresses. Bound orphan proof
+  storage and avoid penalizing honest peers for proofs whose validity is not yet known or that expire.
+- Correct CAPD message priority and eviction ordering, refuse future-dated messages and invalid nonce
+  sizes, limit notifications, and reduce memory use when answering repeated message requests.
+  Messages created with `capd send` get enough extra priority to stay relayable while they propagate.
+  Count pending CAPD replies in a peer's send backlog, so they are sent as its send buffer drains
+  instead of exceeding the buffer limit, and keep each CAPD message within the network message limit.
+- Fail scripts whose OP_NUM2BIN size does not fit in 32 bits instead of truncating the size, which
+  could make the result depend on the node's available memory. Track script stack use with signed
+  64-bit counts.
+- Require group creation transactions to spend their first input for mempool admission.
+  Consensus enforcement of that rule remains gated on Hard Fork 2.
+- Add the `hashAncestor` and `chainWork` fields to `getblocktemplate` results.
+- Serialize ZMQ publishing, add sequence numbers for each topic, and disable publishers after send
+  failures. Reuse block data rather than reading it again for each notification.
+- Bind Docker RPC to loopback by default unless a password is supplied.
+- Fix Windows libnexa loading, reduce Qt DAG viewer resource use, and improve handling of debug-log failures.
+- Extend regression coverage and CI checks, including sanitizer checks and Rostrum functional tests.
 
-- Rostrum 14.0.1, see [release notes](https://gitlab.com/nexa/rostrum/-/blob/master/RELEASE-NOTES.md?ref_type=heads#release-notes)
-- Block finalization / rolling checkpoints (!875, !908, !881, !910)
-- Block index consistency fixes (!899, !902, !901, !814)
-- Increased robustness of the networking layer (!841, !842, !864, !748, !828, !760, !788, !840, !849)
-- Improve thread and memory safety (!776, !784, !833, !772, !756)
-- LevelDB block storage mode removed (!749)
-- BIP70 and OpenSSL removed (!737)
-- Updated dependencies (!751, !758, !759, !823, !769, !796)
-- CI/CD improvements (!872, !765, !857, !876, !884, !898, !903, !887)
-- Libnexa new features (!834, !752, !825, !763, !827)
+Upgrade notes
+-------------
+
+Rostrum 15.0.0 changes its database format and automatically rebuilds the index
+on the first start after upgrading. Allow time for the rebuild and ensure that
+the connected full node retains the blocks needed to complete it. Rostrum RPC
+is unavailable during the rebuild; the Nexa node does not require a chain
+reindex solely for this Rostrum upgrade.
+
+Script discovery is off by default in Rostrum. Changing `--index-scripts` in
+either direction triggers another full index rebuild, so choose the setting
+before the first 15.0.0 start. Rostrum also changes limits and pagination for
+large queries and removes some height filters. Electrum API integrators should
+review the [Rostrum 15.0.0 upgrade notes](https://gitlab.com/nexa/rostrum/-/blob/v15.0.0/RELEASE-NOTES.md)
+for the affected methods and restart requirements.
+
+ZMQ notifications now include a third multipart frame containing a 32-bit
+little-endian sequence number for each topic. Subscribers should accept this
+frame and can use sequence gaps to detect missed notifications. If a publisher
+is disabled after a send failure, restart the node to restore it.
+
+Scripts that use OP_NUM2BIN with a size that does not fit in 32 bits now
+always fail. Older nodes could evaluate such scripts differently depending on
+available memory, so all nodes should upgrade.
+
+The minimum accepted P2P protocol version remains 80003 for compatibility with
+existing light clients.
 
 Commit details
 --------------
 
-- `f0fe55d1e` Move hadrdfork2 activation time to jan 1st 2111 at 12:00 AM UTC (Andrea Suisani)
-- `dc95cd34b` Bump nexad to ver 2.2 (Andrea Suisani)
-- `08a0e60cb` Fix finalizetest.py where a reorg is not supposed to happen (Peter Tschipper)
-- `8028dcfb4` No need to prevent reorgs in the  PV validation threads (Peter Tschipper)
-- `092df6da3` Prevent a reorg from continuing in the dag, if reorg depth is exceeded (Peter Tschipper)
-- `0d6e501e7` Tailstorm: never drop a concurrent reorg check request (Andrea Suisani)
-- `71b2f333f` do not unlink a block if something else is wrong with it. (Andrew Stone)
-- `ef6c55f12` qa: repair mine_large_block() (Andrea Suisani)
-- `bfc6db3b3` Hide test.maxReorgDepth from the ordinary help output again (Andrea Suisani)
-- `9e24a4018` After sync is complete only allow reorgs  initiated from the dag (Peter Tschipper)
-- `7af701ceb` bugfix: select double spend winner by max dag score instead of min dag height (Steven van den Meiracker)
-- `f8933a6b5` doc: update to lock section of doc/developer-notes.md (Andrea Suisani)
-- `330429b07` Add a few missing inserts into the dirty block index (Peter Tschipper)
-- `f480f021d` doc: describe the DbgAssert pause in the DEBUG_LOCKORDER notes (Andrea Suisani)
-- `13e29d18c` util: do not pause on a failed DbgAssert under CI (Andrea Suisani)
-- `2049ef657` validation: persist relinked block index entries to survive unclean shutdown (Claude Fable 5)
-- `58e35b30d` Tailstorm: retain deferred summary orphans until validation completes (Andrea Suisani)
-- `6b7308fe4` Add internal locks to the unconnected subblock header cache (Peter Tschipper)
-- `b6558fc12` qa: retire core dumps after analysis timeouts (Andrea Suisani)
-- `e8fae5d37` qa: capture functional test output in temporary files (Andrea Suisani)
-- `85dd4c817` Tailstorm: fix out-of-order epoch synchronization (Andrea Suisani)
-- `6b10f1e6b` refactor: group unlinked subblocks by prev summary block in ProcessOrphans (Steven van den Meiracker)
-- `443de31ff` Double Spend MR 2 of 2 - bugfix/ds winner selection issues (VDM)
-- `67f3c9735` Tailstorm: enforce maximum reorganization depth during grove activation (Andrea Suisani)
-- `81692f8e0` bugfix: do not select or assert on wallet coins marked conflicted - assert(age >= 0) FAILED (VDM)
-- `59e48728d` bugfix: detect double spends in unprocessed subblocks at summary validation (Steven van den Meiracker)
-- `c235a43af` Add nexad to the artifacts set of macos builds (Andrea Suisani)
-- `5a5953663` bugfix: cap ReGenerateDagData subblock selection at tailstorm_k - 1 (Steven van den Meiracker)
-- `aa5e6c1fb` bugfix: slow the stormtest ASERT DAA, 10 min halflife was over-reactive (Steven van den Meiracker)
-- `1d7200496` ci: extend dependency cache upload timeout (Andrea Suisani)
-- `b51b8432a` bugfix: reprocess parked subblocks on a non CheckForReorg grove settle (Steven van den Meiracker)
-- `3fd2aa18d` re-enable rolling checkpoints/block finalization depth.  Set default finalization to 200 blocks (Andrew Stone)
-- `421170952` ci: make core-dump setup optional (Andrea Suisani)
-- `7be44fb6e` Only regenerate dag data against the current chaintip after a reorg(). (Peter Tschipper)
-- `bf5d4da82` doc: remove issue #76 placeholder from hf2.md references (Jørgen Svennevik Notland)
-- `88eac7b66` Refresh a grove's uncle set when validating a summary block (Steven van den Meiracker)
-- `4c9384711` Make a namechange for ActivateBestChainStep() to ActivateBestChainSummaryBlocks() (Peter Tschipper)
-- `a3cace020` doc: fix relative links after moving hf2.md up a directory (Jørgen Svennevik Notland)
-- `8dfc4a931` doc: move Hard Fork 2 overview to doc/hf2.md (Jørgen Svennevik Notland)
-- `7d5fbc4c7` doc: fix fork2 activation times, use Hard Fork 2 naming (Jørgen Svennevik Notland)
-- `861e8bdfe` doc: add Upgrade 2 (fork2) feature overview (Jørgen Svennevik Notland)
-- `989a66861` test: cover late previous-epoch subblock orphan replay (Andrea Suisani)
-- `1f6b86f8a` Widen subblock linking to the uncle window (gap <= 2) in Insert (Steven van den Meiracker)
-- `703714611` Kill validation threads before initiating a reorg from the dag (Peter Tschipper)
-- `1adf84e57` ci: reuse dependency builds across pipelines (Andrea Suisani)
-- `958eb5603` ci: split dependency and compiler caches (Andrea Suisani)
-- `bd9f7a534` ci: shard functional tests across runners (Andrea Suisani)
-- `4086dd890` ci: cancel superseded pipelines (Andrea Suisani)
-- `2cfd927c8` ci: shard Rostrum functional tests (Andrea Suisani)
-- `0b0485d98` ci: build RPC documentation only when changed (Andrea Suisani)
-- `50a23dd1b` ci: express artifact flow through needs (Andrea Suisani)
-- `b06d76414` ci: run formatting check without configuring (Andrea Suisani)
-- `6c2772b6f` ci: $CPUS contains the number of core available to the runner (Andrea Suisani)
-- `182606b48` Add lookup of subblocks by mining header commitment MHC. (Andrew Stone)
-- `77c0a6d00` Cleanup ProcessOrphans() (Peter Tschipper)
-- `37c2dee28` Fix a typo in Makefile.am (Andrea Suisani)
-- `abdb9364b` bugfix: link uncle subblocks so summary blocks that reference them can validate (VDM)
-- `368d2f400` Add chaintipheight to gettailstorminfo output (Steven van den Meiracker)
-- `3b4ade21a` Make sure cs_main and cs_forest are locked when we check for a reorg (Peter Tschipper)
-- `b2d853305` fix segfault when cleaning up blocks in the request manager (Andrew Stone)
-- `ea5f178e1` Bugfix/park on unprocessed ancestor (VDM)
-- `439d926d6` bugfix: enforce the k-1 subblock cap per grove when scoring reorgs in CheckForReorg (Steven van den Meiracker)
-- `9880bb08b` ci: fix incorrect parallelism in build-ubuntu causing OOM kills (Andrea Suisani)
-- `00f4a74a7` bugfix: invalid rejection of headers when received out of sequence (VDM)
-- `9d030cecd` Regenerate the dag data after a reorg is complete. (Peter Tschipper)
-- `d0a2e2d3f` Announce subblocks to be propagated in AcceptBlock() (Peter Tschipper)
-- `2adedfdac` bugfix: switch send order for summary and subblock headers (smeiracker)
-- `737b39315` Add the uncles list to getInternals() for gettailstorminfo() (Peter Tschipper)
-- `d4c634800` Don't allow subblocks to grab semaphores and launch validation threads (Peter Tschipper)
-- `e1ea1bf42` Only disconnect peers if a SummaryBlock download times out (Peter Tschipper)
-- `d4d4635c0` switch GetBestDagFor to skipping unprocessed blocks rather than ReGenerating the DAG itself.  In ReGenerate... make sure that it can be done correctly in that the DAG being regenerated must be off of the current chainActive tip (Andrew Stone)
-- `8faff3def` Ensure that processed treenodes also have processed ancestor nodes (Peter Tschipper)
-- `d19112df4` ensure that GetBestDag only returns fully processed DAGs (or false).  If GetBestDag returns false in GetBestDagFor, then try to regenerate the dag so we can use it.  In CheckForReorg, if the reorg is to move the chain tip forward, do so. (Andrew Stone)
-- `fd7915cbb` fix MR comments (Andrew Stone)
-- `ecaaed161` Use RemoveFromGrove() in the Remove() by hash function (Peter Tschipper)
-- `fae2df35e` Switch all code to use CloseSocketDisconnect, but the function just sets fDisconnect for later cleanup. (Andrew Stone)
-- `16b65c98a` In ReGenerateDagData if a subblock is bad, we need to remove it (and descendants) from the grove and then renumber the subblock so that there are not gaps in the numbers, since portions of the dag code require sequential nSequence numbers. (Andrew Stone)
-- `aa47e1a55` Require that uncles precede summary blocks in the minerData field. (Andrew Stone)
-- `8bc196eac` constrain best dag tip selection to current summary tip (Andrew Stone)
-- `e6c281f55` Fix bug in dagviewer (Peter Tschipper)
-- `384c01139` tailstorm: infrastructure enhancements (locking, logging, etc) and well-contained bug fixes (Andrew Stone)
-- `4fe035be1` [libnexa]: implement wallet pubkey derivation, jvm use libnexaexception (Andrew Stone)
-- `716c73fe6` Add a list of lockorders to the developer notes (Peter Tschipper)
-- `8120e3d55` move fork2 way out; we can pull it in later (Andrew Stone)
-- `86f968b31` ensure that if multiple threads try to initialize the sig subsystem, all stop until its actually initialized Fix native linux cryptographically strong random number generator to allow > 32 bytes of random data. (Andrew Stone)
-- `18379d438` [ci] fix a syntax error in .gitlab-ci.yml (Andrea Suisani)
-- `8a60a58c4` Remove dead P2PK code path and always-on script flags (Andrea Suisani)
-- `f2ec1aca9` Activate Fork1 by height (Andrea Suisani)
-- `432db563a` add a NOTFOUND message handler (Andrew Stone)
-- `79d8bb7e6` [python qa] Add libnexa api test to pull-tester (Griffith)
-- `af0003103` [CAPD] reduce the priority that we mark the node as misbehaving on (Andrew Stone)
-- `f821366bf` [LIBNEXA] add p2pkt address handling when verifying message signatures for native (non-JVM) architectures (Andrew Stone)
-- `18a5e6ae9` Add gettailstorminfo to the rpc documetation (Andrea Suisani)
-- `a61c3fe3e` Use custom ubuntu 22.04 image to run CI suite (Andrea Suisani)
-- `bb2bb46ea` tailstorm: fix summary block work adjustment in ASERT (Andrea Suisani)
-- `ead06df4f` Include uncles on inactive forks (Peter Tschipper)
-- `f4528d975` [depends] Remove libgmp.la after staging to suppress libtool "was moved" warning (Andrea Suisani)
-- `a942d7c16` When calling tailstormForest Insert() only check if headers are linked (Peter Tschipper)
-- `98c7669d7` add check to make sure the dag items are not also uncles (Peter Tschipper)
-- `fc45df943` When we regenerate dag data handle failures for different reject types (Peter Tschipper)
-- `e2f43b3fa` Don't try to connect orphaned subblocks unless it's for a dag being (Peter Tschipper)
-- `2ed551c83` move uses of the coins view cache into dag.cpp so that the libnexa shared libraries can see dag.h declarations without needing have the coins view (Andrew Stone)
-- `8196fd7ea` re-enable test for sendheaders (Peter Tschipper)
-- `8d0c36f89` Don't try to connect any more subblocks if we have k -1 already (Peter Tschipper)
-- `78a7e2dec` account for uncles in summary block work calculation.  address request manager block request timeouts leading to drops prevent spurious node drops by marking a block received in every node when its received by one, and by preventing thinblock rerequesting of already received blocks (Andrew Stone)
-- `574affbf7` Fix the setting of the bestGrove (Peter Tschipper)
-- `d3a2db47e` Make sure to check that pprev isLinked() when checking for a reorg (Peter Tschipper)
-- `93adf2989` Unwind all the subblock references when pruning by height (Peter Tschipper)
-- `9cd13fa3c` Fix issue of missing uncles (Peter Tschipper)
-- `5390c2eb5` Fix potential leak in dagwidget.cpp (Peter Tschipper)
-- `e691079f0` Fix problem of double spends getting into the summary block (Peter Tschipper)
-- `28c31f1e1` Fix CheckTailstormSummaryBlockProofOfWork() (Peter Tschipper)
-- `6539d1393` For the unit and QA tests, move the fork2Time forward a few months (Peter Tschipper)
-- `b2382e820` If we return with nothing to do we need to query both maps. (Peter Tschipper)
-- `d33b3d7ef` fix 2 issues: tell reqmgr block received on repeat, and properly remove blocks from tailstorm various maps to ensure consistency.  Add logs (Andrew Stone)
-- `f9958c64e` Add a py test to check if we can sneak a double spend into a summary block (Peter Tschipper)
-- `e1122c96a` ensure that every call to HandleBlockMessage properly handles errors and rejections by moving that inside HandleBlockMessage.  Do not run dag Check() when in the middle of processing orphans, because the map counts are known to be inconsistent at that time.  Fix spelling and typos. (Andrew Stone)
-- `c95cf84a4` block must accepted (to disk) and reqmgr notified even if HandleBlockMessage fails and added to tailstorm processing (Andrew Stone)
-- `369dfb904` Assert if tailstorm K is less than 2 (Peter Tschipper)
-- `a67d9d1b8` Pin rostrum to version 14.0.1 (Andrea Suisani)
-- `49e7aa4b1` A small pack of nits (Peter Tschipper)
-- `9bfa8d382` Remove dead or unused code from dag.cpp (Peter Tschipper)
-- `286e0751f` connect retargetable range sighashtype to upgrade2 activation (Andrew Stone)
-- `1da31221b` Build docs with venv (Griffith)
-- `de10de979` If we receive a reject message for a block then mark it as received. (Peter Tschipper)
-- `641015f92` logging, keep inserted node, and clean mining candidates on error (Andrew Stone)
-- `4a05da858` Fix retargetable sighash unit tests (Andrea Suisani)
-- `b11c175f2` Specify and implement concept of Retargetable sighashes and add the Retargetable Range sig hash type (Andrew Stone)
-- `d554b332b` Fix a variety of node sync issues for tailstorm (Peter Tschipper)
-- `d426775de` Upgrade2 flags & upgrade1 retroactive activation (Andrew Stone)
-- `7a7c4c132` Solve nSequenceId==0 issue (Andrew Stone)
-- `96406d630` Fix inserting nullptr if map key is missing (Peter Tschipper)
-- `23dfb78df` tailstorm DAG forest holds a smart pointer to the best grove, rather than the best grove's coins view, so that the view is not deleted under the forest's use of it (and some comments typos and DbgAsserts) (Andrew Stone)
-- `2ed62413e` Add view of pcoinsTip to the Grove (Peter Tschipper)
-- `a8ef1dbc0` Add missing doc for rollbackchain rpc command (Andrea Suisani)
-- `1a1e1b736` Fix help message for consensus.fork2Time tweak (Andrea Suisani)
-- `2db2b44ed` Only set _pcoinsDag if the tree->view is not null (Peter Tschipper)
-- `a6d02c7cb` do not add the node to the dag map until we are sure it should be added and we know the sequence number (Andrew Stone)
-- `eaed16ca0` fix some locking and memory use-after-free (Andrew Stone)
-- `ee1f871e2` Simplify and clarify the SendBlock() routine (Peter Tschipper)
-- `17e380958` implement script changes and fixes for fork2 (Andrew Stone)
-- `c7c11f331` Need to make sure we are taking the Corral when creating and processing new wallet transactions. (Peter Tschipper)
-- `f79f3de12` Small changes for tolerance of light clients and regtest testing (Andrew Stone)
-- `f2202a5a0` A few tailstorm bug fixes relating to parallel validation (Peter Tschipper)
-- `39a33ad8d` Tailstorm Emergent Consensus: snap to chain (Peter Tschipper)
-- `589326e46` Fix rostrum compilation on ubuntu 20.04 (Andrea Suisani)
-- `4112e503b` remove trim whitespace from the nexa.conf debug= log categories so setting them is less error prone (Andrew Stone)
-- `a9d1158ca` Remove unnecessary ui update which causes intermittent flashes on screen (Peter Tschipper)
-- `ff99d26ca` Fix more depends compile/configure errors on alpine linux (Andrea Suisani)
-- `c2905afe6` assume 0 decimal places if unspecified for backwards compatibility and add a signing pubkey recovery api to libnexa (Andrew Stone)
-- `c4808c287` Do not ban if requested block not found (Peter Tschipper)
-- `e0b4f0548` use consistent variable names for script templates and have them match those in the spec (Griffith)
-- `87ddfd6b9` fix mining.adaptive.blocksize.py test (Peter Tschipper)
-- `19cf8a367` Fix small error in sizing the legacy summary block (Peter Tschipper)
-- `66860ca61` Disable fast blocktemplate for tailstorm summary blocks (Peter Tschipper)
-- `b54486ae7` Add tests to prove that the summary block will not get oversized (Peter Tschipper)
-- `c6865a6c2` Adjust position of summary block on dagviewer when subblocks already present (Peter Tschipper)
-- `40877ecbc` Fix crash in Qt and a pack of other dagviewer bugs (Peter Tschipper)
-- `8ba4fb99d` Remove skipped link counting until the time we can better research the ramifications (Peter Tschipper)
-- `db4e0b964` Handle Double spends by allowing all double spend subblocks into the same dag (Peter Tschipper)
-- `a6993b2d9` Add a scoring mechanism for the dag (Peter Tschipper)
-- `34be09d41` Fix bug in dagveiwer when reindexing or when network connections are lost (Peter Tschipper)
-- `d3e5db60a` New proof of work (Peter Tschipper)
-- `45e981291` Tailstorm enhancement: Tie in all previous unlinked dag tips (Peter Tschipper)
-- `8d428e1c6` Tailstorm: Mining, Consensus checks, Fork logic, dagviewer, rpc's and python tests (Peter Tschipper)
-- `b704d740e` Tailstorm dag.h/dag.cpp files ported from Greg Griffith's implementation (Griffith)
-- `02a74bc5e` add gettailstorminfo rpc, and fix difficulty issues (Andrew Stone)
-- `233ec4a20` add missing files (Andrew Stone)
-- `32a182771` fix up doc (Andrew Stone)
-- `442dbfa1d` mining regular and tailstorm subblocks/sumblocks, was able to sync blocks (Andrew Stone)
-- `8562c8261` added ability to switch regtest to be mined, and to switch between mining full traditional blocks and subblocks.  Subblock mining doesn't do anything yet, except store them in a map. (Andrew Stone)
-- `19fc72bff` WIP (Andrew Stone)
-- `23d1e51bc` Fix libgmp compilation occurring when using gcc ver >=15 (Andrea Suisani)
-- `42ef012bd` there are two g_signals, rename CNodeSignals g_signals to g_nodeSignals (Griffith)
-- `b9da0018e` Update qt to ver 5.15.18 (Andrea Suisani)
-- `e6bf36344` Use rostrum master branch in CI (Andrea Suisani)
-- `d8d8ea903` remove fRequestShutdown, use shutdown_threads instead (Griffith)
-- `b994352c7` fix typo (Jørgen Svennevik Notland)
-- `80705c656` libnexa calcSigHash (Andrew Stone)
-- `faaba2d97` remove leveldb mode for storage of blocks (Griffith)
-- `63b5e14c2` Fix URL to fetch qtbase 5.15.5 (Andrea Suisani)
-- `e77d88af5` Sync bug fix : Take out check for how close we are to the tip of chain for thin requests (Peter Tschipper)
-- `ea01982f2` Fix sync issue in our python tests when headers arrive and won't connect. (Peter Tschipper)
-- `0e5e42117` Remove BIP70 and OpenSSL from the codebase (Andrea Suisani)
-- `e89300d37` give a little bit of help for when your local rostrum checkout does not match the expected branch (Andrew Stone)
-- `44893e312` Tailstorm prep: Remove the DOS mitigiation when tracking thin type block requests (Peter Tschipper)
-- `946d54f43` Fix formatting and expand on instructions to produced signed osx installer (Andrea Suisani)
-- `734470562` Use ggriffith's gitian-builder repository to test gitian process (Andrea Suisani)
+- `c870db3968` Wait for validation threads that have not registered yet (Andrea Suisani)
+- `f2c4912486` Test that the validation wait covers unregistered workers (Andrea Suisani)
+- `c739c7dbeb` Count pending CAPD replies separately in the receive gate (Andrea Suisani)
+- `65b5ad0f71` Queue every CAPD reply and send it as the buffer drains (Andrea Suisani)
+- `09ac5cde3f` Wait for send budget instead of disconnecting CAPD peers (Andrea Suisani)
+- `28c12bddd6` Bound CAPD responses by peer send budget (Andrea Suisani)
+- `a79a590535` fix intermittent test due to message priority time reduction (Andrew Stone)
+- `364a70f7a1` Connect the test no-UI handler once (Andrea Suisani)
+- `4373f9e508` Collect CI cores from both migration paths (Andrea Suisani)
+- `7ad9aed3ee` Use distinct CAPD messages in persistence test (Andrea Suisani)
+- `80e63a0551` fix unrelated test flakiness (Andrew Stone)
+- `7523dd4540` fix another unrelated intermittent issue (Andrew Stone)
+- `4036dc6c99` make a more extensive test of NUM2BIN possibilities, log what unit test is running in case of crashes (Andrew Stone)
+- `91b2d46b6b` fix an unrelated capd test timing issue, except that it triggered on this MR (Andrew Stone)
+- `c0a2d37924` add checks for stack shrinking and for op_exec resource totals (Andrew Stone)
+- `e25c30e415` fix size counting to use int64_t (Andrew Stone)
+- `3153eb6dea` script: reject OP_NUM2BIN sizes above 32 bits instead of truncating them (Jørgen S. Notland)
+- `c1c91f4fed` Reject EXTGETDATA ids whose length does not fit their type (Andrea Suisani)
+- `48538c17e9` Test that EXTGETDATA rejects ids of the wrong length (Andrea Suisani)
+- `a2f01bc387` Read the deferred getdata queues only under their lock (Andrea Suisani)
+- `7ca2fa8a3a` Wait for compact-block validation worker in test (Andrea Suisani)
+- `1d6c99070a` net: GETHEADERPATH must test toHash, not fromHash, when selecting the end block (Jørgen S. Notland)
+- `6f4c6ec7b2` Reject repeated or unordered GETBLOCKTXN indexes (Jørgen S. Notland)
+- `8ff4f5cdd2` Pin Rostrum builds and CI tests to v15.0.0 (Andrea Suisani)
+- `8683664220` Test compact-block replay after reconstruction (Andrea Suisani)
+- `f36afccf22` Clean up thinblock data right after the block is successfully reconstructed (Peter Tschipper)
+- `5a11bcdadb` Do not allow a second thintype block reconstruction to take place (Peter Tschipper)
+- `373fa9d2b3` put min client back until light client update their proto version] (Andrew Stone)
+- `4a58e0e5b8` fix unlimited nonce size and capd message request repeats (Andrew Stone)
+- `9759c35918` Keep the misbehaviour score as a double in capd_notification_limit (Andrea Suisani)
+- `cd3506d2ae` Validate fixed-size cashaddr destination hashes (Andrea Suisani)
+- `7aa2525e5e` Allow valid template spends to deserialize (Andrea Suisani)
+- `575b3b2b53` Bump Nexa version to 2.2.0.1 (Andrea Suisani)
+- `ea43d5f5e0` Add a regression test for dsproof orphan expiry and mark the ban reason unused (Steven van den Meiracker)
+- `5d20b9214e` Do not penalize peers for dsproof orphans that expire (Steven van den Meiracker)
+- `2ab71aa3ff` Test the header fields returned by getblocktemplate (Andrea Suisani)
+- `eac2086b2a` Add hashAncestor and chainWork to getblocktemplate results (Andrea Suisani)
+- `bf2d437ed2` Stop parsing token descriptions after the 5th field (Andrea Suisani)
+- `688e75c8f6` Test the GETDATA queue limit through regtest P2P (Andrea Suisani)
+- `641f9533f9` Test GETDATA admission and requeue limits (Andrea Suisani)
+- `002721cfd3` Test bidirectional GETDATA progress after queue limiting (Andrea Suisani)
+- `27f54d98c9` Test that token descriptions stop at the 5th field (Andrea Suisani)
+- `0ce12140a3` Bound peer time offsets without abs64 (Andrea Suisani)
+- `6a50801555` Test that an INT64_MIN time offset cannot pass the adjustment bound (Andrea Suisani)
+- `bda60f5bde` Keep Docker RPC on loopback unless a password is set (Andrea Suisani)
+- `09b6b1e2b2` Check the result buffer before each hash in extractFromMerkleBlock (Andrea Suisani)
+- `a5385775fe` Test that extractFromMerkleBlock stays within its result buffer (Andrea Suisani)
+- `00aec7baac` Limit CAPD notifications per peer (Andrea Suisani)
+- `afb78a6b02` Test that a CAPD peer cannot install unlimited notifications (Andrea Suisani)
+- `99429ac3b6` Keep orphan dsproofs whose validity is not known yet (Andrea Suisani)
+- `fbb3e0a0a9` Test rescuing an orphan dsproof that cannot be validated yet (Andrea Suisani)
+- `f09f0efbd7` When processing getdata in ProcessMessages() check if WithinBudget() (Peter Tschipper)
+- `cafadaf4e0` fix underflow of mantissa in calculating capd priority (Andrew Stone)
+- `56e5e2a3e5` After reaquiring the lock check again if we're within budget (Peter Tschipper)
+- `faaeb27cf1` Remove the gate on MAX_QUEUED_SEND_MSGS (Peter Tschipper)
+- `b73909d8ce` Do not call ProcessGetData() if we exceed our budget (Peter Tschipper)
+- `bc6c3d43e1` Limit the getdata request queues to 1 Million (Peter Tschipper)
+- `e9dca38942` Refuse CAPD messages created in the future (Andrea Suisani)
+- `8f451aa15d` Test that CAPD messages from the future are refused (Andrea Suisani)
+- `8eb76fb8f0` Allow a negative age in CAPD message priority (Andrea Suisani)
+- `403df5c8e3` Test CAPD messages created ahead of the node's clock (Andrea Suisani)
+- `8a3026bef8` refactor to move the socket and its lock into its own object and pull in helper functions (Andrew Stone)
+- `6919fe55df` fix formatting.  Add a small check before receiving new data to discover if the other side is reading our responses.  If not, we want to push back on the TCP connection to slow down their sending (so that the memory consumed by servicing the messages from this node is limited). (Andrew Stone)
+- `9a4aa11e05` Test GETDATA backpressure through message dispatch (Andrea Suisani)
+- `73b4512281` Retain and resume deferred INV header requests (Andrea Suisani)
+- `1501b75b5d` Test INV header request bounds with empty GETDATA queues (Andrea Suisani)
+- `55349d886b` Test recovery after delayed block announcement bursts (Andrea Suisani)
+- `023f5a92e6` Log ZMQ publish failures only with -debug=zmq (Andrea Suisani)
+- `54dbf36147` Test that a disabled ZMQ endpoint is logged once (Andrea Suisani)
+- `3f96f000fa` Disable ZMQ endpoints after multipart send failures (Andrea Suisani)
+- `594bac3e7b` Wait for P2P handshakes before advancing mock time (Andrea Suisani)
+- `593fe7b53e` Serialize ZMQ publishing, reuse blocks, and add per-topic sequences (Andrew Stone)
+- `3019932abc` Drop INV header requests beyond the limit instead of deferring them (Andrea Suisani)
+- `f314e402ef` Test that INV header requests beyond the limit are dropped (Andrea Suisani)
+- `583d5854f5` Free an INV header request only once its header is known (Andrea Suisani)
+- `623cbcd91e` Test that only the announced header frees an INV header request (Andrea Suisani)
+- `b98f19ca34` Limit outstanding INV header requests per peer (Andrea Suisani)
+- `5f06dc180b` Send one GETHEADERS per INV of unknown blocks (Andrea Suisani)
+- `aab3549a3f` Add tests for GETHEADERS sent per unknown block INV (Andrea Suisani)
+- `502607af43` Count only full nodes for transaction request shares (Andrea Suisani)
+- `f0e4f934fe` Test transaction request shares with light clients (Andrea Suisani)
+- `f49066d18c` Count transaction request peers in the request manager (Andrea Suisani)
+- `b4f49f31ec` Format the transaction request limit update (Andrea Suisani)
+- `bcb72b6268` Adapt transaction request shares to connected peers (Andrea Suisani)
+- `8e7cc5a4e6` Count a peer's tx requests in 32 bits (Andrea Suisani)
+- `3aee34ea8a` Hide net.txRequestPeerShare from the default help (Andrea Suisani)
+- `371c2db436` Limit each peer's share of the tx request map (Andrea Suisani)
+- `58295425ab` Add tests for one peer filling the tx request map (Andrea Suisani)
+- `4b2f310f39` Remove unused electrum block notification (David Thibodeau)
+- `4d643c16ab` Process deferred EXTGETDATA requests (NX-29) (Andrea Suisani)
+- `4e08875ab1` Do not index an empty vector in GetHex (Andrea Suisani)
+- `75eb8c5c94` Report every UBSan finding in the CI unit test job (Andrea Suisani)
+- `c5941221b4` Give MerkleRootAlg a fixed uint8_t underlying type (Andrea Suisani)
+- `75c500dbe8` Test OP_MERKLEROOT with unknown hash algorithms (Andrea Suisani)
+- `0ba18b7cda` Declare tweaks with the types they are defined with (Andrea Suisani)
+- `3f92ee9fb0` Check the long term CAPD priority drop directly (Andrea Suisani)
+- `7d74745e6c` Keep fork headers within a deeper reorg limit (Andrea Suisani)
+- `f91d0055e2` Test that a deeper reorg limit keeps fork headers within it (Andrea Suisani)
+- `9c4815b017` Parenthesize the low-work header comparison (Andrea Suisani)
+- `0a4677e1e8` Add a test for ASERT difficulty on a fork from an old block (Andrea Suisani)
+- `895544fafd` Do not store headers far behind the active chain's work (Andrea Suisani)
+- `09073c7fa2` Add a test for storing low-work fork headers (Andrea Suisani)
+- `419359e8ec` Fill the CAPD priority cache when loading the message pool (Andrea Suisani)
+- `6b883acc23` Test the CAPD pool thresholds and eviction as messages age (Andrea Suisani)
+- `5ed0e952a1` Format the CAPD order test (Andrea Suisani)
+- `9e0f8f80ee` add a test to verify that message ordering is elapsed time invariant (Andrew Stone)
+- `f2880848aa` set CAPD priority to be an exponential decay so that message priority decay never causes a priority order change in already-received messages.  Use the log of exponential decay to make the actual priority number mean that each decrement by 1 is half priority.  This allows us to more efficiently calculate the priority change due to age, which needs to be recalculated often (Andrew Stone)
+- `372e822f91` keep block candidates sorted when swapping sequence IDs (David Thibodeau)
+- `76b0ee8541` test parallel validation cleanup keeps block candidates sorted (David Thibodeau)
+- `75a9cb245f` skip orphan DSproofs evicted during rescue instead of penalizing peer (David Thibodeau)
+- `a4e7609553` Limit orphan dsproofs size, track btye and per-peer count totals (David Thibodeau)
+- `c30dbd25a7` apply clang formatting (David Thibodeau)
+- `86354a30fe` Cap orphan double spend proof storage at ~1MB total and 20 per-peer. Evict oldest. Adds tests for both limits and for rejection of over-sized proofs (David Thibodeau)
+- `b78dd5d952` Compare sighashes to decide that dsproof spenders sign the same data (Andrea Suisani)
+- `bdaf7cf7db` Test that a dsproof from a re-encoded signature is rejected (Andrea Suisani)
+- `10550a1dfe` fix debug mode lock order problem (Andrew Stone)
+- `4d55703433` tolerate outSequence (Andrew Stone)
+- `feb6962478` fix doublespend proofs and add them for p2pkt (Andrew Stone)
+- `65d828047c` Update summary request tests for strict proof counts (Andrea Suisani)
+- `d7ca710a5a` Remove unnecessary main locks from summary requests (Andrea Suisani)
+- `2e6a796f1d` Clarify summary sub-block request checks (Andrea Suisani)
+- `b54cc52d73` Format MakeRequestTestSummary (Andrea Suisani)
+- `6de2e1ab12` Check summary headers before requesting their sub-blocks (Andrea Suisani)
+- `1de6e7128a` Time out peers that do not finish the handshake (Andrea Suisani)
+- `81240e52cb` Add tests for peers that never finish the handshake (Andrea Suisani)
+- `164d7f598c` Return on a CheckBlock failure where it is logged (Andrea Suisani)
+- `fc4dbada90` Add a functional test for re-requesting a bad block body (Andrea Suisani)
+- `80655bb85e` Re-request blocks whose body fails CheckBlock (Andrea Suisani)
+- `f28720c15a` Use a fresh validation state for each tx in an admission round (Andrea Suisani)
+- `afb382045c` Use the wallet-free group id helper in the genesis input test (Andrea Suisani)
+- `520905bb06` Fix the read-only input test build after the token index change (Andrea Suisani)
+- `244856d9e2` Penalise any Graphene deserialization failure with 20 points (Andrea Suisani)
+- `d4176011bb` Test that any Graphene deserialization failure costs 20 points (Andrea Suisani)
+- `513dfb7bb7` Keep the OP_PARSE selector as an integer (Andrea Suisani)
+- `62a6e492f2` Require a group creation to spend its first input (Andrea Suisani)
+- `692bf347c5` Ban peers that send fast filters outside the receive limits (Andrea Suisani)
+- `f534d93768` Test that out-of-limit fast filters get the sender banned (Andrea Suisani)
+- `60ca4185af` Ban peers that send Graphene sets outside the receive limits (Andrea Suisani)
+- `9ff7ca101d` Test that out-of-limit Graphene sets get the sender banned (Andrea Suisani)
+- `964986595d` Store a suspect block body only from a peer we asked (Andrea Suisani)
+- `bb19cfe882` Test that a suspect body is stored only from a requested peer (Andrea Suisani)
+- `d4766763aa` Run branch pipelines on the security release branches (Andrea Suisani)
+- `a0a29d90cc` Snapshot pure IBLT entries before peeling (Andrea Suisani)
+- `b89a8990ce` test: Drop fork CSV checks that overflow (Andrea Suisani)
+- `004c8b8f79` Drop rate limiting of tx requests (Andrea Suisani)
+- `458612eec0` Port extended recut recovery tests (Andrea Suisani)
+- `da8ad71622` Always read read-only inputs from the snapshot (Andrea Suisani)
+- `d21817e812` Drop the unused peer parameter of ActivateBestChain (Andrew Stone)
+- `3234bec2d2` Keep OP_RETURN satisfier rejects out of the reject cache (Andrea Suisani)
+- `412a3eb8ef` Add helpers to detect OP_RETURN in satisfier scripts (Andrew Stone)
+- `88c1127bac` Check that getblock returns the honest body, also after a restart (Andrea Suisani)
+- `0b57f8dea7` Add recut scenarios for the gaps left in the recovery (Andrea Suisani)
+- `bb6796be6d` Ignore bodies from a bad source even while the block is requested (Andrea Suisani)
+- `b8cc9983e5` Add a functional test for recut block-body recovery (Andrea Suisani)
+- `b181f513bd` Test that a recut splitting a push does not deserialize (Andrea Suisani)
+- `573bf77d15` Log malformed scriptSig parse errors instead of printing to stderr (Andrea Suisani)
+- `7023c6173d` Reject transactions whose scriptSig does not parse (Andrew Stone)
+- `e571f88437` Feed the recut test bodies directly instead of through the wire (Andrea Suisani)
+- `2a967c317a` Fix locking and peer cleanup in the header sweep test (Andrea Suisani)
+- `7146296faf` Load and store the block index header pointer atomically (Andrea Suisani)
+- `d260709c7e` Mark a suspect body and blame its sender under one lock (Andrea Suisani)
+- `65a891765a` Parenthesize the download cursor rewind condition (Andrea Suisani)
+- `9346379db0` Flag satisfier dependent standardness failures instead of matching reasons (Andrea Suisani)
+- `c5e8fa06e4` Only handle Graphene recovery responses that were requested (Andrea Suisani)
+- `6611fcfa48` Bound peer-chosen IBLT and Graphene filter decoding work (Andrea Suisani)
+- `361197a7b2` Check unconnected headers before caching them (Andrea Suisani)
+- `985790afbf` Keep the suspect block body state in a class (Andrea Suisani)
+- `4a96a5a564` Answer get_dag in the mininode with the last two epochs only (Andrea Suisani)
+- `e8b484aec8` Snapshot read-only inputs before parallel validation releases cs_main (Andrea Suisani)
+- `dba4cd27f2` Check sub-blocks from mining RPCs like those from peers (Andrea Suisani)
+- `695e7f5934` Answer empty-locator getheaders with the stop hash (Andrea Suisani)
+- `612076c04d` Use CScript::size_type for the satisfier cut (Andrea Suisani)
+- `29ae79fadb` Ignore unrequested bodies from peers that sent a bad one (Andrea Suisani)
+- `164e625f8a` Do not ask a peer again for a body it sent altered (Andrea Suisani)
+- `6a39e32320` Keep satisfier policy failures out of the reject cache (Andrea Suisani)
+- `4bdbc1a432` Rewind download cursors for suspect block bodies (Andrea Suisani)
+- `67fc18ca8c` Keep suspect block bodies from invalidating headers (Andrea Suisani)
+- `73c6982165` Do not cache rejects of possibly altered transactions (Andrea Suisani)
+- `7220490048` Blame the peer whose block body is validated (Andrea Suisani)
+- `44d1396b26` Fetch a block again when its body may have been altered (Andrea Suisani)
+- `deb5436187` Stop REJECT messages from pinning tx requests (Andrea Suisani)
+- `1de40d1918` Reject repeated EXTVERSION messages (Andrea Suisani)
+- `dcf46a7e80` Fix orphan double spend proof cleanup (Andrea Suisani)
+- `a16142a2d4` Reject fast filters whose bit count does not fit their data (Andrea Suisani)
+- `757663fe13` Stop the Graphene brute force search once no larger value can win (Andrea Suisani)
+- `63c5f38c52` Cap peer mempool counts in Graphene and mempool sync requests (Andrea Suisani)
+- `fa7870e2d1` Stop truncating peer counts to int in Graphene set optimisation (Andrea Suisani)
+- `4017610bf5` Accumulate exact token mint and melt totals (Andrea Suisani)
+- `4845273b77` Keep token indexing tests independent of the wallet (Andrea Suisani)
+- `b3b39b48e7` Write token descriptions to the index only for connected blocks (Andrea Suisani)
+- `782e6e92e3` Saturate block mint totals and check empty scripts before indexing (Andrea Suisani)
+- `09fb2605eb` Guard token indexing against malformed block transactions (Andrea Suisani)
+- `5414101311` Stop the token description parser from throwing or over-reading (Andrea Suisani)
+- `925f4ba0fd` Zero the padding bits of Graphene encoded ranks (Andrea Suisani)
+- `c1e79f7def` Keep variable fast filter reads inside the hash (Andrea Suisani)
+- `4c4c5ff059` Load fast filter hash words with memcpy (Andrea Suisani)
+- `434cf7c0ee` Mask the OP_MERKLEROOT index shift to 64 bits (Andrea Suisani)
+- `353f6d7a93` ci: run unit tests with UBSan (Andrea Suisani)
+- `4e87ee631d` Reject Graphene sets that reconcile to no transactions (Andrea Suisani)
+- `a7db708242` Reject sub-blocks before the Tailstorm fork is pending (Andrea Suisani)
+- `7a32805c8a` Reject merkle proofs truncated inside a sibling hash (Andrea Suisani)
+- `c10be70d22` Report internal block reject codes as invalid to peers (Andrea Suisani)
+- `a502ff00fe` Reject out-of-range input amounts during tx admission (Andrea Suisani)
+- `7dcf6cb1b2` Do not mark a missing index for invalid sub-blocks (Andrea Suisani)
+- `48cbca49e6` Reject malformed Graphene item ranks (Andrea Suisani)
+- `089471f2c7` Bound CAPD query ranges (Andrea Suisani)
+- `8261b08850` Evict non-final txns from the non-final map (Andrea Suisani)
+- `c5e8b04370` Require exact sub-block proof counts in Tailstorm summaries (Andrea Suisani)
+- `be30c2a75b` libnexa: don't abort on a malformed script-template address (Jørgen S. Notland)
+- `3f5e409a3e` test: ClearByHeight frees pruned subblocks (Jørgen S. Notland)
+- `68a2590a53` Update the min protocol version to that of nexa 2.0.0.0 (Peter Tschipper)
+- `d7cf6c3038` [Initial Sync] Push uncles to the descendant epoch when needed. (Peter Tschipper)
+- `8b4e21fa2e` Make the second thinblock bloom check deterministic (Andrea Suisani)
+- `44a8ce3aab` CI: keep Windows native job running across pushes to dev (Jørgen S. Notland)
+- `163d6ac907` test: cover Tailstorm uncle availability after initial sync (Andrea Suisani)
+- `1b2626da8a` Fix tweak declarations, shift widths and empty-vector access (Andrea Suisani)
+- `bfc41c2d4e` fix rebase issues (Peter Tschipper)
+- `37cc37c201` Regenerate the dag data if the dag + pushed uncles >= tailstorm_k (Peter Tschipper)
+- `f4efc06e30` Simplify GetUncles (Peter Tschipper)
+- `df87515e1d` When pushing new uncles use the GetUncles() method to find the uncles (Peter Tschipper)
+- `f59bc3411a` Allow ProcessOrphans() to accept and insert subblocks to tailstormEnforceDepth (Peter Tschipper)
+- `65fc24a4d8` Fix issue with uncles that have two link lines drawn instead of one. (Peter Tschipper)
+- `68d2a5188a` Notify the dagviewer of pushed uncles (Peter Tschipper)
+- `c86119321c` Push uncles to the descendant epoch when needed. (Peter Tschipper)
+- `d077d546b9` Wait for the sent tx in all pools in grapheneblocks.py (Andrea Suisani)
+- `8fbf753fc6` Check that the new summary block does not use old hashes as uncles (Peter Tschipper)
+- `c5c2f040c1` rework comment based on MR review (Andrew Stone)
+- `9a9a01c08b` Build and test Rostrum master in CI (Andrea Suisani)
+- `c0ae81279d` fix MR feedback (Andrew Stone)
+- `63c913becc` CI: trim comments on Windows job (Jørgen S. Notland)
+- `e1119df126` CI: build and test natively on Windows runner on default branch only (jQrgen)
+- `fa69c6a5e2` Remove Andrew Stone gpg key finger print from SECURITY.md (Andrea Suisani)
+- `446d09b350` test: expect canonical DAG order after regeneration (Andrea Suisani)
+- `236ea8bc2f` test: restore cross-branch regeneration tests (Andrea Suisani)
+- `5f66f411bc` reorder subblock dags to collapse into a sort by dependency then score then hash.  This ordering is then used in many places in the code instead of passing the dag as a set, and is taken as the transaction doublespend evaluation order.  This simplifies some aspects of the code (Andrew Stone)
+- `4f6df97a58` convert windows paths to native wchar strings or utf-8 strings depending on need (Griffith)
+- `4051b9212a` Change QLabels to QGraphicsTextItem (Peter Tschipper)
+- `fb1451970c` CI: build-win-64-libnexa-jvm builds the JNI libnexa.dll (with a symbol copy) on every pipeline (Jørgen S. Notland)
+- `df7903a2d2` chainparams: do not mine the stormtest genesis in a static initializer (Jørgen S. Notland)
+- `1db7317ced` test: clarify cross-branch transaction scenarios (Andrea Suisani)
+- `c3f583642d` test: cover cross-branch spends with unequal branch lengths (Andrea Suisani)
+- `4095ea884e` test: cover chained spends across longer DAG branches (Andrea Suisani)
+- `5aebe1e21f` test: cover cross-branch spends during DAG regeneration (Andrea Suisani)
+- `254df15b53` Test Tailstorm convergence with opposite subblock arrival orders (Andrea Suisani)
+- `ed44e62a45` Test Tailstorm summary proof validation (Andrea Suisani)
+- `96ae219879` Test double-spend winner changes after a new sub-block references both competing branches (Andrea Suisani)
+- `985c85245b` Create GetDagForReorg() and use it (Peter Tschipper)
+- `b306477b0f` Reorg: Add a test to check that fork blocks receive all their subblocks and uncles (Peter Tschipper)
+- `3194b84d31` Make sure to destroy the gdi object when the dialog closes (Peter Tschipper)
+- `4273b2d7b3` Check for duplicate mininghashes in CheckTailstormSummaryBlockProofOfWork() (Peter Tschipper)
+- `1872531ac4` only create ItemInfo labels when they are to be stored and always remove every item from the scene (Griffith)
+- `7e73b7aad4` Check relay requests before allocating reconstruction state (Andrea Suisani)
+- `42debd7cbc` test: replace flaky CAPD conversion checks with dedicated arithmetic coverage (Andrea Suisani)
+- `51486d6b1d` Make Tailstorm snap-back boundary CI test deterministic (Andrea Suisani)
+- `26b96b55d8` Remove thinblock download timeouts entirely (Peter Tschipper)
+- `3ad6905e31` Move expedited relay files into the blockrelay folder (Peter Tschipper)
+- `d0211de7d2` test: use the configured fork activation time (Andrea Suisani)
+- `d2c333240d` test: cover epoch height during Tailstorm retries (Andrea Suisani)
+- `76d068f575` Read Only Inputs and block height interaction with subblocks (Andrew Stone)
+- `ad6912259e` Re-enable emergent consensus py testing (Peter Tschipper)
+- `564a9b6ad7` Change the return value of GetNextDagVeiwerHight() to a bool (Peter Tschipper)
+- `398e17d17d` Tidy up indentations (Peter Tschipper)
+- `36152060c9` Remove bans for unrequested thinblocks (Peter Tschipper)
+- `90300bb0a5` logging: survive a debug log that cannot be opened (Andrea Suisani)
+- `6b3ec8e0e8` Feature: resolve double spends through a live excluded-transaction view (VDM)
+- `90a8db4795` Consider uncles when checking for dag size (Peter Tschipper)
+- `16d9b10bb3` Simplify setting the best grove for summary tip and add a check test (Peter Tschipper)
+- `85fd9c6958` Refine the steps needed to get the singned macos binaries (Andrea Suisani)
 
 Credits
 -------
@@ -236,12 +365,8 @@ Thanks to everyone who directly contributed to this release:
 
 - Andrea Suisani
 - Andrew Stone
+- David Thibodeau
 - Griffith
 - Jørgen Svennevik Notland
 - Peter Tschipper
 - Steven van den Meiracker
-
-Several contributors used AI assistants during development, for code review, debugging and test repair.
-Where that assistance produced a specific commit it is credited in the commit metadata: one commit in this release is authored by Claude,
-and four others carry an AI co-author trailer. Every change, however it was produced, went through the same review and merge process,
-and the named human contributors remain responsible for the code.

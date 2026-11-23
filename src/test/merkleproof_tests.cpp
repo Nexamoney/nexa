@@ -257,6 +257,18 @@ BOOST_AUTO_TEST_CASE(treeExpansion)
     treeExpansionTest<CHash256, 32>(); // REQ6
 }
 
+BOOST_AUTO_TEST_CASE(indexDeeperThan64Bits)
+{
+    // Index bits past depth 63 wrap around instead of being dropped
+    MerkleProof<CSHA256, 32> mp;
+    VchType one(32);
+    one[0] = 1;
+    VchType proof(64, MULTIPROOF_RIGHT_IS_EMPTY);
+    proof.push_back(MULTIPROOF_LEFT_IS_EMPTY);
+    std::vector<uint64_t> indexes;
+    BOOST_CHECK(!mp.computeMultiproofRoot({one}, proof, &indexes).empty());
+    BOOST_CHECK_EQUAL(indexes[0], 1);
+}
 
 /* This test case demonstrates how to add a new element into a subtree that is empty */
 BOOST_AUTO_TEST_CASE(emptyExpansion)
@@ -740,6 +752,31 @@ static void CheckPass(uint32_t flags, const Stack &original_stack, const CScript
     }
 }
 
+BOOST_AUTO_TEST_CASE(merkleProofIndexShiftBoundary)
+{
+    VchType leaf(32);
+    leaf[0] = 1;
+    const VchType emptyHash{0};
+    const std::vector<std::pair<uint64_t, uint64_t> > cases{{63, uint64_t{1} << 63}, {64, 1}, {65, 2}};
+    for (const auto &test : cases)
+    {
+        BOOST_TEST_CONTEXT("index shift depth=" << test.first)
+        {
+            VchType proof(test.first, MULTIPROOF_RIGHT_IS_EMPTY);
+            proof.push_back(MULTIPROOF_LEFT_IS_EMPTY);
+            VchType expectedRoot = leaf;
+            for (uint64_t i = 0; i < test.first; i++)
+                expectedRoot = sha256(expectedRoot, emptyHash);
+            expectedRoot = sha256(emptyHash, expectedRoot);
+
+            const CScript script = CScript() << proof << leaf << 1
+                                             << merkleRootOption(MerkleRootAlg::SHA256, MerkleRootFlags::RETURN_INDEX)
+                                             << OP_MERKLEROOT;
+            CheckPass(MANDATORY_SCRIPT_VERIFY_FLAGS, Stack(), script, {{IntStack, test.second}, expectedRoot});
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(merkleProofScripts)
 {
     auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
@@ -825,7 +862,7 @@ BOOST_AUTO_TEST_CASE(merkleProofScripts)
                 {merkleRootOption(nodeAlg, leafAlg,
                      MerkleRootFlags::HASH_ELEMENTS | MerkleRootFlags::RETURN_ADJACENCY |
                          MerkleRootFlags::RETURN_DEPTH),
-                    {{IntStack, 2}, {IntStack, 1}, halgCalced}},
+                    {{IntStack, 1}, {IntStack, 2}, halgCalced}},
 
                 {merkleRootOption(nodeAlg, leafAlg,
                      MerkleRootFlags::HASH_ELEMENTS | MerkleRootFlags::RETURN_DEPTH | MerkleRootFlags::RETURN_INDEX),
@@ -990,6 +1027,7 @@ BOOST_AUTO_TEST_CASE(merkleMultiProofScripts)
         a     b
        1 2   3 4
      */
+    // The last element pushed is the first one in the tree
     std::vector<VchType> elems = {two, three};
 
     VchType proof = VchType() << MULTIPROOF_LEFT_SIBLING << one << MULTIPROOF_PUSH << MULTIPROOF_RIGHT_SIBLING << four
@@ -997,17 +1035,17 @@ BOOST_AUTO_TEST_CASE(merkleMultiProofScripts)
     VchType sha256calced = sha256(sha256(one, two), sha256(three, four));
     VchType hash256calced = hash256(hash256(one, two), hash256(three, four));
     // just the hash
-    CScript s = CScript() << proof << two << one << 2
+    CScript s = CScript() << proof << three << two << 2
                           << merkleRootOption(MerkleRootAlg::SHA256, MerkleRootFlags::MR_NONE) << OP_MERKLEROOT;
     CheckPass(flags, Stack(), s, {sha256calced});
 
-    s = CScript() << proof << two << one << 2 << merkleRootOption(MerkleRootAlg::HASH256, MerkleRootFlags::MR_NONE)
+    s = CScript() << proof << three << two << 2 << merkleRootOption(MerkleRootAlg::HASH256, MerkleRootFlags::MR_NONE)
                   << OP_MERKLEROOT;
     CheckPass(flags, Stack(), s, {hash256calced});
 
     if (true) // everything
     {
-        s = CScript() << proof << two << one << 2
+        s = CScript() << proof << three << two << 2
                       << merkleRootOption(MerkleRootAlg::HASH256, MerkleRootFlags::RETURN_INDEX |
                                                                       MerkleRootFlags::RETURN_DEPTH |
                                                                       MerkleRootFlags::RETURN_ADJACENCY)
@@ -1033,8 +1071,33 @@ BOOST_AUTO_TEST_CASE(merkleMultiProofScripts)
 
     for (const auto &[option, expected] : tv)
     {
-        s = CScript() << proof << two << one << 2 << option << OP_MERKLEROOT;
+        s = CScript() << proof << three << two << 2 << option << OP_MERKLEROOT;
         CheckPass(flags, Stack(), s, expected);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(merkleOpcodeUnknownAlg)
+{
+    // Algorithms 4 to 15 fit the option bits, so they only fail when something has to be hashed
+    auto flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
+    VchType one(32);
+    one[0] = 1;
+    VchType two(32);
+    two[0] = 2;
+    for (int alg = 4; alg < 16; alg++)
+    {
+        auto opt = merkleRootOption((MerkleRootAlg)alg, MerkleRootFlags::MR_NONE);
+        // A single hashed element with an empty proof is its own root
+        CScript s = CScript() << VchType() << one << 1 << opt << OP_MERKLEROOT;
+        CheckPass(flags, Stack(), s, {one});
+
+        VchType proof = VchType() << MULTIPROOF_RIGHT_SIBLING << two;
+        s = CScript() << proof << one << 1 << opt << OP_MERKLEROOT;
+        CheckError(flags, Stack(), s, SCRIPT_ERR_INVALID_PARAMETER);
+
+        opt = merkleRootOption((MerkleRootAlg)alg, MerkleRootFlags::HASH_ELEMENTS);
+        s = CScript() << VchType() << one << 1 << opt << OP_MERKLEROOT;
+        CheckError(flags, Stack(), s, SCRIPT_ERR_INVALID_PARAMETER);
     }
 }
 
@@ -1136,6 +1199,42 @@ BOOST_AUTO_TEST_CASE(merkleProofLimits)
     s << 512 << merkleRootOption(MerkleRootAlg::SHA256, MerkleRootFlags::MR_NONE) << OP_MERKLEROOT;
     r = EvalScript(stk, s, flags, MAX_OPS_PER_SCRIPT, sis, &err);
     BOOST_CHECK(!r);
+}
+
+template <typename Hasher, int HashSize>
+void truncatedSiblingTest()
+{
+    MerkleProof<Hasher, HashSize> mp;
+    VchType leaf(HashSize, 1);
+    VchType sibling(HashSize, 2);
+    for (uint8_t step : {MULTIPROOF_LEFT_SIBLING, MULTIPROOF_RIGHT_SIBLING})
+    {
+        VchType proof = VchType() << step << sibling;
+        BOOST_CHECK(!mp.computeMultiproofRoot({leaf}, proof).empty());
+        // Every truncation of the sibling hash, down to the step byte alone, must fail
+        // without reading past the end of the proof
+        while (proof.size() > 1)
+        {
+            proof.pop_back();
+            BOOST_CHECK(mp.computeMultiproofRoot({leaf}, proof).empty());
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(truncatedSiblingProof)
+{
+    truncatedSiblingTest<CSHA256, 32>();
+    truncatedSiblingTest<CHash160, 20>();
+
+    // The opcode rejects a proof that ends inside a sibling hash
+    VchType one(32);
+    one[0] = 1;
+    for (const VchType &proof : {VchType() << MULTIPROOF_RIGHT_SIBLING, VchType() << MULTIPROOF_LEFT_SIBLING << 7})
+    {
+        CScript s = CScript() << proof << one << 1 << merkleRootOption(MerkleRootAlg::SHA256, MerkleRootFlags::MR_NONE)
+                              << OP_MERKLEROOT;
+        CheckError(MANDATORY_SCRIPT_VERIFY_FLAGS, Stack(), s, SCRIPT_ERR_INVALID_PARAMETER);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

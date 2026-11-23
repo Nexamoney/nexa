@@ -72,7 +72,12 @@ class MempoolCoinbaseTest(BitcoinTestFramework):
             node.logline("Invalidating block %s" % blocks[0])
             node.invalidateblock(blocks[0])
 
-        time.sleep(3) # wait for tx processing threads to put them back into the txpool
+        # Wait for tx processing threads to put them back into the txpool.  Resubmitted children are usually
+        # validated before their parents are committed, so they become orphans and only return on a later commit
+        # cycle (the commit thread runs about every 2 seconds), so this can take several seconds.
+        waitFor(30, lambda: self.nodes[0].gettxpoolinfo()['size'] == 6,
+                lambda: f"Transactions not resurrected into txpool: {self.nodes[0].gettxpoolinfo()}, "
+                        f"orphanpool: {self.nodes[0].getorphanpoolinfo()}")
 
         # Should be a fork
         ct = self.nodes[0].getchaintips()

@@ -33,7 +33,8 @@ namespace
 {
 enum Scripts
 {
-    P2PKH
+    P2PKH,
+    P2PKT
 };
 
 static bool IsValidType(const CScript &script)
@@ -61,11 +62,36 @@ static bool IsValidType(const CScript &script)
     return true;
 }
 
-void getSignature(const CScript &script, std::vector<uint8_t> &vchRet)
+// A P2PKH scriptSig is <sig> <pubkey>.  A P2PKT scriptSig is <args script> <sig> (a well-known template
+// is not pushed in the scriptSig).
+void getSignature(const CScript &script, bool isTemplate, std::vector<uint8_t> &vchRet)
 {
     auto scriptIter = script.begin();
     opcodetype type;
+    if (isTemplate && !script.GetOp(scriptIter, type)) // skip the args script
+    {
+        vchRet.clear();
+        return;
+    }
     script.GetOp(scriptIter, type, vchRet);
+}
+
+// The sighash a spender's signature commits to. Both spenders spend the same output, so they sign with the same
+// script code, and an empty one does for comparing them.
+uint256 spenderSigHash(const DoubleSpendProof::Spender &spender)
+{
+    uint256 result;
+    SignatureHashNexa(CScript(), spender.txVersion, spender.lockTime, SigHashType(spender.pushData.front()),
+        spender.hashPrevOutputs, spender.hashSequence, spender.hashInAmounts, spender.hashOutputs, result, nullptr);
+    return result;
+}
+
+// Returns true if both spenders' signatures commit to the same data, meaning they are the same spend.
+// Compares sighashes, not encodings: ALL/ALL may carry an explicit 0x00 byte, ranged output types are not
+// hashed, and outSequence is not signed.
+bool signSameData(const DoubleSpendProof::Spender &a, const DoubleSpendProof::Spender &b)
+{
+    return spenderSigHash(a) == spenderSigHash(b);
 }
 
 void hashTx(DoubleSpendProof::Spender &spender, const CTransaction &tx, int inputIndex)
@@ -151,15 +177,16 @@ DoubleSpendProof DoubleSpendProof::create(const CTransaction &t1, const CTransac
                 if (!IsValidType(coin.out.scriptPubKey))
                     throw std::runtime_error("Can not create dsproof: Transaction was not a valid type");
 
+                const bool isTemplate = (coin.out.scriptPubKey.type == ScriptType::TEMPLATE);
                 answer.m_prevOutpoint = in1.prevout;
 
                 s1.outSequence = in1.nSequence;
                 s2.outSequence = in2.nSequence;
 
                 s1.pushData.resize(1);
-                getSignature(in1.scriptSig, s1.pushData.front());
+                getSignature(in1.scriptSig, isTemplate, s1.pushData.front());
                 s2.pushData.resize(1);
-                getSignature(in2.scriptSig, s2.pushData.front());
+                getSignature(in2.scriptSig, isTemplate, s2.pushData.front());
 
                 assert(!s1.pushData.empty()); // we resized it
                 assert(!s2.pushData.empty()); // we resized it
@@ -212,9 +239,9 @@ DoubleSpendProof::Validity DoubleSpendProof::validate(const CTxMemPool &pool, co
         return Invalid;
     }
 
-    if (m_spender1 == m_spender2)
+    if (signSameData(m_spender1, m_spender2))
     {
-        LOG(DSPROOF, "Warning:  Spenders in a dsproof must not be the same");
+        LOG(DSPROOF, "Warning:  Spenders in a dsproof must not sign the same data\n");
         return Invalid;
     }
 
@@ -241,16 +268,25 @@ DoubleSpendProof::Validity DoubleSpendProof::validate(const CTxMemPool &pool, co
         else // tx is not found in our mempool, look in the UTXO.
         {
             Coin coin;
-            if (!pcoinsTip->GetCoin(m_prevOutpoint, coin))
+            if (!pcoinsTip->GetCoin(m_prevOutpoint, coin) || coin.IsSpent())
             {
                 /* if the output we spend is missing then either the tx just got mined
                  * or, more likely, our mempool just doesn't have it.
+                 * Additionally, GetCoin() still returns the cache's entry for a spent coin,
+                 * with a null output, so a spent coin must not reach the script type check.
                  */
                 return MissingUTXO;
             }
             amount = coin.GetValue();
             prevOutScript = coin.GetConstraintScript();
         }
+    }
+
+    // A proof received from a peer can name any outpoint, so enforce the same script types as create()
+    if (!IsValidType(prevOutScript))
+    {
+        LOG(DSPROOF, "WARNING: dsproof is invalid because the doublespent output is not P2PKH or P2PKT\n");
+        return Invalid;
     }
 
     /*
@@ -278,8 +314,10 @@ DoubleSpendProof::Validity DoubleSpendProof::validate(const CTxMemPool &pool, co
      * types of scripts because all we need to do is replace the signature from our 'tx'
      * with the one that comes from the DSP.
      */
-    Scripts scriptType = P2PKH; // FUTURE: look at prevTx to find out script-type
+    Scripts scriptType = (prevOutScript.type == ScriptType::TEMPLATE) ? P2PKT : P2PKH;
 
+    // P2PKH: the pubkey (scriptSig is <sig> <pubkey>).
+    // P2PKT: the args script, which holds the pubkey (scriptSig is <args script> <sig>).
     StackItem pubkeyStk;
     for (size_t i = 0; i < tx.vin.size(); ++i)
     {
@@ -289,12 +327,12 @@ DoubleSpendProof::Validity DoubleSpendProof::validate(const CTxMemPool &pool, co
             CScript inScript = tx.vin[i].scriptSig;
             auto scriptIter = inScript.begin();
             opcodetype type;
-            if (!inScript.GetOp(scriptIter, type)) // P2PKH or P2PKT: first signature
+            if (scriptType == P2PKH && !inScript.GetOp(scriptIter, type)) // P2PKH: first signature
             {
                 LOG(DSPROOF, "WARNING: dsproof is invalid because GetOp() for signature failed\n");
                 return Invalid;
             }
-            if (!inScript.GetOp(scriptIter, type, pubkeyStk)) // then pubkey
+            if (!inScript.GetOp(scriptIter, type, pubkeyStk)) // then pubkey (or P2PKT args script)
             {
                 LOG(DSPROOF, "WARNING: dsproof is invalid because GetOP() for pubkey failed\n");
                 return Invalid;
@@ -317,12 +355,18 @@ DoubleSpendProof::Validity DoubleSpendProof::validate(const CTxMemPool &pool, co
         return Invalid;
     }
 
-    CScript inScript;
-    if (scriptType == P2PKH)
+    // Rebuild the spending scriptSig with each spender's signature in place of the one in 'tx'
+    auto makeInScript = [scriptType, &pubkey](const Spender &spender)
     {
-        inScript << m_spender1.pushData.front();
-        inScript << pubkey;
-    }
+        CScript ret;
+        if (scriptType == P2PKH)
+            ret << spender.pushData.front() << pubkey;
+        else
+            ret << pubkey << spender.pushData.front();
+        return ret;
+    };
+
+    CScript inScript = makeInScript(m_spender1);
 
     // DS proofs won't work for complex scripts (non P2PKH/P2PKT), which is good because we aren't storing the tx
     // associated with the Spender right now anyway.  So giving an empty tx and invalid input index to the verifier is
@@ -339,12 +383,7 @@ DoubleSpendProof::Validity DoubleSpendProof::validate(const CTxMemPool &pool, co
         return Invalid;
     }
 
-    inScript.clear();
-    if (scriptType == P2PKH)
-    {
-        inScript << m_spender2.pushData.front();
-        inScript << pubkey;
-    }
+    inScript = makeInScript(m_spender2);
     DSPSignatureChecker checker2(this, m_spender2, amount);
     ScriptImportedState sis2(&checker2);
     if (!VerifyScript(inScript, prevOutScript, checker2.flags(), sis2, &error))
@@ -367,7 +406,17 @@ void broadcastDspInv(const CTransactionRef &dspTx, const uint256 &hash, CTxMemPo
     GetMainSignals().SyncDoubleSpend(dspTx);
     // send INV to all peers
     CInv inv(MSG_DOUBLESPENDPROOF, hash);
+    CInv2 inv2(MSG_DOUBLESPENDPROOF, hash);
     LOG(DSPROOF, "Broadcasting dsproof INV: %s\n", hash.ToString());
+
+    // Peers that want INV2 are only sent inventory from their INV2 queue
+    auto pushInv = [&inv, &inv2](CNode *pnode)
+    {
+        if (pnode->fPeerWantsINV2)
+            pnode->PushInventory(inv2);
+        else
+            pnode->PushInventory(inv);
+    };
 
     LOCK(cs_vNodes);
     for (CNode *pnode : vNodes)
@@ -382,16 +431,16 @@ void broadcastDspInv(const CTransactionRef &dspTx, const uint256 &hash, CTxMemPo
                 for (auto iter : *setDescendants)
                 {
                     if (pnode->pfilter->IsRelevantAndUpdate(iter->GetSharedTx()))
-                        pnode->PushInventory(inv);
+                        pushInv(pnode);
                 }
             }
             // For nodes that we sent this Tx before, send a proof.
             else if (pnode->pfilter->IsRelevantAndUpdate(dspTx))
-                pnode->PushInventory(inv);
+                pushInv(pnode);
         }
         else
         {
-            pnode->PushInventory(inv);
+            pushInv(pnode);
         }
     }
 }

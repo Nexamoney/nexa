@@ -108,18 +108,20 @@ void RespendRelayer::Trigger(CTxMemPool &pool)
         {
             try
             {
-                auto item = *originalTxIter;
                 dsp = DoubleSpendProof::create(originalTxIter->GetTx(), *pRespend, pool);
+
+                // Don't attach or relay a proof that we can't validate ourselves
+                DoubleSpendProof::Validity validity;
+                validity = dsp.validate(pool);
+                if (validity != DoubleSpendProof::Valid)
+                    throw std::runtime_error(strprintf("Invalid dsproof (validity %d)", (int)validity));
+
+                auto item = *originalTxIter;
                 item.dsproof = pool.doubleSpendProofStorage()->add(dsp).second;
                 LOG(DSPROOF, "Double spend found, creating double spend proof %d\n", item.dsproof);
                 pool.mapTx.replace(originalTxIter, item);
 
                 ptx = pool._get(originalTxIter->GetTx().GetId());
-
-                DoubleSpendProof::Validity validity;
-                validity = dsp.validate(pool);
-                if (validity == DoubleSpendProof::Invalid)
-                    throw std::runtime_error("Invalid dsproof");
             }
             catch (const std::exception &e)
             {

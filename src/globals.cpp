@@ -173,6 +173,9 @@ std::map<uint256, std::pair<CBlockHeader, int64_t> > mapUnConnectedHeaders GUARD
     Retained and re-evaluated when that summary is accepted. **/
 CSubblockHeaderCache subblockHeaders;
 
+/** Blocks whose stored body may have been altered in transit, and the peers that sent such bodies. **/
+CSuspectBlockBodies suspectBlockBodies;
+
 CCriticalSection cs_main;
 /**
  * Every received block is assigned a unique and increasing identifier, so we
@@ -527,6 +530,10 @@ CTweak<unsigned int> txRetryInterval("net.txRetryInterval",
     strprintf("How long to wait in microseconds before requesting a transaction from another source (default: %d)",
         DEFAULT_MIN_TX_REQUEST_RETRY_INTERVAL),
     DEFAULT_MIN_TX_REQUEST_RETRY_INTERVAL);
+CTweak<unsigned int> txRequestPeerShare("net.txRequestPeerShare",
+    strprintf("Baseline transaction request share per peer (1-100, default: %d); up to 100/full nodes if larger",
+        DEFAULT_TX_REQUEST_PEER_SHARE),
+    DEFAULT_TX_REQUEST_PEER_SHARE);
 CTweak<unsigned int> blkRetryInterval("net.blockRetryInterval",
     strprintf("How long to wait in microseconds before requesting a block from another source (default: %d)",
         DEFAULT_MIN_BLK_REQUEST_RETRY_INTERVAL),
@@ -564,6 +571,10 @@ CTweak<unsigned int> numMsgHandlerThreads("net.msgHandlerThreads",
 CTweak<unsigned int> numTxAdmissionThreads("net.txAdmissionThreads",
     "Max transaction mempool admission threads Auto detection is zero (default: 0).",
     0);
+
+CTweak<bool> banLocalPeers("test.banLocalPeers",
+    "Ban local peers that exceed the ban threshold (default: false).",
+    false);
 
 CTweak<bool> enforceMinTxSize("test.enforceMinTxSize",
     "Whether we will enforce the min tx size limit of 100 bytes or not (default: true)",

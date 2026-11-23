@@ -18,6 +18,7 @@
 
 #include <boost/scope_exit.hpp>
 #include <boost/test/unit_test.hpp>
+#include <univalue.h>
 
 #include <chrono>
 #include <thread>
@@ -25,6 +26,7 @@
 using namespace std;
 
 extern std::atomic<bool> forceTemplateRecalc;
+extern UniValue CallRPC(std::string args);
 
 class CTailstormForestTest
 {
@@ -1265,10 +1267,8 @@ public:
         CBlockIndex index(*summary);
         index.pprev = &coin.chain.previousSummary;
         CCoinsViewCache view(&parent);
-        std::map<CGroupTokenID, CAmount> mintages;
-        std::map<CGroupTokenID, CAuth> authorities;
-        const bool connected =
-            ConnectBlock(summary, state, &index, view, parent, Params(), mintages, authorities, true);
+        CTokenIndexUpdates tokenUpdates;
+        const bool connected = ConnectBlock(summary, state, &index, view, parent, Params(), tokenUpdates, true);
         BOOST_TEST_MESSAGE("summary result: " << connected << " " << state.GetLogString());
         BOOST_CHECK_EQUAL(chainActive.Tip()->GetBlockHash(), coin.chain.previousHash);
         BOOST_CHECK(parent.HaveCoin(coin.parentTx->OutpointAt(0)));
@@ -4061,6 +4061,133 @@ BOOST_AUTO_TEST_CASE(renumber_dag_ranks_by_descendant_score)
         node->setAncestors.clear();
         node->setDescendants.clear();
     }
+}
+
+// An empty sub-block mined at the target for the given parent
+static CBlockRef MakeEmptySubblock(const CBlockIndex *parent)
+{
+    CBlockRef block = MakeBlockRef();
+    block->hashPrevBlock = parent->GetBlockHash();
+    block->height = parent->height() + 1;
+    block->nTime = parent->GetBlockTime() + 1;
+    block->minerData = {DEFAULT_MINER_DATA_SUBBLOCK_VERSION};
+    block->nBits = GetNextWorkRequired(parent, block.get(), Params().GetConsensus());
+    block->nonce.resize(3);
+    block->UpdateHeader();
+    // Sub-block PoW commits to the parent hash, which MineBlock skips without Tailstorm
+    const uint256 commitment = block->GetMiningHeaderCommitment();
+    uint32_t count = 0;
+    while (!CheckProofOfWork(
+        ::GetMiningHash(commitment, block->nonce), block->hashPrevBlock, block->nBits, Params().GetConsensus()))
+    {
+        BOOST_REQUIRE(++count < (1 << 23));
+        for (unsigned int x = 0; x < block->nonce.size(); x++)
+            block->nonce[x] = (count >> (x * 8)) & 255;
+    }
+    BOOST_REQUIRE(block->IsSubblock());
+    BOOST_REQUIRE(block->vtx.empty());
+    return block;
+}
+
+BOOST_AUTO_TEST_CASE(premature_subblock_is_rejected)
+{
+    // Before the fork is pending no summary can reference a sub-block, so reject it at the header
+    CBlockRef block = MakeEmptySubblock(chainActive.Genesis());
+    BOOST_REQUIRE(!IsUpgrade2Pending(chainActive.Genesis()));
+
+    LOCK(cs_main);
+    CValidationState state;
+    CBlockIndex *pindex = nullptr;
+    BOOST_CHECK(!AcceptBlockHeader(*block, state, Params(), &pindex));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-subblock-premature");
+    int nDoS = 0;
+    BOOST_CHECK(state.IsInvalid(nDoS));
+    BOOST_CHECK_EQUAL(nDoS, 100);
+
+    state = CValidationState();
+    BOOST_CHECK(!ProcessAcceptBlock(nullptr, block, state, Params(), &pindex, nullptr));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-subblock-premature");
+    BOOST_CHECK(pindex == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(premature_subblock_is_rejected_by_submitblock)
+{
+    // submitblock must not insert a sub-block that a peer could not get past the header rules
+    CBlockRef block = MakeEmptySubblock(chainActive.Genesis());
+    BOOST_REQUIRE(!IsUpgrade2Pending(chainActive.Genesis()));
+    const size_t forestSize = tailstormForest.Size();
+
+    const UniValue result = CallRPC("submitblock " + block->GetHex());
+    BOOST_CHECK_EQUAL(find_value(result.get_obj(), "result").get_str(), "bad-subblock-premature");
+    BOOST_CHECK(!tailstormForest.Contains(block->GetHash()));
+    BOOST_CHECK_EQUAL(tailstormForest.Size(), forestSize);
+}
+
+BOOST_AUTO_TEST_CASE(subblock_before_pending_parent_header)
+{
+    LOCK(cs_main);
+    CBlockIndex *genesis = chainActive.Genesis();
+    const uint64_t forkTime = nMiningForkTime;
+    nMiningForkTime = genesis->GetMedianTimePast() + 1;
+    BOOST_SCOPE_EXIT_ALL(&) { nMiningForkTime = forkTime; };
+    BOOST_REQUIRE(!IsUpgrade2Pending(chainActive.Tip()));
+    BOOST_REQUIRE(!IsUpgrade2Activated(chainActive.Tip()));
+
+    CBlockHeader parent;
+    parent.hashPrevBlock = genesis->GetBlockHash();
+    parent.height = 1;
+    parent.nTime = genesis->GetBlockTime() + 1;
+    parent.nBits = genesis->nBits;
+    parent.size = 1000;
+    parent.chainWork = ArithToUint256(genesis->chainWork() + GetWorkForDifficultyBits(parent.nBits));
+    uint256 parentHash = parent.GetHash();
+    CBlockIndex pendingParent(parent);
+    pendingParent.phashBlock = &parentHash;
+    pendingParent.pprev = genesis;
+    BOOST_REQUIRE(IsUpgrade2Pending(&pendingParent));
+    BOOST_REQUIRE(LookupBlockIndex(parentHash) == nullptr);
+    CBlockRef block = MakeEmptySubblock(&pendingParent);
+
+    // An unknown parent must defer the sub-block without penalizing the peer.
+    CValidationState state;
+    CBlockIndex *pindex = nullptr;
+    BOOST_CHECK(!AcceptBlockHeader(*block, state, Params(), &pindex));
+    BOOST_CHECK_EQUAL(state.GetRejectCode(), REJECT_NO_CONTEXT);
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "subblock-no-context");
+    int nDoS = -1;
+    BOOST_CHECK(state.IsInvalid(nDoS));
+    BOOST_CHECK_EQUAL(nDoS, 0);
+
+    // The parent header supplies fork context even while the active tip is pre-fork.
+    CBlockIndex *indexedParent = AddToBlockIndex(Params(), parent);
+    BOOST_REQUIRE(indexedParent != nullptr);
+    BOOST_REQUIRE(IsUpgrade2Pending(indexedParent));
+    BOOST_REQUIRE(chainActive.Tip() == genesis);
+    BOOST_REQUIRE(!IsUpgrade2Pending(chainActive.Tip()));
+    state = CValidationState();
+    BOOST_CHECK(AcceptBlockHeader(*block, state, Params(), &pindex));
+    BOOST_CHECK(state.IsValid());
+    BOOST_CHECK(pindex == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(invalid_subblock_body_is_rejected_without_index)
+{
+    // AcceptBlockHeader leaves no index entry for a sub-block, so a body failing
+    // CheckBlock must be rejected without marking an index invalid.
+    const uint64_t forkTime = nMiningForkTime;
+    nMiningForkTime = chainActive.Genesis()->GetMedianTimePast();
+    BOOST_SCOPE_EXIT_ALL(&) { nMiningForkTime = forkTime; };
+    BOOST_REQUIRE(IsUpgrade2Pending(chainActive.Genesis()));
+    CBlockRef block = MakeEmptySubblock(chainActive.Genesis());
+
+    LOCK(cs_main);
+    CValidationState state;
+    CBlockIndex *pindex = nullptr;
+    BOOST_CHECK(!ProcessAcceptBlock(nullptr, block, state, Params(), &pindex, nullptr));
+    BOOST_CHECK(pindex == nullptr);
+    BOOST_CHECK(state.IsInvalid());
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-blk-length");
+    BOOST_CHECK(LookupBlockIndex(block->GetHash()) == nullptr);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

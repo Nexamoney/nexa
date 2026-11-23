@@ -30,6 +30,8 @@
 #include <string>
 #include <vector>
 
+#include <boost/algorithm/string/classification.hpp>
+#include <boost/algorithm/string/split.hpp>
 #include <boost/test/unit_test.hpp>
 
 #include <univalue.h>
@@ -131,7 +133,8 @@ static ScriptErrorDesc script_errors[] = {
     {SCRIPT_ERR_INVALID_REGISTER, "SCRIPT_ERR_INVALID_REGISTER"},
     {SCRIPT_ERR_STACK_BYTES, "SCRIPT_ERR_STACK_BYTES"},
     {SCRIPT_ERR_PARSE, "SCRIPT_ERR_PARSE"},
-    {SCRIPT_ERR_INVALID_JUMP, "SCRIPT_ERR_INVALID_JUMP"}
+    {SCRIPT_ERR_INVALID_JUMP, "SCRIPT_ERR_INVALID_JUMP"},
+    {SCRIPT_ERR_AMBIGUOUS_WITHIN, "AMBIGUOUS_WITHIN"}
 };
 // clang-format on
 
@@ -280,6 +283,8 @@ CMutableTransaction BuildCreditingTransaction(const CScript &scriptPubKey, CAmou
     txCredit.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
     txCredit.vout[0].scriptPubKey = scriptPubKey;
     txCredit.vout[0].nValue = nValue;
+    if (scriptPubKey.type == ScriptType::TEMPLATE)
+        txCredit.vout[0].type = CTxOut::TEMPLATE;
     return txCredit;
 }
 
@@ -404,15 +409,16 @@ void DoTest(const CScript &scriptPubKey,
                                                 " expected: " + message);
     // Verify that removing flags from a passing test or adding flags to a
     // failing test does not change the result, except for some special flags.
-    bool fEnforce = false;
-    if (flags & SCRIPT_ENFORCE_STACK_TOTAL)
-        fEnforce = true;
     for (int i = 0; i < 16; ++i)
     {
         uint32_t extra_flags = InsecureRand32();
         // Some flags are not purely-restrictive and thus we can't assume
         // anything about what happens when they are flipped. Keep them as-is.
-        extra_flags &= ~(SCRIPT_ENABLE_SIGHASH_FORKID);
+        // The fork opcode flags, RELAX_STACK_WIDTH and ENFORCE_STACK_TOTAL enable or change behavior (e.g. negative
+        // OP_PICK/OP_ROLL, OP_WITHIN accepting non-minimal numbers, pushes beyond 520 bytes, and more than 1000 stack
+        // items) so they are not purely restrictive either.
+        extra_flags &= ~(SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_FORK1_OPCODES | SCRIPT_UPGRADE2_OPCODES |
+                         SCRIPT_RELAX_STACK_WIDTH | SCRIPT_ENFORCE_STACK_TOTAL);
         uint32_t combined_flags = expect ? (flags & ~extra_flags) : (flags | extra_flags);
         // Weed out invalid flag combinations.
         if (combined_flags & SCRIPT_VERIFY_CLEANSTACK)
@@ -420,9 +426,6 @@ void DoTest(const CScript &scriptPubKey,
             combined_flags |= SCRIPT_VERIFY_P2SH;
         }
 
-        // make sure to keep enforce on if it's already on.
-        if (fEnforce)
-            combined_flags |= SCRIPT_ENFORCE_STACK_TOTAL;
 
         result = VerifyScript(scriptSig, scriptPubKey, combined_flags,
             ScriptImportedStateSig(&tx, 0, txCredit.vout[0].nValue, combined_flags), &err);
@@ -666,6 +669,12 @@ public:
     int flags;
     int scriptError;
     CAmount nValue;
+    //! The expected errors when the fork1 (and then upgrade2) script flags are added by TestAllEras().
+    //! -1 means the same as the prior era.
+    int fork1Error = -1;
+    int upgrade2Error = -1;
+    //! script is a template (with no arguments) and the scriptSig pushes are its satisfier
+    bool isTemplate = false;
 
     void DoPush()
     {
@@ -731,9 +740,38 @@ public:
         spendTx = BuildSpendingTransaction(CScript(), *creditTx);
     }
 
+    //! Tag type to select the script template constructor
+    struct AsTemplate
+    {
+    };
+
+    //! Spend a script template output (with no arguments) whose template is templateScript.  Signatures sign
+    //! the template script.
+    TestBuilder(const CScript &templateScript, const std::string &comment_, int flags_, AsTemplate, CAmount nValue_ = 0)
+        : script(templateScript), havePush(false), comment(comment_), flags(flags_), scriptError(SCRIPT_ERR_OK),
+          nValue(nValue_), isTemplate(true)
+    {
+        creditTx = MakeTransactionRef(BuildCreditingTransaction(ScriptTemplateLock(templateScript), nValue));
+        spendTx = BuildSpendingTransaction(CScript(), *creditTx);
+    }
+
     TestBuilder &SetScriptError(ScriptError_t err)
     {
         scriptError = err;
+        return *this;
+    }
+
+    //! The expected error once fork1 is active (if different than before fork1)
+    TestBuilder &SetFork1Error(ScriptError_t err)
+    {
+        fork1Error = err;
+        return *this;
+    }
+
+    //! The expected error once upgrade2 is active (if different than with fork1)
+    TestBuilder &SetUpgrade2Error(ScriptError_t err)
+    {
+        upgrade2Error = err;
         return *this;
     }
 
@@ -952,8 +990,32 @@ public:
     {
         TestBuilder copy = *this; // Make a copy so we can rollback the push.
         DoPush();
-        DoTest(creditTx->vout[0].scriptPubKey, spendTx.vin[0].scriptSig, flags, comment, scriptError, nValue);
+        CScript scriptSig = spendTx.vin[0].scriptSig;
+        if (isTemplate)
+            scriptSig = ScriptTemplateUnlock(script, scriptSig);
+        DoTest(creditTx->vout[0].scriptPubKey, scriptSig, flags, comment, scriptError, nValue);
         *this = copy;
+        return *this;
+    }
+
+    //! Run the test as specified (before fork1), then with the script flags that fork1 enabled, and then with the
+    //! upgrade2 flags as well.
+    TestBuilder &TestAllEras()
+    {
+        const uint32_t fork1Flags = SCRIPT_FORK1_OPCODES | SCRIPT_RELAX_STACK_WIDTH | SCRIPT_ENFORCE_STACK_TOTAL;
+        const int fork1Err = (fork1Error == -1) ? scriptError : fork1Error;
+        const int upgrade2Err = (upgrade2Error == -1) ? fork1Err : upgrade2Error;
+
+        TestBuilder era = *this;
+        era.Test();
+        era.flags = flags | fork1Flags;
+        era.scriptError = fork1Err;
+        era.comment = comment + " (fork1)";
+        era.Test();
+        era.flags = flags | fork1Flags | SCRIPT_UPGRADE2_OPCODES;
+        era.scriptError = upgrade2Err;
+        era.comment = comment + " (upgrade2)";
+        era.Test();
         return *this;
     }
 
@@ -2214,14 +2276,810 @@ BOOST_AUTO_TEST_CASE(script_build_2)
     }
     UpdateJSONTests(tests);
 }
+
+// Exercises OP_CHECKSIG(VERIFY) and OP_CHECKMULTISIG(VERIFY) in all the ways that the script_tests.json
+// vectors used to.  Those vectors held hard coded ECDSA signatures so they no longer applied.  Here signatures are
+// generated from private keys over the Nexa sighash.  Every test is run before fork1, with the fork1 script flags,
+// and with the upgrade2 script flags (see TestAllEras).
+BOOST_AUTO_TEST_CASE(script_checksig_checkmultisig)
+{
+    const KeyData keys;
+    typedef std::vector<uint8_t> Bytes;
+
+    const uint32_t noFlags = 0;
+    const uint32_t strictenc = SCRIPT_VERIFY_STRICTENC;
+    const uint32_t nullfail = SCRIPT_VERIFY_NULLFAIL | SCRIPT_VERIFY_STRICTENC;
+    const uint32_t minimal = SCRIPT_VERIFY_NULLFAIL | SCRIPT_VERIFY_MINIMALDATA | SCRIPT_VERIFY_STRICTENC;
+    static const CAmount TEST_AMOUNT = 12345000000000;
+
+    auto name = [](const std::string &s, uint32_t f) { return s + " [" + FormatScriptFlags(f) + "]"; };
+    auto P2PK = [](const CPubKey &pk) { return CScript() << ToByteVector(pk) << OP_CHECKSIG; };
+    auto P2PKH = [](const CPubKey &pk)
+    { return CScript() << OP_DUP << OP_HASH160 << ToByteVector(pk.GetID()) << OP_EQUALVERIFY << OP_CHECKSIG; };
+    // m-of-n multisig script with the passed pubkeys
+    auto multisig = [](int64_t m, const std::vector<Bytes> &pks, opcodetype op = OP_CHECKMULTISIG)
+    {
+        CScript s = CScript() << m;
+        for (const Bytes &pk : pks)
+            s << pk;
+        s << (int64_t)pks.size() << op;
+        return s;
+    };
+    const Bytes pk0 = ToByteVector(keys.pubkey0C);
+    const Bytes pk1 = ToByteVector(keys.pubkey1C);
+    const Bytes pk2 = ToByteVector(keys.pubkey2C);
+    const Bytes pk0H = ToByteVector(keys.pubkey0H);
+    const Bytes garbageKey = ParseHex("beef");
+    // A DER encoded (ECDSA style) signature that is 64 bytes long, so it is interpreted as a Schnorr signature
+    const Bytes derR(29, 0x11), derS(29, 0x22);
+
+    //
+    // CHECKSIG and CHECKSIGVERIFY
+    //
+    for (uint32_t f : {noFlags, strictenc})
+    {
+        TestBuilder(P2PK(keys.pubkey0), name("P2PK uncompressed key", f), f).PushSigSchnorr(keys.key0).TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0C), name("P2PK compressed key", f), f).PushSigSchnorr(keys.key0C).TestAllEras();
+        TestBuilder(P2PK(keys.pubkey1), name("P2PK other key", f), f).PushSigSchnorr(keys.key1).TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0) << OP_NOT, name("P2PK NOT mismatched key", f), f)
+            .PushSigSchnorr(keys.key1)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0), name("P2PK mismatched key", f), f)
+            .PushSigSchnorr(keys.key1)
+            .SetScriptError(SCRIPT_ERR_EVAL_FALSE)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0), name("P2PK bad sig", f), f)
+            .PushSigSchnorr(keys.key0)
+            .DamagePush(10)
+            .SetScriptError(SCRIPT_ERR_EVAL_FALSE)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0) << OP_NOT, name("P2PK NOT bad sig", f), f)
+            .PushSigSchnorr(keys.key0)
+            .DamagePush(10)
+            .TestAllEras();
+        TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIGVERIFY << OP_1, name("CHECKSIGVERIFY", f), f)
+            .PushSigSchnorr(keys.key0)
+            .TestAllEras();
+        TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIGVERIFY << OP_1,
+            name("CHECKSIGVERIFY mismatched key", f), f)
+            .PushSigSchnorr(keys.key1)
+            .SetScriptError(SCRIPT_ERR_CHECKSIGVERIFY)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0), name("P2PK empty sig", f), f)
+            .Num(0)
+            .SetScriptError(SCRIPT_ERR_EVAL_FALSE)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0) << OP_NOT, name("P2PK NOT empty sig", f), f).Num(0).TestAllEras();
+
+        // P2PKH
+        TestBuilder(P2PKH(keys.pubkey1C), name("P2PKH", f), f)
+            .PushSigSchnorr(keys.key1)
+            .Push(keys.pubkey1C)
+            .TestAllEras();
+        TestBuilder(P2PKH(keys.pubkey0), name("P2PKH uncompressed key", f), f)
+            .PushSigSchnorr(keys.key0)
+            .Push(keys.pubkey0)
+            .TestAllEras();
+        TestBuilder(P2PKH(keys.pubkey1C), name("P2PKH bad pubkey", f), f)
+            .PushSigSchnorr(keys.key1)
+            .Push(keys.pubkey1C)
+            .DamagePush(5)
+            .SetScriptError(SCRIPT_ERR_EQUALVERIFY)
+            .TestAllEras();
+        TestBuilder(P2PKH(keys.pubkey1C), name("P2PKH bad sig", f), f)
+            .PushSigSchnorr(keys.key1)
+            .DamagePush(10)
+            .Push(keys.pubkey1C)
+            .SetScriptError(SCRIPT_ERR_EVAL_FALSE)
+            .TestAllEras();
+
+        // ECDSA signatures are never valid for transactions
+        TestBuilder(P2PK(keys.pubkey0), name("P2PK ECDSA sig", f), f)
+            .PushSigECDSA(keys.key0)
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0) << OP_NOT, name("P2PK NOT ECDSA sig", f), f)
+            .PushSigECDSA(keys.key0)
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+        TestBuilder(P2PKH(keys.pubkey1C), name("P2PKH ECDSA sig", f), f)
+            .PushSigECDSA(keys.key1)
+            .Push(keys.pubkey1C)
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+
+        // Signature sizes: only 64 bytes plus an optional sighash type is a valid encoding
+        TestBuilder(P2PK(keys.pubkey0) << OP_NOT, name("P2PK NOT 63 byte sig", f), f)
+            .Push(HexStr(Bytes(63, 1)))
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0) << OP_NOT, name("P2PK NOT oversized sig", f), f)
+            .Push(HexStr(Bytes(64 + SigHashType::MAX_LEN + 1, 1)))
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0C) << OP_NOT, name("P2PK NOT 1 byte sig", f), f)
+            .Push("40")
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0C) << OP_NOT, name("P2PK NOT short DER sig", f), f)
+            .Push("300602010702010701")
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+        // A 64 byte DER signature is interpreted (and fails) as a Schnorr signature
+        TestBuilder(P2PK(keys.pubkey0C), name("P2PK 64 byte DER sig", f), f)
+            .PushECDSASigFromParts(derR, derS)
+            .SetScriptError(SCRIPT_ERR_EVAL_FALSE)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0C) << OP_NOT, name("P2PK NOT 64 byte DER sig", f), f)
+            .PushECDSASigFromParts(derR, derS)
+            .TestAllEras();
+
+        // Sighash types
+        TestBuilder(P2PK(keys.pubkey1), name("P2PK anyonecanpay", f), f)
+            .PushSigSchnorr(keys.key1, SigHashType().withAnyoneCanPay())
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey1), name("P2PK anyonecanpay marked with normal hashtype", f), f)
+            .PushSigSchnorr(keys.key1, SigHashType().withAnyoneCanPay())
+            .EditPush(64, SigHashType().withAnyoneCanPay().HexStr(), "00")
+            .SetScriptError(SCRIPT_ERR_EVAL_FALSE)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey1), name("P2PK undefined hashtype", f), f)
+            .PushSigSchnorr(keys.key1, HackSigHashType(5))
+            .SetScriptError(SCRIPT_ERR_SIG_HASHTYPE)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey1) << OP_NOT, name("P2PK NOT bad sig with undefined hashtype", f), f)
+            .PushSigSchnorr(keys.key1, HackSigHashType(5))
+            .DamagePush(10)
+            .SetScriptError(SCRIPT_ERR_SIG_HASHTYPE)
+            .TestAllEras();
+        TestBuilder(P2PKH(keys.pubkey0), name("P2PKH undefined hashtype", f), f)
+            .PushSigSchnorr(keys.key0, HackSigHashType(5))
+            .Push(keys.pubkey0)
+            .SetScriptError(SCRIPT_ERR_SIG_HASHTYPE)
+            .TestAllEras();
+
+        // The signature commits to the amount
+        TestBuilder(P2PK(keys.pubkey0), name("P2PK with amount", f), f, false, TEST_AMOUNT)
+            .PushSigSchnorr(keys.key0, SigHashType(), TEST_AMOUNT)
+            .TestAllEras();
+        TestBuilder(P2PK(keys.pubkey0), name("P2PK wrong amount", f), f, false, TEST_AMOUNT)
+            .PushSigSchnorr(keys.key0, SigHashType(), TEST_AMOUNT + 1)
+            .SetScriptError(SCRIPT_ERR_EVAL_FALSE)
+            .TestAllEras();
+
+        // The pubkey may be computed
+        Bytes reversedPk(pk0.rbegin(), pk0.rend());
+        TestBuilder(CScript() << reversedPk << OP_REVERSEBYTES << OP_CHECKSIG, name("P2PK reversed pubkey", f), f)
+            .PushSigSchnorr(keys.key0C)
+            .TestAllEras();
+
+        // Non push scriptSig
+        TestBuilder(P2PK(keys.pubkey0), name("P2PK non-push scriptSig", f), f)
+            .PushSigSchnorr(keys.key0)
+            .Add(CScript() << OP_NOP8)
+            .TestAllEras();
+    }
+
+    // Pubkey encodings
+    TestBuilder(P2PK(keys.pubkey0), name("P2PK uncompressed key", SCRIPT_VERIFY_COMPRESSED_PUBKEYTYPE | strictenc),
+        SCRIPT_VERIFY_COMPRESSED_PUBKEYTYPE | strictenc)
+        .PushSigSchnorr(keys.key0)
+        .SetScriptError(SCRIPT_ERR_NONCOMPRESSED_PUBKEY)
+        .TestAllEras();
+    TestBuilder(P2PK(keys.pubkey0C), name("P2PK compressed key", SCRIPT_VERIFY_COMPRESSED_PUBKEYTYPE | strictenc),
+        SCRIPT_VERIFY_COMPRESSED_PUBKEYTYPE | strictenc)
+        .PushSigSchnorr(keys.key0C)
+        .TestAllEras();
+    TestBuilder(P2PK(keys.pubkey0H), name("P2PK hybrid key", noFlags), noFlags).PushSigSchnorr(keys.key0).TestAllEras();
+    TestBuilder(P2PK(keys.pubkey0H), name("P2PK hybrid key", strictenc), strictenc)
+        .PushSigSchnorr(keys.key0)
+        .SetScriptError(SCRIPT_ERR_PUBKEYTYPE)
+        .TestAllEras();
+    TestBuilder(P2PK(keys.pubkey0H) << OP_NOT, name("P2PK NOT hybrid key", noFlags), noFlags)
+        .PushSigSchnorr(keys.key0)
+        .SetScriptError(SCRIPT_ERR_EVAL_FALSE)
+        .TestAllEras();
+    TestBuilder(P2PK(keys.pubkey0H) << OP_NOT, name("P2PK NOT hybrid key", strictenc), strictenc)
+        .PushSigSchnorr(keys.key0)
+        .SetScriptError(SCRIPT_ERR_PUBKEYTYPE)
+        .TestAllEras();
+    TestBuilder(P2PK(keys.pubkey0H) << OP_NOT, name("P2PK NOT hybrid key bad sig", noFlags), noFlags)
+        .PushSigSchnorr(keys.key0)
+        .DamagePush(10)
+        .TestAllEras();
+    TestBuilder(P2PK(keys.pubkey0H) << OP_NOT, name("P2PK NOT hybrid key bad sig", strictenc), strictenc)
+        .PushSigSchnorr(keys.key0)
+        .DamagePush(10)
+        .SetScriptError(SCRIPT_ERR_PUBKEYTYPE)
+        .TestAllEras();
+    TestBuilder(CScript() << garbageKey << OP_CHECKSIG << OP_NOT, name("CHECKSIG NOT garbage key", noFlags), noFlags)
+        .PushSigSchnorr(keys.key0)
+        .TestAllEras();
+    TestBuilder(
+        CScript() << garbageKey << OP_CHECKSIG << OP_NOT, name("CHECKSIG NOT garbage key", strictenc), strictenc)
+        .PushSigSchnorr(keys.key0)
+        .SetScriptError(SCRIPT_ERR_PUBKEYTYPE)
+        .TestAllEras();
+
+    // NULLFAIL: a failing signature must be empty
+    TestBuilder(P2PK(keys.pubkey0) << OP_NOT, name("P2PK NOT bad sig", nullfail), nullfail)
+        .PushSigSchnorr(keys.key0)
+        .DamagePush(10)
+        .SetScriptError(SCRIPT_ERR_SIG_NULLFAIL)
+        .TestAllEras();
+    TestBuilder(P2PK(keys.pubkey0) << OP_NOT, name("P2PK NOT empty sig", nullfail), nullfail).Num(0).TestAllEras();
+    TestBuilder(P2PK(keys.pubkey0C) << OP_NOT, name("P2PK NOT 64 byte DER sig", nullfail), nullfail)
+        .PushECDSASigFromParts(derR, derS)
+        .SetScriptError(SCRIPT_ERR_SIG_NULLFAIL)
+        .TestAllEras();
+    TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIGVERIFY << OP_1,
+        name("CHECKSIGVERIFY mismatched key", nullfail), nullfail)
+        .PushSigSchnorr(keys.key1)
+        .SetScriptError(SCRIPT_ERR_SIG_NULLFAIL)
+        .TestAllEras();
+
+    // Unnecessary input and non-push scriptSigs
+    TestBuilder(P2PK(keys.pubkey0), name("P2PK with unnecessary input", noFlags), noFlags)
+        .Num(11)
+        .PushSigSchnorr(keys.key0)
+        .TestAllEras();
+    TestBuilder(
+        P2PK(keys.pubkey0), name("P2PK with unnecessary input", SCRIPT_VERIFY_CLEANSTACK), SCRIPT_VERIFY_CLEANSTACK)
+        .Num(11)
+        .PushSigSchnorr(keys.key0)
+        .SetScriptError(SCRIPT_ERR_CLEANSTACK)
+        .TestAllEras();
+    TestBuilder(
+        P2PK(keys.pubkey0), name("P2PK non-push scriptSig", SCRIPT_VERIFY_SIGPUSHONLY), SCRIPT_VERIFY_SIGPUSHONLY)
+        .PushSigSchnorr(keys.key0)
+        .Add(CScript() << OP_NOP8)
+        .SetScriptError(SCRIPT_ERR_SIG_PUSHONLY)
+        .TestAllEras();
+
+    //
+    // CHECKMULTISIG and CHECKMULTISIGVERIFY without signatures
+    //
+
+    // Empty checkbits "soft" fails: no keys or signatures are checked and false is pushed.
+    for (int64_t n = 0; n <= MAX_PUBKEYS_PER_MULTISIG; n++)
+    {
+        std::vector<Bytes> pks;
+        for (int64_t i = 0; i < n; i++)
+            pks.push_back(Bytes(1, 'a' + i)); // not valid pubkeys, but they are not checked
+        const std::string nofn = "0-of-" + std::to_string(n);
+        TestBuilder(
+            multisig(0, pks) << OP_NOT, name(nofn + " CHECKMULTISIG NOT, empty checkbits", strictenc), strictenc)
+            .Num(0)
+            .TestAllEras();
+        TestBuilder(multisig(0, pks), name(nofn + " CHECKMULTISIG, empty checkbits", strictenc), strictenc)
+            .Num(0)
+            .SetScriptError(SCRIPT_ERR_EVAL_FALSE)
+            .TestAllEras();
+        TestBuilder(multisig(0, pks, OP_CHECKMULTISIGVERIFY) << OP_1,
+            name(nofn + " CHECKMULTISIGVERIFY, empty checkbits", strictenc), strictenc)
+            .Num(0)
+            .SetScriptError(SCRIPT_ERR_CHECKMULTISIGVERIFY)
+            .TestAllEras();
+        if (n == 0)
+            continue;
+        // Nonempty checkbits with no bits set.  Before fork1 the checkbits are a little endian bitfield of exactly
+        // (n+7)/8 bytes.  After fork1 they are a number, so must be minimally encoded if MINIMALDATA is set.
+        const std::string zeroBits = HexStr(Bytes((n + 7) / 8, 0));
+        TestBuilder(multisig(0, pks), name(nofn + " CHECKMULTISIG, zero checkbits", strictenc), strictenc)
+            .Push(zeroBits)
+            .TestAllEras();
+        TestBuilder(multisig(0, pks), name(nofn + " CHECKMULTISIG, zero checkbits", minimal), minimal)
+            .Push(zeroBits)
+            .SetFork1Error(SCRIPT_ERR_NUMBER_BAD_ENCODING)
+            .TestAllEras();
+    }
+    TestBuilder(multisig(0, {}), name("0-of-0 CHECKMULTISIG, 1 byte zero checkbits", strictenc), strictenc)
+        .Push("00")
+        .SetScriptError(SCRIPT_ERR_INVALID_BITFIELD_SIZE)
+        .SetFork1Error(SCRIPT_ERR_OK)
+        .TestAllEras();
+    TestBuilder(multisig(0, {}), name("0-of-0 CHECKMULTISIG, 1 byte zero checkbits", minimal), minimal)
+        .Push("00")
+        .SetScriptError(SCRIPT_ERR_INVALID_BITFIELD_SIZE)
+        .SetFork1Error(SCRIPT_ERR_NUMBER_BAD_ENCODING)
+        .TestAllEras();
+
+    // Empty checkbits with signatures.  The signatures are not checked, so NULLFAIL is not enforced.
+    TestBuilder(multisig(2, {pk0, pk1, pk2}) << OP_NOT, name("2-of-3 NOT, empty checkbits and sigs", minimal), minimal)
+        .Num(0)
+        .Num(0)
+        .Num(0)
+        .TestAllEras();
+    TestBuilder(multisig(2, {pk0, pk1, pk2}) << OP_NOT,
+        name("2-of-3 NOT, empty checkbits and garbage sigs (not NULLFAIL)", minimal), minimal)
+        .Num(0)
+        .Push("beef")
+        .Push("beef")
+        .TestAllEras();
+    TestBuilder(multisig(2, {pk0, pk1, pk2}), name("2-of-3, empty checkbits and valid sigs", minimal), minimal)
+        .Num(0)
+        .PushSigSchnorr(keys.key0)
+        .PushSigSchnorr(keys.key1)
+        .SetScriptError(SCRIPT_ERR_EVAL_FALSE)
+        .TestAllEras();
+    {
+        // 20 invalid pubkeys and 20 empty or DER signatures
+        CScript s = CScript() << 20;
+        for (int i = 0; i < 20; i++)
+            s << OP_1;
+        s << 20 << OP_CHECKMULTISIG << OP_NOT;
+        CScript sigs;
+        for (int i = 0; i < 20; i++)
+            sigs << OP_0;
+        TestBuilder(s, name("20-of-20 NOT, too many pubkeys", strictenc), strictenc)
+            .Num(0)
+            .Add(sigs)
+            .SetScriptError(SCRIPT_ERR_PUBKEY_COUNT)
+            .TestAllEras();
+    }
+
+    // Number of keys and signatures
+    TestBuilder(CScript() << OP_CHECKMULTISIG, name("CHECKMULTISIG empty stack", strictenc), strictenc)
+        .SetScriptError(SCRIPT_ERR_INVALID_STACK_OPERATION)
+        .TestAllEras();
+    TestBuilder(CScript() << OP_1 << OP_CHECKMULTISIG, name("CHECKMULTISIG missing key", strictenc), strictenc)
+        .SetScriptError(SCRIPT_ERR_INVALID_STACK_OPERATION)
+        .TestAllEras();
+    TestBuilder(
+        CScript() << pk0 << OP_1 << OP_CHECKMULTISIG, name("CHECKMULTISIG missing sig count", strictenc), strictenc)
+        .SetScriptError(SCRIPT_ERR_INVALID_STACK_OPERATION)
+        .TestAllEras();
+    TestBuilder(multisig(1, {pk0}), name("CHECKMULTISIG missing sig", strictenc), strictenc)
+        .SetScriptError(SCRIPT_ERR_INVALID_STACK_OPERATION)
+        .TestAllEras();
+    TestBuilder(multisig(1, {pk0}), name("CHECKMULTISIG missing checkbits", strictenc), strictenc)
+        .PushSigSchnorr(keys.key0)
+        .SetScriptError(SCRIPT_ERR_INVALID_STACK_OPERATION)
+        .TestAllEras();
+    TestBuilder(
+        CScript() << OP_0 << OP_1NEGATE << OP_CHECKMULTISIG, name("CHECKMULTISIG -1 keys", strictenc), strictenc)
+        .Num(0)
+        .SetScriptError(SCRIPT_ERR_PUBKEY_COUNT)
+        .TestAllEras();
+    TestBuilder(
+        CScript() << OP_1NEGATE << pk0 << OP_1 << OP_CHECKMULTISIG, name("CHECKMULTISIG -1 sigs", strictenc), strictenc)
+        .Num(0)
+        .SetScriptError(SCRIPT_ERR_SIG_COUNT)
+        .TestAllEras();
+    TestBuilder(multisig(2, {pk0}), name("2-of-1 CHECKMULTISIG", strictenc), strictenc)
+        .Num(0)
+        .Num(0)
+        .Num(0)
+        .SetScriptError(SCRIPT_ERR_SIG_COUNT)
+        .TestAllEras();
+    {
+        std::vector<Bytes> pks(MAX_PUBKEYS_PER_MULTISIG + 1, pk1);
+        pks[0] = pk0;
+        TestBuilder(multisig(1, pks), name("1-of-17 CHECKMULTISIG", minimal), minimal)
+            .Push("010000")
+            .PushSigSchnorr(keys.key0)
+            .SetScriptError(SCRIPT_ERR_PUBKEY_COUNT)
+            .TestAllEras();
+    }
+    // Non minimally encoded key and signature counts
+    TestBuilder(CScript() << OP_CHECKMULTISIG << OP_NOT, name("non-minimal key count", noFlags), noFlags)
+        .Num(0)
+        .Num(0)
+        .Push("0000")
+        .TestAllEras();
+    TestBuilder(CScript() << OP_CHECKMULTISIG << OP_NOT, name("non-minimal sig count", noFlags), noFlags)
+        .Num(0)
+        .Push("0000")
+        .Num(0)
+        .TestAllEras();
+    TestBuilder(CScript() << OP_CHECKMULTISIG << OP_NOT, name("non-minimal key count", minimal), minimal)
+        .Num(0)
+        .Num(0)
+        .Push("0000")
+        .SetScriptError(SCRIPT_ERR_NUMBER_BAD_ENCODING)
+        .TestAllEras();
+
+    // Every key counts against the opcode limit, even if it is not checked
+    {
+        std::vector<Bytes> pks;
+        for (int64_t i = 0; i < MAX_PUBKEYS_PER_MULTISIG; i++)
+            pks.push_back(Bytes(1, 'a' + i));
+        const CScript block = (CScript() << OP_0) + (multisig(0, pks) << OP_DROP); // 1 + nKeys + 1 ops
+        const int blockOps = MAX_PUBKEYS_PER_MULTISIG + 2;
+        const int nBlocks = MAX_OPS_PER_SCRIPT / blockOps;
+        for (int extra : {0, 1})
+        {
+            CScript s;
+            for (int i = 0; i < MAX_OPS_PER_SCRIPT - nBlocks * blockOps + extra; i++)
+                s << OP_NOP;
+            for (int i = 0; i < nBlocks; i++)
+                s += block;
+            s << OP_1;
+            TestBuilder(s, name(extra ? "CHECKMULTISIG over the op limit" : "CHECKMULTISIG at the op limit", strictenc),
+                strictenc)
+                .SetScriptError(extra ? SCRIPT_ERR_OP_COUNT : SCRIPT_ERR_OK)
+                .TestAllEras();
+        }
+    }
+
+    //
+    // CHECKMULTISIG and CHECKMULTISIGVERIFY with signatures
+    //
+    for (uint32_t f : {noFlags, strictenc, minimal})
+    {
+        TestBuilder(multisig(1, {ToByteVector(keys.pubkey0)}), name("1-of-1 uncompressed key", f), f)
+            .Num(1)
+            .PushSigSchnorr(keys.key0)
+            .TestAllEras();
+        TestBuilder(multisig(1, {ToByteVector(keys.pubkey0)}, OP_CHECKMULTISIGVERIFY) << OP_1,
+            name("1-of-1 CHECKMULTISIGVERIFY", f), f)
+            .Num(1)
+            .PushSigSchnorr(keys.key0)
+            .TestAllEras();
+        TestBuilder(multisig(3, {pk0, pk1, pk2}), name("3-of-3", f), f)
+            .Num(0b111)
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key1)
+            .PushSigSchnorr(keys.key2)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk1, pk2}), name("2-of-3 (110)", f), f)
+            .Num(0b110)
+            .PushSigSchnorr(keys.key1)
+            .PushSigSchnorr(keys.key2)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk1, pk2}), name("2-of-3 (101)", f), f)
+            .Num(0b101)
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key2)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk1, pk2}), name("2-of-3 (011)", f), f)
+            .Num(0b011)
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key1)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk0}), name("2-of-2 identical keys and sigs", f), f)
+            .Num(0b11)
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key0)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk0}), name("2-of-2 identical keys, sig duplicated by DUP", f), f)
+            .Num(0b11)
+            .PushSigSchnorr(keys.key0)
+            .Add(CScript() << OP_DUP)
+            .TestAllEras();
+
+        // Bad signatures fail the script, even for CHECKMULTISIG (only empty checkbits can return false)
+        TestBuilder(multisig(1, {pk0}) << OP_NOT, name("1-of-1 NOT bad sig", f), f)
+            .Num(1)
+            .PushSigSchnorr(keys.key0)
+            .DamagePush(10)
+            .SetScriptError(SCRIPT_ERR_CHECKMULTISIGVERIFY)
+            .TestAllEras();
+        TestBuilder(multisig(1, {pk0}) << OP_NOT, name("1-of-1 NOT empty sig", f), f)
+            .Num(1)
+            .Num(0)
+            .SetScriptError(SCRIPT_ERR_CHECKMULTISIGVERIFY)
+            .TestAllEras();
+        TestBuilder(multisig(1, {pk0}), name("1-of-1 mismatched key", f), f)
+            .Num(1)
+            .PushSigSchnorr(keys.key1)
+            .SetScriptError(SCRIPT_ERR_CHECKMULTISIGVERIFY)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk1, pk2}), name("2-of-3 checkbits don't match sigs", f), f)
+            .Num(0b011)
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key2)
+            .SetScriptError(SCRIPT_ERR_CHECKMULTISIGVERIFY)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk1, pk2}), name("2-of-3 misordered sigs", f), f)
+            .Num(0b011)
+            .PushSigSchnorr(keys.key1)
+            .PushSigSchnorr(keys.key0)
+            .SetScriptError(SCRIPT_ERR_CHECKMULTISIGVERIFY)
+            .TestAllEras();
+        TestBuilder(multisig(3, {pk0, pk1, pk2}), name("3-of-3 with 2 sigs", f), f)
+            .Num(0b111)
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key1)
+            .Num(0)
+            .SetScriptError(SCRIPT_ERR_CHECKMULTISIGVERIFY)
+            .TestAllEras();
+        TestBuilder(multisig(1, {pk0}), name("1-of-1 64 byte DER sig", f), f)
+            .Num(1)
+            .PushECDSASigFromParts(derR, derS)
+            .SetScriptError(SCRIPT_ERR_CHECKMULTISIGVERIFY)
+            .TestAllEras();
+
+        // Checkbits that do not match the signature count
+        TestBuilder(multisig(4, {pk0, pk1, pk2}), name("4-of-3", f), f)
+            .Num(0b1111)
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key1)
+            .PushSigSchnorr(keys.key2)
+            .PushSigSchnorr(keys.key2)
+            .SetScriptError(SCRIPT_ERR_SIG_COUNT)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk1, pk2}), name("2-of-3 all checkbits set", f), f)
+            .Num(0b111)
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key1)
+            .SetScriptError(SCRIPT_ERR_INVALID_BIT_COUNT)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk1, pk2}), name("2-of-3 too few checkbits", f), f)
+            .Num(0b010)
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key1)
+            .SetScriptError(SCRIPT_ERR_INVALID_BIT_COUNT)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk1, pk2}), name("2-of-3 extra high checkbit", f), f)
+            .Num(0b1110)
+            .PushSigSchnorr(keys.key1)
+            .PushSigSchnorr(keys.key2)
+            .SetScriptError(SCRIPT_ERR_INVALID_BIT_RANGE)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk1, pk2}), name("2-of-3 too high checkbit", f), f)
+            .Num(0b1010)
+            .PushSigSchnorr(keys.key1)
+            .PushSigSchnorr(keys.key2)
+            .SetScriptError(SCRIPT_ERR_INVALID_BIT_RANGE)
+            .TestAllEras();
+
+        // ECDSA signatures are never valid
+        TestBuilder(multisig(1, {pk0}), name("1-of-1 ECDSA sig", f), f)
+            .Num(1)
+            .PushSigECDSA(keys.key0)
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+        TestBuilder(multisig(3, {pk0, pk1, pk2}), name("3-of-3 with an ECDSA sig", f), f)
+            .Num(0b111)
+            .PushSigECDSA(keys.key0)
+            .PushSigSchnorr(keys.key1)
+            .PushSigSchnorr(keys.key2)
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+        TestBuilder(multisig(3, {pk0, pk1, pk2}), name("3-of-3 with an ECDSA sig last", f), f)
+            .Num(0b111)
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key1)
+            .PushSigECDSA(keys.key2)
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+        TestBuilder(multisig(1, {pk0}), name("1-of-1 63 byte sig", f), f)
+            .Num(1)
+            .Push(HexStr(Bytes(63, 1)))
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+
+        // Only the keys selected by the checkbits are checked
+        TestBuilder(multisig(2, {garbageKey, pk1, pk2}), name("2-of-3 (110) first key garbage", f), f)
+            .Num(0b110)
+            .PushSigSchnorr(keys.key1)
+            .PushSigSchnorr(keys.key2)
+            .TestAllEras();
+        TestBuilder(multisig(2, {pk0, pk1, garbageKey}), name("2-of-3 (011) last key garbage", f), f)
+            .Num(0b011)
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key1)
+            .TestAllEras();
+        TestBuilder(multisig(1, {pk0H, pk1}), name("1-of-2 (10) unchecked hybrid key", f), f)
+            .Num(0b10)
+            .PushSigSchnorr(keys.key1)
+            .TestAllEras();
+    }
+    // Selected garbage or hybrid keys
+    TestBuilder(multisig(2, {garbageKey, pk1, pk2}), name("2-of-3 (011) first key garbage", minimal), minimal)
+        .Num(0b011)
+        .PushSigSchnorr(keys.key0)
+        .PushSigSchnorr(keys.key1)
+        .SetScriptError(SCRIPT_ERR_PUBKEYTYPE)
+        .TestAllEras();
+    TestBuilder(multisig(2, {pk0, pk1, garbageKey}), name("2-of-3 (110) last key garbage", minimal), minimal)
+        .Num(0b110)
+        .PushSigSchnorr(keys.key1)
+        .PushSigSchnorr(keys.key2)
+        .SetScriptError(SCRIPT_ERR_PUBKEYTYPE)
+        .TestAllEras();
+    TestBuilder(multisig(1, {pk0H, pk1}), name("1-of-2 (01) checked hybrid key", noFlags), noFlags)
+        .Num(0b01)
+        .PushSigSchnorr(keys.key0)
+        .TestAllEras();
+    TestBuilder(multisig(1, {pk0H, pk1}), name("1-of-2 (01) checked hybrid key", strictenc), strictenc)
+        .Num(0b01)
+        .PushSigSchnorr(keys.key0)
+        .SetScriptError(SCRIPT_ERR_PUBKEYTYPE)
+        .TestAllEras();
+    TestBuilder(multisig(2, {pk0, pk0}),
+        name("2-of-2 identical keys, sig duplicated by DUP", SCRIPT_VERIFY_SIGPUSHONLY), SCRIPT_VERIFY_SIGPUSHONLY)
+        .Num(0b11)
+        .PushSigSchnorr(keys.key0)
+        .Add(CScript() << OP_DUP)
+        .SetScriptError(SCRIPT_ERR_SIG_PUSHONLY)
+        .TestAllEras();
+
+    // Checkbits encoding.  Before fork1 (SCRIPT_ENFORCE_STACK_TOTAL) the checkbits are a little endian bitfield of
+    // exactly (nKeys+7)/8 bytes.  After fork1 they are a script number (minimally encoded if MINIMALDATA is set).
+    TestBuilder(multisig(2, {pk0, pk1, pk2}), name("2-of-3 no checkbits set", minimal), minimal)
+        .Push("00")
+        .Num(0)
+        .Num(0)
+        .SetScriptError(SCRIPT_ERR_INVALID_BIT_COUNT)
+        .SetFork1Error(SCRIPT_ERR_NUMBER_BAD_ENCODING)
+        .TestAllEras();
+    TestBuilder(multisig(1, {pk0}), name("1-of-1 checkbits with a trailing zero byte", minimal), minimal)
+        .Push("0100")
+        .PushSigSchnorr(keys.key0)
+        .SetScriptError(SCRIPT_ERR_INVALID_BITFIELD_SIZE)
+        .SetFork1Error(SCRIPT_ERR_NUMBER_BAD_ENCODING)
+        .TestAllEras();
+    TestBuilder(multisig(1, {pk0}), name("1-of-1 checkbits with a trailing zero byte", strictenc), strictenc)
+        .Push("0100")
+        .PushSigSchnorr(keys.key0)
+        .SetScriptError(SCRIPT_ERR_INVALID_BITFIELD_SIZE)
+        .SetFork1Error(SCRIPT_ERR_OK)
+        .TestAllEras();
+    {
+        // 0b10000001: one byte 0x81 before fork1, but that is the number -1 after fork1, which is 0x8100
+        const std::vector<Bytes> pks = {pk0, pk1, pk1, pk1, pk1, pk1, pk1, pk2};
+        TestBuilder(multisig(2, pks), name("2-of-8 (10000001) checkbits 0x81", minimal), minimal)
+            .Push("81")
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key2)
+            .SetFork1Error(SCRIPT_ERR_INVALID_BIT_RANGE)
+            .TestAllEras();
+        TestBuilder(multisig(2, pks), name("2-of-8 (10000001) checkbits 0x8100", minimal), minimal)
+            .Push("8100")
+            .PushSigSchnorr(keys.key0)
+            .PushSigSchnorr(keys.key2)
+            .SetScriptError(SCRIPT_ERR_INVALID_BITFIELD_SIZE)
+            .SetFork1Error(SCRIPT_ERR_OK)
+            .TestAllEras();
+    }
+    {
+        // 16-of-16: 0xffff is 2 bytes before fork1, but 3 bytes (ffff00) after since it is a positive number
+        std::vector<Bytes> pks;
+        const CKey *signers[3] = {&keys.key0C, &keys.key1C, &keys.key2C};
+        for (int i = 0; i < MAX_PUBKEYS_PER_MULTISIG; i++)
+            pks.push_back(ToByteVector(signers[i % 3]->GetPubKey()));
+        for (const char *bits : {"ffff", "ffff00"})
+        {
+            TestBuilder t(multisig(MAX_PUBKEYS_PER_MULTISIG, pks),
+                name(std::string("16-of-16 checkbits ") + bits, minimal), minimal);
+            t.Push(bits);
+            for (int i = 0; i < MAX_PUBKEYS_PER_MULTISIG; i++)
+                t.PushSigSchnorr(*signers[i % 3]);
+            if (std::string(bits) == "ffff")
+                t.SetFork1Error(SCRIPT_ERR_INVALID_BIT_RANGE);
+            else
+                t.SetScriptError(SCRIPT_ERR_INVALID_BITFIELD_SIZE).SetFork1Error(SCRIPT_ERR_OK);
+            t.TestAllEras();
+        }
+    }
+    {
+        // 1-of-16 with the signing key first or last
+        std::vector<Bytes> firstPks(MAX_PUBKEYS_PER_MULTISIG, pk1);
+        firstPks.front() = pk0;
+        std::vector<Bytes> lastPks(MAX_PUBKEYS_PER_MULTISIG, pk1);
+        lastPks.back() = pk0;
+        struct
+        {
+            const std::vector<Bytes> *pks;
+            const char *bits;
+            const char *desc;
+            ScriptError_t preFork1;
+            ScriptError_t fork1;
+        } cases[] = {
+            {&firstPks, "0100", "first key", SCRIPT_ERR_OK, SCRIPT_ERR_NUMBER_BAD_ENCODING},
+            {&firstPks, "01", "first key, truncated", SCRIPT_ERR_INVALID_BITFIELD_SIZE, SCRIPT_ERR_OK},
+            {&firstPks, "0001", "first key, wrong endianness", SCRIPT_ERR_CHECKMULTISIGVERIFY,
+                SCRIPT_ERR_CHECKMULTISIGVERIFY},
+            {&lastPks, "0080", "last key", SCRIPT_ERR_OK, SCRIPT_ERR_NUMBER_BAD_ENCODING},
+            {&lastPks, "008000", "last key, as a number", SCRIPT_ERR_INVALID_BITFIELD_SIZE, SCRIPT_ERR_OK},
+            {&lastPks, "8000", "last key, wrong endianness", SCRIPT_ERR_CHECKMULTISIGVERIFY,
+                SCRIPT_ERR_CHECKMULTISIGVERIFY},
+            {&lastPks, "80", "last key, truncated", SCRIPT_ERR_INVALID_BITFIELD_SIZE, SCRIPT_ERR_NUMBER_BAD_ENCODING},
+        };
+        for (const auto &c : cases)
+        {
+            TestBuilder(
+                multisig(1, *c.pks), name(std::string("1-of-16 checkbits ") + c.bits + ", " + c.desc, minimal), minimal)
+                .Push(c.bits)
+                .PushSigSchnorr(keys.key0)
+                .SetScriptError(c.preFork1)
+                .SetFork1Error(c.fork1)
+                .TestAllEras();
+        }
+    }
+
+    //
+    // Script templates (these replace the P2SH tests, since P2SH is disabled).  A template must leave an empty
+    // stack, so it uses the VERIFY forms.
+    //
+    {
+        const CScript p2pkTmpl = CScript() << pk0 << OP_CHECKSIGVERIFY;
+        const CScript p2pkhTmpl = CScript() << OP_DUP << OP_HASH160 << ToByteVector(keys.pubkey1C.GetID())
+                                            << OP_EQUALVERIFY << OP_CHECKSIGVERIFY;
+        const CScript multisigTmpl = multisig(2, {pk0, pk1, pk2}, OP_CHECKMULTISIGVERIFY);
+        const TestBuilder::AsTemplate tmpl;
+
+        TestBuilder(p2pkTmpl, name("template(P2PK)", strictenc), strictenc, tmpl)
+            .PushSigSchnorr(keys.key0C)
+            .TestAllEras();
+        TestBuilder(p2pkTmpl, name("template(P2PK) bad sig", strictenc), strictenc, tmpl)
+            .PushSigSchnorr(keys.key0C)
+            .DamagePush(10)
+            .SetScriptError(SCRIPT_ERR_CHECKSIGVERIFY)
+            .TestAllEras();
+        TestBuilder(p2pkTmpl, name("template(P2PK) mismatched key", strictenc), strictenc, tmpl)
+            .PushSigSchnorr(keys.key1C)
+            .SetScriptError(SCRIPT_ERR_CHECKSIGVERIFY)
+            .TestAllEras();
+        TestBuilder(p2pkTmpl, name("template(P2PK) ECDSA sig", strictenc), strictenc, tmpl)
+            .PushSigECDSA(keys.key0C)
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+        TestBuilder(p2pkTmpl, name("template(P2PK) unnecessary input", strictenc), strictenc, tmpl)
+            .Num(11)
+            .PushSigSchnorr(keys.key0C)
+            .SetScriptError(SCRIPT_ERR_CLEANSTACK)
+            .TestAllEras();
+        TestBuilder(p2pkTmpl, name("template(P2PK) non-push satisfier", strictenc), strictenc, tmpl)
+            .PushSigSchnorr(keys.key0C)
+            .Add(CScript() << OP_NOP8)
+            .SetScriptError(SCRIPT_ERR_SIG_PUSHONLY)
+            .TestAllEras();
+        TestBuilder(p2pkhTmpl, name("template(P2PKH)", strictenc), strictenc, tmpl)
+            .PushSigSchnorr(keys.key1C)
+            .Push(keys.pubkey1C)
+            .TestAllEras();
+        TestBuilder(p2pkhTmpl, name("template(P2PKH) bad pubkey", strictenc), strictenc, tmpl)
+            .PushSigSchnorr(keys.key1C)
+            .Push(keys.pubkey1C)
+            .DamagePush(5)
+            .SetScriptError(SCRIPT_ERR_EQUALVERIFY)
+            .TestAllEras();
+        TestBuilder(p2pkhTmpl, name("template(P2PKH) bad sig", strictenc), strictenc, tmpl)
+            .PushSigSchnorr(keys.key1C)
+            .DamagePush(10)
+            .Push(keys.pubkey1C)
+            .SetScriptError(SCRIPT_ERR_CHECKSIGVERIFY)
+            .TestAllEras();
+        TestBuilder(multisigTmpl, name("template(2-of-3)", minimal), minimal, tmpl)
+            .Num(0b101)
+            .PushSigSchnorr(keys.key0C)
+            .PushSigSchnorr(keys.key2C)
+            .TestAllEras();
+        TestBuilder(multisigTmpl, name("template(2-of-3) 1 sig", minimal), minimal, tmpl)
+            .Num(0b001)
+            .PushSigSchnorr(keys.key0C)
+            .SetScriptError(SCRIPT_ERR_INVALID_STACK_OPERATION)
+            .TestAllEras();
+        TestBuilder(multisigTmpl, name("template(2-of-3) empty checkbits", minimal), minimal, tmpl)
+            .Num(0)
+            .Num(0)
+            .Num(0)
+            .SetScriptError(SCRIPT_ERR_CHECKMULTISIGVERIFY)
+            .TestAllEras();
+        TestBuilder(multisigTmpl, name("template(2-of-3) ECDSA sig", minimal), minimal, tmpl)
+            .Num(0b011)
+            .PushSigECDSA(keys.key0C)
+            .PushSigSchnorr(keys.key1C)
+            .SetScriptError(SCRIPT_ERR_SIG_NONSCHNORR)
+            .TestAllEras();
+    }
+}
+
 BOOST_AUTO_TEST_CASE(script_json_test)
 {
-    /*
     // Read tests from test/data/script_tests.json
     // Format is an array of arrays
     // Inner arrays are [ ["wit"..., nValue]?, "scriptSig", "scriptPubKey", "flags", "expected_scripterror" ]
     // ... where scriptSig and scriptPubKey are stringified
     // scripts.
+    // The expected_scripterror may have fork-specific results appended, e.g. "BAD_OPCODE|FORK1:OK|UPGRADE2:OK".
+    // Every test is run as specified, then again with the FORK1 opcode flag added, and then with both the FORK1 and
+    // UPGRADE2 opcode flags added.
+    // If scriptPubKey is "TEMPLATE <script>", the output is a script template (with no arguments) whose template is
+    // <script>, and scriptSig is the satisfier.  This replaces the P2SH tests (P2SH is disabled on nexa).
     UniValue tests =
         read_json(std::string(json_tests::script_tests, json_tests::script_tests + sizeof(json_tests::script_tests)));
 
@@ -2244,16 +3102,59 @@ BOOST_AUTO_TEST_CASE(script_json_test)
                 BOOST_ERROR("Bad test: " << strTest);
             continue;
         }
-        string scriptSigString = test[pos++].get_str();
-        CScript scriptSig = ParseScript(scriptSigString);
-        string scriptPubKeyString = test[pos++].get_str();
-        CScript scriptPubKey = ParseScript(scriptPubKeyString);
-        unsigned int scriptflags = ParseScriptFlags(test[pos++].get_str());
-        int scriptError = ParseScriptError(test[pos++].get_str());
+        try
+        {
+            string scriptSigString = test[pos++].get_str();
+            CScript scriptSig = ParseScript(scriptSigString);
+            string scriptPubKeyString = test[pos++].get_str();
+            CScript scriptPubKey;
+            const string templatePrefix = "TEMPLATE ";
+            if (scriptPubKeyString.compare(0, templatePrefix.size(), templatePrefix) == 0)
+            {
+                CScript templateScript = ParseScript(scriptPubKeyString.substr(templatePrefix.size()));
+                scriptPubKey = ScriptTemplateLock(templateScript);
+                scriptSig = ScriptTemplateUnlock(templateScript, scriptSig);
+            }
+            else
+            {
+                scriptPubKey = ParseScript(scriptPubKeyString);
+            }
+            unsigned int scriptflags = ParseScriptFlags(test[pos++].get_str());
+            // The expected error is "ERROR" or "ERROR|FORK1:ERROR|UPGRADE2:ERROR".  The optional FORK1 and UPGRADE2
+            // parts give the expected result when the fork1 (and upgrade2) opcode flags are added, for the tests
+            // whose behavior intentionally changes at a fork.  If not specified, the result of the prior era is
+            // expected.
+            std::vector<std::string> errParts;
+            boost::algorithm::split(errParts, test[pos++].get_str(), boost::algorithm::is_any_of("|"));
+            int scriptError = ParseScriptError(errParts[0]);
+            int fork1Error = scriptError;
+            int upgrade2Error = -1;
+            for (size_t i = 1; i < errParts.size(); i++)
+            {
+                const std::string &part = errParts[i];
+                if (part.compare(0, 6, "FORK1:") == 0)
+                    fork1Error = ParseScriptError(part.substr(6));
+                else if (part.compare(0, 9, "UPGRADE2:") == 0)
+                    upgrade2Error = ParseScriptError(part.substr(9));
+                else
+                    BOOST_ERROR("Bad test: unknown expected error qualifier '" << part << "' in " << strTest);
+            }
+            if (upgrade2Error == -1)
+                upgrade2Error = fork1Error;
 
-        DoTest(scriptPubKey, scriptSig, scriptflags, strTest, scriptError, nValue);
+            DoTest(scriptPubKey, scriptSig, scriptflags, strTest, scriptError, nValue);
+            // Opcode semantics must not change across the forks (except as specified above), so repeat each test
+            // with the fork flags added.
+            DoTest(scriptPubKey, scriptSig, scriptflags | SCRIPT_FORK1_OPCODES, strTest + " (with FORK1_OPCODES)",
+                fork1Error, nValue);
+            DoTest(scriptPubKey, scriptSig, scriptflags | SCRIPT_FORK1_OPCODES | SCRIPT_UPGRADE2_OPCODES,
+                strTest + " (with FORK1_OPCODES and UPGRADE2_OPCODES)", upgrade2Error, nValue);
+        }
+        catch (const std::exception &e)
+        {
+            BOOST_ERROR("Bad test: " << strTest << " exception: " << e.what());
+        }
     }
-    */
 }
 
 BOOST_AUTO_TEST_CASE(script_PushData)
@@ -3020,8 +3921,11 @@ BOOST_AUTO_TEST_CASE(script_op_parse)
     ExpectedScriptTemplateFailure(SCRIPT_ERR_INVALID_NUMBER_RANGE, st, CScript(), satisfy);
 
     // REQ1.0: Invalid parse operation
-    st = CScript() << OP_0 << OP_1 << OP_4 << OP_PARSE;
-    ExpectedScriptTemplateFailure(SCRIPT_ERR_BAD_OPCODE, st, CScript(), satisfy);
+    for (int option : {-127, -1, 4, 127})
+    {
+        st = CScript() << OP_0 << OP_1 << option << OP_PARSE;
+        ExpectedScriptTemplateFailure(SCRIPT_ERR_BAD_OPCODE, st, CScript(), satisfy);
+    }
 
     // REQ1.6: The data to be parsed **MUST** be valid for that parse operation
     // give a number, not a script to OP_PARSE
@@ -3519,6 +4423,77 @@ BOOST_AUTO_TEST_CASE(script_jump)
     BOOST_CHECK(vfy);
 }
 
+// Template that checks a data signature n times in an OP_JUMP loop, n given by the satisfier.
+// With emptySigTail it then runs one OP_CHECKDATASIG with an empty signature, which is not a sigcheck.
+static CScript SigCheckLoop(const KeyData &keys, bool emptySigTail)
+{
+    VchType msg;
+    uint256 hash;
+    CSHA256().Write(msg.data(), msg.size()).Finalize(hash.begin());
+    VchType sig;
+    BOOST_REQUIRE(keys.key0.SignSchnorr(hash, sig));
+
+    CScript prefix = CScript() << sig << msg << ToByteVector(keys.pubkey0) << OP_CHECKDATASIGVERIFY << OP_1 << OP_SUB
+                               << OP_DUP << OP_0NOTEQUAL;
+    // jump back to the start while the counter is not 0; the offset is the position of the OP_JUMP byte
+    int64_t offset = prefix.size() + 2;
+    while ((int64_t)(CScript(prefix) << CScriptNum::fromIntUnchecked(offset) << OP_MUL).size() != offset)
+        offset = (CScript(prefix) << CScriptNum::fromIntUnchecked(offset) << OP_MUL).size();
+    CScript loop = CScript(prefix) << CScriptNum::fromIntUnchecked(offset) << OP_MUL << OP_JUMP << OP_DROP;
+    if (emptySigTail)
+        loop << OP_0 << OP_0 << ToByteVector(keys.pubkey0) << OP_CHECKDATASIG << OP_NOT << OP_VERIFY;
+    return loop;
+}
+
+static ScriptError VerifySigCheckLoop(const CScript &templ,
+    int64_t n,
+    uint64_t *maxSigChecks,
+    uint64_t *sigChecks = nullptr)
+{
+    const uint32_t flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
+    CScript empty;
+    CMutableTransaction txFrom = BuildTemplateCreditingTransaction(templ, empty, empty, 1);
+    CMutableTransaction txTo =
+        BuildTemplateSpendingTransaction(templ, empty, CScript() << CScriptNum::fromIntUnchecked(n), txFrom);
+    auto sis = ScriptImportedStateSig(&txTo, 0, txFrom.vout[0].nValue, flags);
+    sis.spentCoins.push_back(txFrom.vout[0]);
+    // the per-input density rule of CScriptCheck: 43 bytes of scriptSig per sigcheck, less 60
+    *maxSigChecks = (txTo.vin[0].scriptSig.size() + 60) / 43;
+    ScriptMachineResourceTracker trk;
+    ScriptError err;
+    VerifyScript(txTo.vin[0].scriptSig, txFrom.vout[0].scriptPubKey, flags, sis, &err, &trk);
+    if (sigChecks)
+        *sigChecks = trk.consensusSigCheckCount;
+    return err;
+}
+
+// A script stops at the first sigcheck the density rule would refuse, not after running to the end
+BOOST_AUTO_TEST_CASE(script_sigchecks_abort_at_density_limit)
+{
+    const KeyData keys;
+    for (bool tail : {false, true})
+    {
+        CScript templ = SigCheckLoop(keys, tail);
+        uint64_t maxSigChecks = 0;
+        uint64_t sigChecks = 0;
+        VerifySigCheckLoop(templ, 1, &maxSigChecks);
+        BOOST_REQUIRE(maxSigChecks > 1 && maxSigChecks <= 16); // keeps the counter push 1 byte
+
+        uint64_t limit = 0;
+        ScriptError err = VerifySigCheckLoop(templ, maxSigChecks, &limit, &sigChecks);
+        BOOST_CHECK_EQUAL(limit, maxSigChecks);
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_OK, ScriptErrorString(err));
+        BOOST_CHECK_EQUAL(sigChecks, maxSigChecks);
+
+        err = VerifySigCheckLoop(templ, maxSigChecks + 1, &limit);
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_SIGCHECKS_LIMIT_EXCEEDED, ScriptErrorString(err));
+
+        // a loop the op limit would otherwise stop after thousands of sigchecks
+        err = VerifySigCheckLoop(templ, 100000, &limit);
+        BOOST_CHECK_MESSAGE(err == SCRIPT_ERR_SIGCHECKS_LIMIT_EXCEEDED, ScriptErrorString(err));
+    }
+}
+
 
 static void CheckError(uint32_t flags, const Stack &original_stack, const CScript &script, ScriptError expected)
 {
@@ -3543,6 +4518,21 @@ static void CheckPass(uint32_t flags, const Stack &original_stack, const CScript
     BOOST_CHECK(r);
     BOOST_CHECK_EQUAL(err, SCRIPT_ERR_OK);
     BOOST_CHECK(stack == expected);
+}
+
+// Arguments near the int64 limits must fail cleanly, without signed overflow or an out of range iterator
+BOOST_AUTO_TEST_CASE(script_jump_exec_extreme_args)
+{
+    const uint32_t flags = MANDATORY_SCRIPT_VERIFY_FLAGS;
+
+    for (int64_t offset : {INT64_MAX, -INT64_MAX, int64_t(1) << 40, -(int64_t(1) << 40)})
+    {
+        CheckError(flags, {}, CScript() << CScriptNum::fromIntUnchecked(offset) << OP_JUMP, SCRIPT_ERR_INVALID_JUMP);
+    }
+
+    CScript code = CScript() << OP_1;
+    CheckError(flags, {}, CScript() << ToByteVector(code) << CScriptNum::fromIntUnchecked(INT64_MAX) << OP_0 << OP_EXEC,
+        SCRIPT_ERR_INVALID_STACK_OPERATION);
 }
 
 BOOST_AUTO_TEST_CASE(script_registers)
@@ -3583,7 +4573,7 @@ BOOST_AUTO_TEST_CASE(script_registers)
     CheckPass(flags, {}, store_and_load_from_register, {{10}});
     // storing the multibyte value to a register then loading it from that register should
     // leave the stack with the multiple byte value on it
-    CheckPass(flags, {}, store_and_load_from_register_multibyte, {{0x4f, 0x5a}});
+    CheckPass(flags, {}, store_and_load_from_register_multibyte, {{0x5a, 0x4f, 0x02, 0x4c}});
 }
 
 BOOST_AUTO_TEST_SUITE_END()

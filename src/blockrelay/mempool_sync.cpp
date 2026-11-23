@@ -62,6 +62,8 @@ bool HandleMempoolSyncRequest(CDataStream &vRecv, CNode *pfrom, uint32_t msgCook
     LOG(MPOOLSYNC, "Handling mempool sync request from peer %s\n", pfrom->GetLogName());
     CMempoolSyncInfo mempoolinfo;
     vRecv >> mempoolinfo;
+    // The receiver rejects a set built for more items than this, so a larger count is never useful
+    mempoolinfo.nTxInMempool = std::min<uint64_t>(mempoolinfo.nTxInMempool, LARGE_MEM_POOL_SIZE);
 
     NodeId nodeId = pfrom->GetId();
 
@@ -138,7 +140,15 @@ bool CMempoolSync::ReceiveMempoolSync(CDataStream &vRecv, CNode *pfrom, std::str
 {
     // Deserialize mempool sync payload
     CMempoolSync mempoolSync;
-    vRecv >> mempoolSync;
+    try
+    {
+        vRecv >> mempoolSync;
+    }
+    catch (const std::exception &e)
+    {
+        dosMan.Misbehaving(pfrom, 20, BanReasonInvalidObject);
+        return error("%s from peer %s: %s\n", strCommand, pfrom->GetLogName(), e.what());
+    }
     NodeId nodeId = pfrom->GetId();
 
     LOG(MPOOLSYNC, "Received mempool sync from peer %s\n", pfrom->GetLogName());

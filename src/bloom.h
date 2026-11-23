@@ -141,6 +141,8 @@ public:
     //! (catch a filter which was just deserialized which was too big)
     bool IsWithinSizeConstraints() const;
 
+    unsigned int NumHashFuncs() const { return nHashFuncs; }
+
 #ifndef LIGHT // limit dependencies -- we do not need these functions in light clients because they support the server
     // side of the filter protocol.
 

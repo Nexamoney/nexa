@@ -8,6 +8,7 @@
 #include "consensus/grouptokens.h"
 
 static const unsigned int DEFAULT_OP_RETURN_GROUP_ID = 88888888;
+static const unsigned int NUM_GROUP_ID_OP_RETURN_FIELDS = 5;
 
 struct CAuth
 {
