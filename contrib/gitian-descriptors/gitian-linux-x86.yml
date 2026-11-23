@@ -153,7 +153,12 @@ script: |
         fi
     fi
     export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-    make ${MAKEOPTS}
+    # Older source revisions predate the CI link wrapper.
+    if [ -x ../ci/make-serial-link.sh ] && [ "${ONLY_LIBNEXA_ARG}" != "--enable-only-libnexa" ]; then
+      ../ci/make-serial-link.sh ${MAKEOPTS}
+    else
+      make ${MAKEOPTS}
+    fi
     make ${MAKEOPTS} -C src check-security
     make ${MAKEOPTS} -C src check-symbols
     make install DESTDIR=${INSTALLPATH}

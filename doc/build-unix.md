@@ -183,6 +183,11 @@ C++ compilers are memory-hungry. It is recommended to have at least 1 GB of
 memory available when compiling Nexa. With 512MB of memory or less
 compilation will take much longer due to swap thrashing.
 
+On Linux runners where concurrent links exhaust memory, run
+`../ci/make-serial-link.sh -j4` from the configured `build/`
+directory. This uses `flock` from util-linux to run one Automake link command
+at a time while allowing compilation to continue in parallel.
+
 ## Strip debug symbols
 
 The release is built with GCC and then `strip nexad` to strip the debug
