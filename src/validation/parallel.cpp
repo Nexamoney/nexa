@@ -68,12 +68,12 @@ bool CScriptCheck::operator()()
     // Per-input sigcheck density rule. Consensus, not just standardness: blocks run this check too, whatever the
     // flags. VerifyScript already stops at the same limit for template scripts.
     {
-        const uint64_t maxSigChecks = MaxSigChecksForScriptSig(scriptSig.size());
-        if (smRes.consensusSigCheckCount > maxSigChecks)
+        const uint64_t maxChecks = MaxSigChecksForScriptSig(scriptSig.size());
+        if (smRes.consensusSigCheckCount > maxChecks)
         {
             error = SCRIPT_ERR_SIGCHECKS_LIMIT_EXCEEDED;
             LOG(SCRIPT, "Sigchecks limit exceeded, with %d sigchecks: satisfier script len (%d) allows %d",
-                smRes.consensusSigCheckCount, scriptSig.size(), maxSigChecks);
+                smRes.consensusSigCheckCount, scriptSig.size(), maxChecks);
             return false;
         }
     }
