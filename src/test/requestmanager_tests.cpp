@@ -93,7 +93,7 @@ public:
     void ResetDisconnect(CNode &node) { node.fDisconnect = false; }
 };
 
-// Cleanup all maps
+// Cleanup all maps and queues
 static void CleanupAll(std::vector<CNode *> &vPeers)
 {
     for (auto pnode : vPeers)
@@ -102,13 +102,14 @@ static void CleanupAll(std::vector<CNode *> &vPeers)
         thinrelay.ClearAllBlocksInFlight(pnode->GetId());
         thinrelay.RemovePeers(pnode);
 
-        {
-            LOCK(pnode->cs_vSend);
-            pnode->vSendMsg.clear();
-            pnode->vLowPrioritySendMsg.clear();
-        }
+        ClearPriorityQueues(pnode);
+        pnode->vSendMsg.clear();
+        pnode->vLowPrioritySendMsg.clear();
     }
     requester.MapBlocksInFlightClear();
+
+    BOOST_CHECK_EQUAL(vPriorityRecvQ.size(), 0);
+    BOOST_CHECK_EQUAL(vPrioritySendQ.size(), 0);
 }
 
 // Return the netmessage string for a block/xthin/graphene request

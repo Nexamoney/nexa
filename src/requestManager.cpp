@@ -873,6 +873,12 @@ bool CRequestManager::RequestBlock(CNode *pfrom, CInv &obj, int blockType)
     return false; // no block was requested
 }
 
+void CRequestManager::ClearRequests(CNode *pfrom)
+{
+    LOCK(cs_deleteNodeRefs);
+    setDeleteNodeRefs.insert(CNodeRef(pfrom));
+}
+
 void CRequestManager::ResetLastBlockRequestTime(const uint256 &hash)
 {
     LOCK(cs_objDownloader);
@@ -995,6 +1001,40 @@ void CRequestManager::SendRequests()
 
     // Add new block requests to be processed
     AddNewBlockRequests(mapTempBlk);
+
+    // Delete sources (noderefs) for peers that have disconnected. This
+    // is essential for a sync to continue after a network outage.
+    //
+    // Note: only block requests have to be checked during the sync period. This is because
+    // at any other time block or txn requests would time out naturally and noderefs removed correctly
+    // but during the sync process if a network outage happens and connections are re-estatblished
+    // the sync process will not restart because the nSyncStarted flag never got reset due
+    // to the previous noderefs never getting cleaned up.
+    {
+        LOCK(cs_deleteNodeRefs);
+        for (auto noderef : setDeleteNodeRefs)
+        {
+            OdMap::iterator mi = mapBlkInfo.begin();
+            while (mi != mapBlkInfo.end())
+            {
+                OdMap::iterator itemIter = mi;
+                CUnknownObj &item = itemIter->second;
+                mi++; // move forward in case we have to cleanup and remove item later.
+
+                auto it =
+                    std::find_if(item.availableFrom.begin(), item.availableFrom.end(), MatchCNodeRequestData(noderef));
+                if (it != item.availableFrom.end())
+                {
+                    item.availableFrom.erase(it);
+                    if (item.availableFrom.empty())
+                    {
+                        cleanup(itemIter);
+                    }
+                }
+            }
+        }
+        setDeleteNodeRefs.clear();
+    }
 
     // Get Blocks
     OdMap::iterator sendBlkIter = mapBlkInfo.begin();

@@ -87,12 +87,6 @@ public:
     CNodeRequestData(CNodeRef n);
 
     CNodeRequestData() : requestCount(0), desirability(0) {}
-    void clear(void)
-    {
-        requestCount = 0;
-        noderef.~CNodeRef();
-        desirability = 0;
-    }
     bool operator<(const CNodeRequestData &rhs) const { return desirability < rhs.desirability; }
 };
 
@@ -230,6 +224,10 @@ protected:
     CCriticalSection cs_deleteTxn;
     std::set<uint256> setDeleter GUARDED_BY(cs_deleteTxn);
 
+    // The set of noderefs to remove from the source lists
+    CCriticalSection cs_deleteNodeRefs;
+    std::set<CNodeRef> setDeleteNodeRefs GUARDED_BY(cs_deleteNodeRefs);
+
     CStatHistory<int> inFlightTxns; // unused
     CStatHistory<int> receivedTxns; // unused
     CStatHistory<int> rejectedTxns;
@@ -260,6 +258,10 @@ public:
     // will be either a objType::SUBBLOCK or objType::BLOCK and is needed to track the obj requests
     // so that if there's a download timeout, only BLOCK requests will trigger it.
     bool RequestBlock(CNode *pfrom, CInv &obj, int objType);
+
+    // Clear out any requests for a peer. This clears any noderefs that the request manager
+    // holds for this peer so that a node disconnect can complete.
+    void ClearRequests(CNode *pfrom);
 
     /** A summary block references its subblocks by mining header commitment in its minerData.  If we are missing
      any of those subblocks, request them from the peer using a normal getdata: the subblock hash and the mining
