@@ -199,6 +199,8 @@ bool IsReachable(enum Network net);
 bool IsReachable(const CNetAddr &addr);
 CAddress GetLocalAddress(const CNetAddr *paddrPeer = nullptr);
 
+/** Clear the priority send and receive queues that match this node */
+void ClearPriorityQueues(CNode *pnode);
 
 extern bool fDiscover;
 extern bool fListen;
@@ -1236,9 +1238,6 @@ public:
      */
     void DisconnectIfBanned();
 
-    /** Clear the priority send and receive queues of any noderefs that match this node */
-    void ClearPriorityQueues();
-
     /** close the socket and do some cleanup */
     void CloseSocketDisconnect(const std::string &reason);
 
@@ -1354,6 +1353,8 @@ public:
     }
     // Assignment -- destroys any reference to the current node and adds a ref to the new one
     CNodeRef &operator=(const CNodeRef &other) { return operator=(other._pnode); }
+
+    bool operator<(const CNodeRef &other) const { return _pnode->GetId() < other->GetId(); }
 
 private:
     CNode *_pnode;

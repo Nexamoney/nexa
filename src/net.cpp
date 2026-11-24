@@ -1261,7 +1261,7 @@ static void AcceptConnection(const ListenSocket &hListenSocket)
 
 char recvMsgBuf[MAX_RECV_CHUNK]; // Messages are first pulled into this buffer
 
-static void ClearPriorityQueues(CNode *pnode)
+void ClearPriorityQueues(CNode *pnode)
 {
     // Purge any noderef's in the priority message queues relating to this peer. If we don't
     // remove the node references here then we won't be able to complete the disconnection.
@@ -1380,6 +1380,7 @@ void CleanupDisconnectedNodes()
         if (pnode->GetRefCount() > 0)
         {
             ClearPriorityQueues(pnode);
+            requester.ClearRequests(pnode);
         }
 
         // Do final node cleanup when all threads are done using it
