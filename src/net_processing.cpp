@@ -3778,52 +3778,55 @@ bool SendMessages(CNode *pto)
         if (nextInvHeaderRequest != 0 && nNow >= nextInvHeaderRequest)
             SendInvHeaderRequest(pto);
 
-        // Address refresh broadcast
-        if (!IsInitialBlockDownload() && pto->nNextLocalAddrSend < nNow)
-        {
-            AdvertiseLocal(pto);
-            pto->nNextLocalAddrSend = PoissonNextSend(nNow, AVG_LOCAL_ADDRESS_BROADCAST_INTERVAL);
-        }
-
-        //
-        // Message: addr
-        //
-        if (pto->nNextAddrSend < nNow)
+        // Send address messages
         {
             LOCK(pto->cs_vAddr);
-            pto->nNextAddrSend = PoissonNextSend(nNow, AVG_ADDRESS_BROADCAST_INTERVAL);
-            std::vector<CAddress> vAddr;
-            vAddr.reserve(pto->vAddrToSend.size());
-
-            const char *msg_type;
-            if (pto->m_wants_addrv2)
+            // Address refresh broadcast
+            if (!IsInitialBlockDownload() && pto->nNextLocalAddrSend < nNow)
             {
-                msg_type = NetMsgType::ADDRV2;
-            }
-            else
-            {
-                msg_type = NetMsgType::ADDR;
+                AdvertiseLocal(pto);
+                pto->nNextLocalAddrSend = PoissonNextSend(nNow, AVG_LOCAL_ADDRESS_BROADCAST_INTERVAL);
             }
 
-            for (const CAddress &addr : pto->vAddrToSend)
+            //
+            // Message: addr
+            //
+            if (pto->nNextAddrSend < nNow)
             {
-                if (!pto->addrKnown.contains(addr.GetKey()))
+                pto->nNextAddrSend = PoissonNextSend(nNow, AVG_ADDRESS_BROADCAST_INTERVAL);
+                std::vector<CAddress> vAddr;
+                vAddr.reserve(pto->vAddrToSend.size());
+
+                const char *msg_type;
+                if (pto->m_wants_addrv2)
                 {
-                    pto->addrKnown.insert(addr.GetKey());
-                    vAddr.push_back(addr);
-                    // receiver rejects addr messages larger than 1000
-                    if (vAddr.size() >= 1000)
+                    msg_type = NetMsgType::ADDRV2;
+                }
+                else
+                {
+                    msg_type = NetMsgType::ADDR;
+                }
+
+                for (const CAddress &addr : pto->vAddrToSend)
+                {
+                    if (!pto->addrKnown.contains(addr.GetKey()))
                     {
-                        pto->PushMessage(msg_type, vAddr);
-                        vAddr.clear();
+                        pto->addrKnown.insert(addr.GetKey());
+                        vAddr.push_back(addr);
+                        // receiver rejects addr messages larger than 1000
+                        if (vAddr.size() >= 1000)
+                        {
+                            pto->PushMessage(msg_type, vAddr);
+                            vAddr.clear();
+                        }
                     }
                 }
+                if (!vAddr.empty())
+                {
+                    pto->PushMessage(msg_type, vAddr);
+                }
+                pto->vAddrToSend.clear();
             }
-            if (!vAddr.empty())
-            {
-                pto->PushMessage(msg_type, vAddr);
-            }
-            pto->vAddrToSend.clear();
         }
 
         CNodeState statem(CAddress(), "");
