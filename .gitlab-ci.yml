@@ -219,7 +219,7 @@ build-ubuntu-nodeps-qt:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=qt5 --enable-glibc-back-compat --enable-reduce-exports --disable-bench --disable-tests
-        - make -j"$CPUS"
+        - ../ci/make-serial-link.sh -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -264,7 +264,7 @@ build-ubuntu-nodeps-nowallet-qt:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=qt5 --disable-wallet --enable-glibc-back-compat --enable-reduce-exports
-        - make -j"$CPUS"
+        - ../ci/make-serial-link.sh -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: always
@@ -431,7 +431,7 @@ build-ubuntu:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-shared --enable-debug --enable-zmq --enable-glibc-back-compat --enable-reduce-exports --cache-file=config.cache --prefix=$PWD/../depends/x86_64-linux-gnu CPPFLAGS=-DDEBUG_LOCKORDER
-        - make -j"$CPUS"
+        - ../ci/make-serial-link.sh -j"$CPUS"
         - ccache --show-stats
     after_script:
         - |
@@ -641,7 +641,7 @@ build-ubuntu-clang:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-zmq --with-gui=qt5 CPPFLAGS=-DDEBUG_LOCKORDER
-        - make -j"$CPUS"
+        - ../ci/make-serial-link.sh -j"$CPUS"
         - ccache --show-stats
     artifacts:
         paths:
@@ -860,7 +860,7 @@ build-riscv-64:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --prefix=$PWD/../depends/riscv64-linux-gnu
-        - make -j"$CPUS"
+        - ../ci/make-serial-link.sh -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -1049,7 +1049,7 @@ build-osx:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/x86_64-apple-darwin
-        - make -j"$CPUS"
+        - ../ci/make-serial-link.sh -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: always
@@ -1107,7 +1107,7 @@ build-osx-arm64:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --enable-reduce-exports --prefix=$PWD/../depends/arm64-apple-darwin
-        - make -j"$CPUS"
+        - ../ci/make-serial-link.sh -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: always
@@ -1169,7 +1169,7 @@ build-debian-nodeps-qt:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=qt5 --enable-glibc-back-compat --enable-reduce-exports --disable-bench --disable-tests
-        - make -j"$CPUS"
+        - ../ci/make-serial-link.sh -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -1231,7 +1231,7 @@ build-ubuntu24-nodeps-qt:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=qt5 --enable-glibc-back-compat --enable-reduce-exports --disable-bench --disable-tests
-        - make -j"$CPUS"
+        - ../ci/make-serial-link.sh -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
@@ -1528,7 +1528,7 @@ build-alpine-nodeps-qt:
         - ./autogen.sh
         - mkdir build; cd build
         - ../configure --cache-file=config.cache --with-gui=qt5 --enable-reduce-exports --disable-bench --disable-tests
-        - make -j"$CPUS"
+        - ../ci/make-serial-link.sh -j"$CPUS"
         - ccache --show-stats
     artifacts:
         when: on_failure
