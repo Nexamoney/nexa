@@ -12,7 +12,6 @@
 #include "clientversion.h"
 #include "config.h"
 #include "copyright.h"
-#include "forks_csv.h"
 #include "fs.h"
 #include "httprpc.h"
 #include "httpserver.h"
@@ -111,21 +110,6 @@ bool AppInit(int argc, char *argv[])
         fprintf(stdout, "%s", strUsage.c_str());
         return true;
     }
-
-    // bip135 begin
-    // dump default deployment info and exit, if requested
-    if (GetBoolArg("-dumpforks", false))
-    {
-        std::stringstream ss;
-        ss << "# " << strprintf(_("%s Daemon"), _(PACKAGE_NAME)) << " " << _("version") << " " << FormatFullVersion();
-        ss << "\n" << FORKS_CSV_FILE_HEADER;
-        ss << NetworkDeploymentInfoCSV(CBaseChainParams::TESTNET);
-        ss << NetworkDeploymentInfoCSV(CBaseChainParams::REGTEST);
-        ss << NetworkDeploymentInfoCSV(CBaseChainParams::NEXA);
-        std::cout << ss.str();
-        return true;
-    }
-    // bip135 end
 
     try
     {

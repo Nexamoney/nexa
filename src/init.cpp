@@ -25,7 +25,6 @@
 #include "consensus/validation.h"
 #include "dosman.h"
 #include "electrum/electrumserver.h"
-#include "forks_csv.h"
 #include "fs.h"
 #include "httprpc.h"
 #include "httpserver.h"
@@ -1199,63 +1198,6 @@ bool AppInit2(Config &config)
     LOGA("Using config file %s\n", GetConfigFile(GetArg("-conf", CONF_FILENAME)).string());
     LOGA("Using at most %i connections\n", maxConnections.Value());
     std::ostringstream strErrors;
-
-    // bip135 begin
-    // check for fork deployment CSV file, read it
-    const fs::path ForksCsvFile = GetForksCsvFile();
-    const std::string strForksCsvFile = ForksCsvFile.string();
-
-    if (fs::exists(ForksCsvFile))
-    {
-        fs_ifstream csvFile;
-        bool CsvReadOk = true;
-        try
-        {
-            csvFile.open(ForksCsvFile, ios::in);
-            if (csvFile.fail())
-            {
-                throw std::runtime_error("unable to open deployment file for reading");
-            }
-
-            LOGA("Reading deployment configuration CSV file at '%s'\n", strForksCsvFile);
-            // read the CSV file and apply the parameters for current network
-            CsvReadOk = ReadForksCsv(chainparams.NetworkIDString(), csvFile, chainparams.GetModifiableConsensus());
-            csvFile.close();
-        }
-        catch (const std::exception &e)
-        {
-            LOGA("Unable to read '%s'\n", strForksCsvFile);
-            // if unable to read file which is present: abort
-            return InitError(strprintf(
-                _("Warning: Could not open deployment configuration CSV file '%s' for reading"), strForksCsvFile));
-        }
-        // if the deployments data doesn't validate correctly, shut down for safety reasons.
-        if (!CsvReadOk)
-        {
-            LOGA("Validation of '%s' failed\n", strForksCsvFile);
-            return InitError(strprintf(
-                _("Deployment configuration file '%s' contained invalid data - see debug.log"), strForksCsvFile));
-        }
-    }
-    else
-    {
-        if (strcmp(GetArg("-forks", FORKS_CSV_FILENAME).c_str(), FORKS_CSV_FILENAME) == 0)
-        {
-            // Be noisy, but don't fail if file is absent - use built-in defaults.
-            LOGA("No deployment configuration found at '%s' - using defaults\n", strForksCsvFile);
-        }
-        else
-        {
-            // Fail only when we've configured a file but it doesn't exit.
-            return InitError(strprintf(_("Deployment configuration file '%s' not found"), strForksCsvFile));
-        }
-    }
-
-    // assign votes based on the initial configuration of mining.vote
-    ClearBip135Votes();
-    AssignBip135Votes(bip135Vote, 1);
-
-    // bip135 end
 
     // Setup the number of p2p message processing threads used to process incoming messages
     if (numMsgHandlerThreads.Value() == 0)

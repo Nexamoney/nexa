@@ -162,7 +162,6 @@ BITCOIN_CORE_H = \
   extversionkeys.h \
   fast-cpp-csv-parser/csv.h \
   fastfilter.h \
-  forks_csv.h \
   fs.h \
   httprpc.h \
   httpserver.h \
@@ -310,7 +309,6 @@ libnexa_server_a_SOURCES = \
   electrum/electrumserver.cpp \
   electrum/rostrum.cpp \
   extversionmessage.cpp \
-  forks_csv.cpp \
   httprpc.cpp \
   httpserver.cpp \
   iblt.cpp \
