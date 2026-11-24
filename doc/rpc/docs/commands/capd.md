@@ -1,7 +1,7 @@
 ```
 capd
 
-CAPD RPC calls, including info, send, get, list, remove and clear.
+CAPD RPC calls, including info, send, broadcast, get, list, remove and clear.
 capd clear: removes all messages from the pool.
 capd remove <message hash>: removes a particular message from the pool.
 capd get <message hash>: returns a particular message.
@@ -9,6 +9,11 @@ capd info: returns information about the message pool.
 capd list: returns the hash of every message in the pool.
 capd send <message data>: sends hex (preferred) or ascii encoded message.
     To force ascii encoding use a non-hex character.
+    The node creates the message and solves its POW to the current relay priority.
+    Returns the message hash.
+capd broadcast <hex>: adds an already solved, network serialized message to the
+    pool and relays it. No POW is done; the message is rejected if its POW is
+    invalid or its priority is below the pool minimum. Returns the message hash.
 
 Result: 
 capd info
