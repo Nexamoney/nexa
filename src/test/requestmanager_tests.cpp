@@ -103,6 +103,8 @@ static void CleanupAll(std::vector<CNode *> &vPeers)
         thinrelay.RemovePeers(pnode);
 
         ClearPriorityQueues(pnode);
+        pnode->vSendMsg.clear();
+        pnode->vLowPrioritySendMsg.clear();
     }
     requester.MapBlocksInFlightClear();
 
