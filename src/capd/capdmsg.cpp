@@ -207,10 +207,13 @@ bool CapdMsg::Solve(long int time)
             }
             count++;
         }
+        if (solved)
+            break;
 
         count = 0;
         nonce.resize(4);
-        while (count < 256UL * 256UL * 256UL * 256UL)
+        // 64 bit literal: unsigned long is 32 bits on Windows, where 256UL * 256UL * 256UL * 256UL is 0
+        while (count < 256ULL * 256ULL * 256ULL * 256ULL)
         {
             nonce[0] = count & 255;
             nonce[1] = count >> 8;
