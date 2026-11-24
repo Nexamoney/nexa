@@ -275,8 +275,7 @@ static void addGeneralOptions(AllowedArgs &allowedArgs, HelpMessageMode mode)
             strprintf(_("How many blocks to check at startup (default: %u, 0 = all)"), DEFAULT_CHECKBLOCKS))
         .addArg("checklevel=<n>", requiredInt,
             strprintf(
-                _("How thorough the block verification of -checkblocks is (0-4, default: %u)"), DEFAULT_CHECKLEVEL))
-        .addDebugArg("dumpforks", optionalBool, _("Dump built-in fork deployment data in CSV format and exit"));
+                _("How thorough the block verification of -checkblocks is (0-4, default: %u)"), DEFAULT_CHECKLEVEL));
 
 #ifndef WIN32
     if (mode == HMM_NEXAD)
