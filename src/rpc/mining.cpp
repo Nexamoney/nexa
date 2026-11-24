@@ -392,87 +392,6 @@ static UniValue BIP22ValidationResult(const CValidationState &state)
     return "valid?";
 }
 
-std::string gbt_vb_name(const Consensus::DeploymentPos pos)
-{
-    const struct ForkDeploymentInfo &vbinfo = VersionBitsDeploymentInfo[pos];
-    std::string s = vbinfo.name;
-    if (!vbinfo.gbt_force)
-    {
-        s.insert(s.begin(), '!');
-    }
-    return s;
-}
-
-// Sets the version bits in a block
-int32_t UtilMkBlockTmplVersionBits(int32_t version,
-    const std::set<std::string> &setClientRules,
-    CBlockIndex *pindexPrev,
-    UniValue *paRules,
-    UniValue *pvbavailable)
-{
-    const Consensus::Params &consensusParams = Params().GetConsensus();
-
-    for (int j = 0; j < (int)Consensus::MAX_VERSION_BITS_DEPLOYMENTS; ++j)
-    {
-        Consensus::DeploymentPos pos = Consensus::DeploymentPos(j);
-        ThresholdState state = VersionBitsState(pindexPrev, consensusParams, pos, versionbitscache);
-        switch (state)
-        {
-        case THRESHOLD_DEFINED:
-        case THRESHOLD_FAILED:
-            // Not exposed to GBT at all
-            break;
-        case THRESHOLD_LOCKED_IN:
-            // Ensure bit is set in block version
-            version |= VersionBitsMask(consensusParams, pos);
-        // FALLTHROUGH
-        // to get vbavailable set...
-        case THRESHOLD_STARTED:
-        {
-            const struct ForkDeploymentInfo &vbinfo = VersionBitsDeploymentInfo[pos];
-            if (pvbavailable != nullptr)
-            {
-                pvbavailable->pushKV(gbt_vb_name(pos), consensusParams.vDeployments[pos].bit);
-            }
-            if (setClientRules.find(vbinfo.name) == setClientRules.end())
-            {
-                if (!vbinfo.gbt_force)
-                {
-                    // If the client doesn't support this, don't indicate it in the [default] version
-                    version &= ~VersionBitsMask(consensusParams, pos);
-                }
-                if (vbinfo.myVote == true) // let the client vote for this feature
-                    version |= VersionBitsMask(consensusParams, pos);
-            }
-            break;
-        }
-        case THRESHOLD_ACTIVE:
-        {
-            // Add to rules only
-            const struct ForkDeploymentInfo &vbinfo = VersionBitsDeploymentInfo[pos];
-            if (paRules != nullptr)
-            {
-                paRules->push_back(gbt_vb_name(pos));
-            }
-            if (setClientRules.find(vbinfo.name) == setClientRules.end())
-            {
-                // Not supported by the client; make sure it's safe to proceed
-                if (!vbinfo.gbt_force)
-                {
-                    // If we do anything other than throw an exception here, be sure version/force isn't sent to old
-                    // clients
-                    throw JSONRPCError(RPC_INVALID_PARAMETER,
-                        strprintf("Support for '%s' rule requires explicit client support", vbinfo.name));
-                }
-            }
-            break;
-        }
-        }
-    }
-    return version;
-}
-
-
 static UniValue MkFullMiningCandidateJson(const std::set<std::string> &setClientRules,
     CBlockIndex *pindexPrev,
     int64_t coinbaseSize,
@@ -863,15 +782,7 @@ UniValue getblocktemplate(const UniValue &params, bool fHelp)
 
             "\nResult:\n"
             "{\n"
-            "  \"version\" : n,                    (numeric) The block version\n"
             "  \"rules\" : [ \"rulename\", ... ],    (array of strings) specific block rules that are to be enforced\n"
-            "  \"vbavailable\" : {                 (json object) set of pending, supported versionbit (BIP 9) softfork "
-            "deployments\n"
-            "      \"rulename\" : bitnumber        (numeric) identifies the bit number as indicating acceptance and "
-            "readiness for the named softfork rule\n"
-            "      ,...\n"
-            "  },\n"
-            "  \"vbrequired\" : n,                 (numeric) bit mask of versionbits the server requires set in "
             "submissions\n"
             "  \"previousblockhash\" : \"xxxx\",    (string) The hash of current highest block\n"
             "  \"transactions\" : [                (array) contents of non-coinbase transactions that should be "

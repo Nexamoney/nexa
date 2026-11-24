@@ -113,9 +113,6 @@ static int64_t nTimeConnectTotal = 0;
 static int64_t nTimeChainState = 0;
 static int64_t nTimePostConnect = 0;
 
-// Protected by cs_main
-static ThresholdConditionCache warningcache[Consensus::MAX_VERSION_BITS_DEPLOYMENTS];
-
 bool ContextualCheckBlockHeader(const CChainParams &chainparams,
     const CBlockHeader &block,
     CValidationState &state,
@@ -1069,17 +1066,12 @@ void UnloadBlockIndex()
         pindexBestHeader = nullptr;
         ResetASERTAnchorBlockCache();
         mapBlockSource.clear();
-        for (int b = 0; b < Consensus::MAX_VERSION_BITS_DEPLOYMENTS; b++)
-        {
-            warningcache[b].clear();
-        }
     }
 
     {
         WRITELOCK(cs_mapBlockIndex);
         setDirtyBlockIndex.clear();
         setHeadersToTrim.clear();
-        versionbitscache.Clear();
         for (BlockMap::value_type &entry : mapBlockIndex)
         {
             delete entry.second;
@@ -1949,43 +1941,6 @@ uint64_t GetCoinsMinted(int nHeight, const Consensus::Params &consensusParams)
         nSubsidy >>= 1;
     }
     return total_minted;
-}
-
-int32_t ComputeBlockVersion(const CBlockIndex *pindexPrev, const Consensus::Params &params)
-{
-    LOCK(cs_main);
-    int32_t nVersion = VERSIONBITS_TOP_BITS;
-
-    for (int i = 0; i < Consensus::MAX_VERSION_BITS_DEPLOYMENTS; i++)
-    {
-        // bip135 begin
-        // guard this because not all deployments have window/threshold
-        if (IsConfiguredDeployment(params, i))
-        {
-            const struct ForkDeploymentInfo &vbinfo = VersionBitsDeploymentInfo[i];
-            ThresholdState state = VersionBitsState(pindexPrev, params, (Consensus::DeploymentPos)i, versionbitscache);
-            // activate the bits that are STARTED or LOCKED_IN according to their deployments
-            if (state == THRESHOLD_LOCKED_IN || (state == THRESHOLD_STARTED && vbinfo.myVote == true))
-            {
-                nVersion |= VersionBitsMask(params, (Consensus::DeploymentPos)i);
-            }
-        }
-        // bip135 end
-    }
-
-    return nVersion;
-}
-
-int32_t UnlimitedComputeBlockVersion(const CBlockIndex *pindexPrev, const Consensus::Params &params, uint32_t nTime)
-{
-    if (blockVersion != 0) // BU: allow override of block version
-    {
-        return blockVersion;
-    }
-
-    int32_t nVersion = ComputeBlockVersion(pindexPrev, params);
-
-    return nVersion;
 }
 
 /** Return whether switching from tip to a chain branching at fork is within the configured reorg depth. */

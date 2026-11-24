@@ -254,7 +254,6 @@ BITCOIN_CORE_H = \
   validation/validation.h \
   validation/verifydb.h \
   validationinterface.h \
-  versionbits.h \
   wallet/crypter.h \
   wallet/db.h \
   wallet/rpcwallet.h \
@@ -366,7 +365,6 @@ libnexa_server_a_SOURCES = \
   validation/dag.cpp \
   validation/verifydb.cpp \
   validationinterface.cpp \
-  versionbits.cpp \
   wallet/grouptokencache.cpp \
   utilgrouptoken.cpp \
   $(BITCOIN_CORE_H)
@@ -644,7 +642,6 @@ libnexa_common_a_SOURCES = \
   utilstrencodings.cpp \
   utilstrencodings.h \
   version.h \
-  versionbits.cpp \
   $(BITCOIN_CORE_H)
 
 # util: shared between all executables.

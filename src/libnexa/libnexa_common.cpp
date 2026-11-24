@@ -55,8 +55,6 @@ void get_error_string(char *buf, uint64_t buflen)
 volatile ECCVerifyHandle *verifyContext = nullptr;
 volatile CChainParams *libnexaParams = nullptr;
 
-ForkDeploymentInfo VersionBitsDeploymentInfo[Consensus::MAX_VERSION_BITS_DEPLOYMENTS];
-
 // This section of this file provides simple or NO-OP implementations of functions used by the larger codebase
 // The time stuff is reimplemented here to avoid a dependency on utiltime, which both
 // implements mocktime (using atomics) and has other dependencies for time formatting and logging

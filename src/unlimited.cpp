@@ -136,23 +136,6 @@ std::string TokenWalletUpdater(const bool &value, CTweak<bool> *item, bool valid
     return std::string();
 }
 
-std::string Bip135VoteValidator(const std::string &value, std::string *item, bool validate)
-{
-    if (validate)
-    {
-        bool categoriesValid = AssignBip135Votes(value, -1);
-        if (!categoriesValid)
-            return std::string("Invalid/unknown features specified");
-    }
-    else // Do what is needed to use the new value already stored in item
-    {
-        ClearBip135Votes();
-        AssignBip135Votes(*item, 1);
-        forceTemplateRecalc.store(true);
-    }
-    return std::string();
-}
-
 // Ensure that only one fork can be active at a time, and convert values of 1 to the
 // fork time default.
 std::string ForkTimeValidator(const uint64_t &value, uint64_t *item, bool validate)
@@ -387,7 +370,6 @@ void periodicTasks()
 
 void UnlimitedSetup(void)
 {
-    blockVersion = GetArg("-blockversion", blockVersion);
     LoadTweaks(); // The above options are deprecated so the same parameter defined as a tweak will override them
 
     // If the user configures it to 0 then use default settings.
@@ -553,63 +535,6 @@ UniValue setminingmaxblock(const UniValue &params, bool fHelp)
     if (!ret.empty())
         throw runtime_error(ret.c_str());
     return miningBlockSize.Set(params[0]);
-}
-
-UniValue getblockversion(const UniValue &params, bool fHelp)
-{
-    if (fHelp || params.size() != 0)
-        throw runtime_error("getblockversion\n"
-                            "\nReturn the block version used when mining."
-                            "\nResult\n"
-                            "      (integer) block version number\n"
-                            "\nExamples:\n" +
-                            HelpExampleCli("getblockversion", "") + HelpExampleRpc("getblockversion", ""));
-    const CBlockIndex *pindex = chainActive.Tip();
-    return UnlimitedComputeBlockVersion(pindex, Params().GetConsensus(), pindex->GetBlockTime());
-}
-
-UniValue setblockversion(const UniValue &params, bool fHelp)
-{
-    if (fHelp || params.size() < 1 || params.size() > 2)
-        throw runtime_error("setblockversion blockVersionNumber\n"
-                            "\nSet the block version number.\n"
-                            "\nArguments:\n"
-                            "1. blockVersionNumber         (integer, hex integer, 'BIP109', 'BASE' or 'default'.  "
-                            "Required) The block version number.\n"
-                            "\nExamples:\n"
-                            "\nVote for 2MB blocks\n" +
-                            HelpExampleCli("setblockversion", "BIP109") + "\nCheck the setting\n" +
-                            HelpExampleCli("getblockversion", ""));
-
-    uint32_t arg = 0;
-
-    string temp = params[0].get_str();
-    if (temp == "default")
-    {
-        arg = 0;
-    }
-    else if (temp == "BIP109")
-    {
-        arg = BASE_VERSION | FORK_BIT_2MB;
-    }
-    else if (temp == "BASE")
-    {
-        arg = BASE_VERSION;
-    }
-    else if ((temp[0] == '0') && (temp[1] == 'x'))
-    {
-        std::stringstream ss;
-        ss << std::hex << (temp.c_str() + 2);
-        ss >> arg;
-    }
-    else
-    {
-        arg = boost::lexical_cast<unsigned int>(temp);
-    }
-
-    blockVersion = arg;
-
-    return NullUniValue;
 }
 
 bool IsTrafficShapingEnabled()
@@ -1522,8 +1447,6 @@ static const CRPCCommand commands[] =
     { "mining",             "setminingmaxblock",      &setminingmaxblock,      true  },
     { "mining",             "getminercomment",        &getminercomment,        true  },
     { "mining",             "setminercomment",        &setminercomment,        true  },
-    { "mining",             "getblockversion",        &getblockversion,        true  },
-    { "mining",             "setblockversion",        &setblockversion,        true  },
     { "mining",             "validateblocktemplate",  &validateblocktemplate,  true  },
     { "mining",             "getminingcandidate",     &getminingcandidate,     true  },
     { "mining",             "submitminingsolution",   &submitminingsolution,   true  },

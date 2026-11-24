@@ -22,7 +22,6 @@
 #include "script/script_error.h"
 #include "sync.h"
 #include "txdb.h"
-#include "versionbits.h"
 
 #include <algorithm>
 #include <exception>
@@ -240,9 +239,6 @@ bool GetTransaction(const uint256 &hash,
  */
 bool AreFreeTxnsAllowed();
 
-/** Get the BIP135 state for a given deployment at the current tip. */
-ThresholdState VersionBitsTipState(const Consensus::Params &params, Consensus::DeploymentPos pos);
-
 /**
  * Test whether the LockPoints height and time are still valid on the current chain
  */
@@ -271,7 +267,5 @@ extern CBlockHeadersDB *pblockheaders;
 extern CTokenDescriptionDB *ptokenDesc;
 /** Global variable that points to the token mintage database (protected by tokenmint.cs_tokenmint) */
 extern CTokenMintageDB *ptokenMint;
-
-extern VersionBitsCache versionbitscache;
 
 #endif // NEXA_MAIN_H

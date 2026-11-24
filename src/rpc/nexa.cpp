@@ -4,7 +4,6 @@
 #include "init.h"
 #include "pow.h"
 #include "unlimited.h"
-#include "versionbits.h" // bip135 added
 
 #include "rpc/server.h"
 #include "tinyformat.h"
