@@ -477,6 +477,9 @@ class MyTest (BitcoinTestFramework):
         m.solve(4)
         m.setDifficultyBitsFromPriority(20)
         assert_raises_rpc_error(-26, "Message POW inconsistent", self.nodes[0].capd, "broadcast", m.serialize().hex())
+        # Its priority is above every other message, and the messages created below must exceed the highest one
+        self.nodes[0].capd("remove", mHex)
+        self.nodes[1].capd("remove", mHex)
 
         # reduce the capd message size and validate that it gets pared down
         self.nodes[1].set("cache.maxCapdPool=10000")
