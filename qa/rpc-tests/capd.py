@@ -456,6 +456,27 @@ class MyTest (BitcoinTestFramework):
             assert n in l1
             assert n in l0
 
+        # broadcast an externally solved message
+        m = CapdMsg(b"broadcast an already solved message")
+        m.solve(4)
+        mHex = hashToHex(m.getHash())
+        assert_equal(self.nodes[0].capd("broadcast", m.serialize().hex()), mHex)
+        assert_equal(self.nodes[0].capd("get", mHex)["data"].lower(), m.data.hex())
+        waitFor(TIMEOUT, lambda: mHex in self.nodes[1].capd("list"))
+        # broadcasting a message that is already in the pool is not an error
+        assert_equal(self.nodes[0].capd("broadcast", m.serialize().hex()), mHex)
+
+        assert_raises_rpc_error(-22, "Message must be hex encoded", self.nodes[0].capd, "broadcast", "zz")
+        assert_raises_rpc_error(-22, "Message decode failed", self.nodes[0].capd, "broadcast", "0102")
+        assert_raises_rpc_error(-22, "trailing data", self.nodes[0].capd, "broadcast", m.serialize().hex() + "00")
+        m = CapdMsg(b"broadcast a message with too little POW")
+        m.solve(0.5)
+        assert_raises_rpc_error(-26, "Message POW too low", self.nodes[0].capd, "broadcast", m.serialize().hex())
+        m = CapdMsg(b"broadcast a message whose POW does not match its difficulty")
+        m.solve(4)
+        m.setDifficultyBitsFromPriority(1000000)
+        assert_raises_rpc_error(-26, "Message POW inconsistent", self.nodes[0].capd, "broadcast", m.serialize().hex())
+
         # reduce the capd message size and validate that it gets pared down
         self.nodes[1].set("cache.maxCapdPool=10000")
         st0 = self.nodes[1].capd()

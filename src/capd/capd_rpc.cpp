@@ -33,11 +33,39 @@ UniValue CapdMsg2UniValue(CapdMsgRef msg)
     return ret;
 }
 
+// Check all query peers to see if they are interested in this new message
+static void NotifyCapdQueryPeers(const CapdMsgRef &msg)
+{
+    // Grab a copy of capd CNodes and add a ref so they can't be deleted
+    std::vector<CNode *> capdNodes;
+    {
+        LOCK(cs_vNodes);
+        for (CNode *pnode : vNodes)
+        {
+            if (pnode->isCapdEnabled && pnode->capd)
+            {
+                capdNodes.push_back(pnode);
+                pnode->AddRef();
+            }
+        }
+    }
+
+    // Now see if we need to relay this message to a query peer
+    for (CNode *pnode : capdNodes)
+    {
+        pnode->capd->checkNotification(msg);
+    }
+
+    // Release our refs to these nodes
+    for (CNode *pnode : capdNodes)
+        pnode->Release();
+}
+
 UniValue capdrpc(const UniValue &params, bool fHelp)
 {
     if (fHelp)
         throw std::runtime_error("capd\n"
-                                 "\nCAPD RPC calls, including info, send, get, list, remove and clear.\n"
+                                 "\nCAPD RPC calls, including info, send, broadcast, get, list, remove and clear.\n"
                                  "capd clear: removes all messages from the pool.\n"
                                  "capd remove <message hash>: removes a particular message from the pool.\n"
                                  "capd get <message hash>: returns a particular message.\n"
@@ -45,6 +73,11 @@ UniValue capdrpc(const UniValue &params, bool fHelp)
                                  "capd list: returns the hash of every message in the pool.\n"
                                  "capd send <message data>: sends hex (preferred) or ascii encoded message.\n"
                                  "    To force ascii encoding use a non-hex character.\n"
+                                 "    The node creates the message and solves its POW to the current relay priority.\n"
+                                 "    Returns the message hash.\n"
+                                 "capd broadcast <hex>: adds an already solved, network serialized message to the\n"
+                                 "    pool and relays it. No POW is done; the message is rejected if its POW is\n"
+                                 "    invalid or its priority is below the pool minimum. Returns the message hash.\n"
                                  "\nResult: \n"
                                  "capd info\n"
                                  "{                           (json object)\n"
@@ -105,34 +138,46 @@ UniValue capdrpc(const UniValue &params, bool fHelp)
         msg->SetPowTargetHarderThanPriority(msgpool.GetRelayPriority());
         msg->Solve();
         msgpool.add(msg);
+        NotifyCapdQueryPeers(msg);
 
-        // Check all query peers to see if they are interested in this new message
-        if (true)
+        return msg->GetHash().GetHex();
+    }
+    if (cmd == "broadcast")
+    {
+        if (params.size() != 2)
         {
-            // Grab a copy of capd CNodes and add a ref so they can't be deleted
-            std::vector<CNode *> capdNodes;
-            {
-                LOCK(cs_vNodes);
-                for (CNode *pnode : vNodes)
-                {
-                    if (pnode->isCapdEnabled && pnode->capd)
-                    {
-                        capdNodes.push_back(pnode);
-                        pnode->AddRef();
-                    }
-                }
-            }
-
-            // Now see if we need to relay this message to a query peer
-            for (CNode *pnode : capdNodes)
-            {
-                pnode->capd->checkNotification(msg);
-            }
-
-            // Release our refs to these nodes
-            for (CNode *pnode : capdNodes)
-                pnode->Release();
+            throw std::runtime_error("Incorrect number of parameters, missing serialized message");
         }
+        std::string s = params[1].get_str();
+        if (!IsHex(s))
+        {
+            throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Message must be hex encoded");
+        }
+        CDataStream strm(ParseHex(s), SER_NETWORK, PROTOCOL_VERSION);
+        CapdMsgRef msg = std::make_shared<CapdMsg>();
+        try
+        {
+            strm >> *msg;
+        }
+        catch (const std::exception &)
+        {
+            throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Message decode failed");
+        }
+        if (!strm.empty())
+        {
+            throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Message decode failed: trailing data");
+        }
+
+        try
+        {
+            // Verifies the POW and priority, then gossips to P2P capd peers
+            msgpool.add(msg);
+        }
+        catch (const CapdMsgPoolException &e)
+        {
+            throw JSONRPCError(RPC_VERIFY_REJECTED, e.what());
+        }
+        NotifyCapdQueryPeers(msg);
 
         return msg->GetHash().GetHex();
     }
