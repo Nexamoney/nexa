@@ -266,7 +266,7 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
         }
 
         // Don't allow the in flight requests to grow unbounded.
-        if (mapBlkInfo.size() > DEFAULT_BLOCK_DOWNLOAD_WINDOW * 2)
+        if (nCurrentBlockRequests.load() >= DEFAULT_BLOCK_DOWNLOAD_WINDOW * 2)
         {
             LOG(REQ, "Block request buffer full: Dropping request for %s", obj.hash.ToString());
             return;
@@ -290,8 +290,8 @@ void CRequestManager::AskFor(const CInv &obj, CNode *from, int objType)
 
         if (result.second) // inserted new
         {
-            nBlocksAskedFor++;
-            data.nEntryTime = GetStopwatchMicros() + nBlocksAskedFor;
+            nBlockRequestSequenceId++;
+            data.nEntryTime = GetStopwatchMicros() + nBlockRequestSequenceId;
         }
     }
     else
@@ -923,7 +923,11 @@ void CRequestManager::GetBlockRequests(OdMap &mapTemp)
 }
 
 // requires cs_objDownloader
-void CRequestManager::AddNewBlockRequests(OdMap &mapTemp) { mapBlkInfo.merge(mapTemp); }
+void CRequestManager::AddNewBlockRequests(OdMap &mapTemp)
+{
+    mapBlkInfo.merge(mapTemp);
+    nCurrentBlockRequests.store(mapBlkInfo.size());
+}
 
 // requires cs_objDownloader
 void CRequestManager::RunTxnDeleter(OdMap &maybeToSend)
