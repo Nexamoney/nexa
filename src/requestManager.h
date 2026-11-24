@@ -208,11 +208,12 @@ protected:
     std::map<uint256, std::map<NodeId, std::list<QueuedBlock>::iterator> > mapBlocksInFlight GUARDED_BY(
         cs_objDownloader);
     std::map<NodeId, CRequestManagerNodeState> mapRequestManagerNodeState GUARDED_BY(cs_objDownloader);
+    std::atomic<size_t> nCurrentBlockRequests{0}; // not guarded
 
     // The map of block requests to add.
     CCriticalSection cs_addBlock;
     OdMap mapBlkToAdd GUARDED_BY(cs_addBlock);
-    int64_t nBlocksAskedFor GUARDED_BY(cs_addBlock) = 0;
+    int64_t nBlockRequestSequenceId GUARDED_BY(cs_addBlock) = 0;
 
     // The set of block requests to delete
     CCriticalSection cs_deleteBlock;
