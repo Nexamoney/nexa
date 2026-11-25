@@ -407,9 +407,10 @@ build-ubuntu-only-libnexa:
     variables:
         # Every job that uses this cache downloads all of it. One build takes about 1.5 GB.
         CCACHE_MAXSIZE: 2G
+        CCACHE_VARIANT: ""
     cache:
         <<: *ccache_settings
-        key: ccache-ubuntu
+        key: ccache-ubuntu$CCACHE_VARIANT
 
 build-ubuntu-deps:
     variables:
@@ -471,6 +472,8 @@ build-ubuntu:
       - if: $CI_MERGE_REQUEST_IID && $CI_MERGE_REQUEST_LABELS !~ /ci::full/
         variables:
             GUI_OPTION: "--with-gui=no"
+            # Without the GUI the config header differs, so nothing is shared with the cache of the GUI build
+            CCACHE_VARIANT: "-nogui"
       - if: ($CI_PIPELINE_SOURCE != "schedule" || $EXTENDED_TESTS == "True")
 
 build-ubuntu-rostrum:
