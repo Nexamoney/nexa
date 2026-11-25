@@ -160,7 +160,6 @@ BITCOIN_CORE_H = \
   electrum/rostrum.h \
   extversionmessage.h \
   extversionkeys.h \
-  fast-cpp-csv-parser/csv.h \
   fastfilter.h \
   fs.h \
   httprpc.h \
