@@ -469,6 +469,13 @@ build-ubuntu:
             - ./build/ci-failure-logs/
             - ./build/src/.libs/libnexa.*
     rules:
+      # An MR that changes the GUI or its build gets the GUI built
+      - if: $CI_MERGE_REQUEST_IID
+        changes:
+            - src/qt/**/*
+            - "**/Makefile.qt*"
+            - build-aux/m4/bitcoin_qt.m4
+            - depends/**/*
       # No job uses the GUI built here. It is still built on dev, security-* and tags, and with the ci::full label.
       - if: $CI_MERGE_REQUEST_IID && $CI_MERGE_REQUEST_LABELS !~ /ci::full/
         variables:
