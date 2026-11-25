@@ -787,10 +787,12 @@ void ThreadTxAdmission()
                         if (invalid)
                             LOG(MEMPOOL, "%s from peer=%s was not accepted: %s\ntx: %s", tx->GetId().ToString(),
                                 txd.nodeName, state.GetLogString(), EncodeHexTx(*tx));
-                        // Never send AcceptToMemoryPool's internal codes over P2P
-                        unsigned char rejectCode = fMissingInputs ? REJECT_ORPHAN : state.GetRejectCode();
-                        if (rejectCode < REJECT_INTERNAL)
+                        // Never send AcceptToMemoryPool's internal codes over P2P.
+                        // Compare before narrowing: internal codes are >= 256 and do not fit in a byte.
+                        unsigned int code = fMissingInputs ? REJECT_ORPHAN : state.GetRejectCode();
+                        if (code < REJECT_INTERNAL)
                         {
+                            unsigned char rejectCode = code;
                             CNodeRef from = connmgr->FindNodeFromId(txd.nodeId);
                             // Send a reject if we know who this tx came from, AND the tx is invalid or
                             // its an orphan and the node is a light client.  We need to tell light clients about

@@ -1272,7 +1272,7 @@ void DagWidget::ProcessOrphans()
         const uint256 &prevhash = header.hashPrevBlock;
 
         uint256 prevDagHash;
-        if ((blockType == SUMMARY))
+        if (blockType == SUMMARY)
         {
             bool fErased = false;
             std::vector<CTreeNodeRef> dag;
