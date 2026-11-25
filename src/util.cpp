@@ -148,7 +148,6 @@ std::string to_internal(const std::string &);
 
 const char *const CONF_FILENAME = "nexa.conf";
 const char *const PID_FILENAME = "nexa.pid";
-const char *const FORKS_CSV_FILENAME = "forks.csv"; // bip135 added
 // Application startup time (used for uptime calculation)
 const int64_t nStartupTime = GetTime();
 
@@ -418,19 +417,6 @@ fs::path GetConfigFile(const std::string &confPath)
     CreateConfigFile(pathConfigFile);
 
     return pathConfigFile;
-}
-
-// bip135 added
-/**
- * Function to return expected path of FORKS_CSV_FILENAME
- */
-fs::path GetForksCsvFile()
-{
-    fs::path pathCsvFile = stdStringToFsPath(GetArg("-forks", FORKS_CSV_FILENAME));
-    if (pathCsvFile.is_relative())
-        pathCsvFile = GetDataDir(false) / pathCsvFile;
-
-    return pathCsvFile;
 }
 
 void ReadConfigFile(std::map<std::string, std::string> &mapSettingsRet,

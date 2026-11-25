@@ -65,7 +65,6 @@ BOOST_AUTO_TEST_CASE(path_arguments)
     fs::create_directories(cliDir);
     fs::create_directories(configDir);
     const fs::path configName = unicode.native() + fs::path(".conf").native();
-    const fs::path forksName = unicode.native() + fs::path(".csv").native();
     const fs::path configPath = cliDir / configName;
     {
         fs_ofstream config(configPath);
@@ -83,25 +82,22 @@ BOOST_AUTO_TEST_CASE(path_arguments)
     };
     const std::string cliPath = fsPathToStdString(cliDir);
     const std::string configuredPath = fsPathToStdString(configDir);
-    parse({"nexad", "-datadir=" + configuredPath, "-datadir=" + cliPath, "-conf=" + fsPathToStdString(configName),
-        "-forks=" + fsPathToStdString(forksName)});
+    parse({"nexad", "-datadir=" + configuredPath, "-datadir=" + cliPath, "-conf=" + fsPathToStdString(configName)});
     BOOST_CHECK_EQUAL(GetArg("-datadir", ""), cliPath);
     BOOST_REQUIRE_EQUAL(mapMultiArgs.at("-datadir").size(), 2u);
     BOOST_CHECK_EQUAL(mapMultiArgs.at("-datadir").front(), configuredPath);
     BOOST_CHECK_EQUAL(mapMultiArgs.at("-datadir").back(), cliPath);
     BOOST_CHECK(GetDataDir(false) == cliDir);
     BOOST_CHECK(GetConfigFile(GetArg("-conf", "")) == configPath);
-    BOOST_CHECK(GetForksCsvFile() == cliDir / forksName);
     ReadConfigFile(mapArgs, mapMultiArgs, AllowedArgs::ConfigFile(&tweaks));
     BOOST_CHECK_EQUAL(GetArg("-datadir", ""), cliPath);
     BOOST_CHECK(GetDataDir(false) == cliDir);
     BOOST_CHECK_EQUAL(mapMultiArgs.at("-datadir").size(), 3u);
 
     // Re-parsing must not retain the previous command-line data directory.
-    parse({"nexad", "-conf=" + fsPathToStdString(configPath), "-forks=" + fsPathToStdString(cliDir / forksName)});
+    parse({"nexad", "-conf=" + fsPathToStdString(configPath)});
     BOOST_CHECK(mapArgs.count("-datadir") == 0);
     BOOST_CHECK(GetConfigFile(GetArg("-conf", "")) == configPath);
-    BOOST_CHECK(GetForksCsvFile() == cliDir / forksName);
     ReadConfigFile(mapArgs, mapMultiArgs, AllowedArgs::ConfigFile(&tweaks));
     BOOST_CHECK_EQUAL(GetArg("-datadir", ""), configuredPath);
     BOOST_CHECK(GetDataDir(false) == configDir);

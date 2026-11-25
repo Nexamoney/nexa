@@ -256,8 +256,6 @@ static void addConfigurationLocationOptions(AllowedArgs &allowedArgs)
 {
     allowedArgs.addHeader(_("Configuration location options:"))
         .addArg("conf=<file>", requiredStr, strprintf(_("Specify configuration file (default: %s)"), CONF_FILENAME))
-        .addArg(
-            "forks=<file>", requiredStr, strprintf(_("Specify fork deployment file (default: %s)"), FORKS_CSV_FILENAME))
         .addArg("datadir=<dir>", requiredStr, _("Specify data directory"));
 }
 
