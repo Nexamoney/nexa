@@ -469,13 +469,17 @@ class MyTest (BitcoinTestFramework):
         assert_raises_rpc_error(-22, "Message must be hex encoded", self.nodes[0].capd, "broadcast", "zz")
         assert_raises_rpc_error(-22, "Message decode failed", self.nodes[0].capd, "broadcast", "0102")
         assert_raises_rpc_error(-22, "trailing data", self.nodes[0].capd, "broadcast", m.serialize().hex() + "00")
+        # Priorities are log2 based: -1 is half the work of the local minimum, which is 0
         m = CapdMsg(b"broadcast a message with too little POW")
-        m.solve(0.5)
+        m.solve(-1)
         assert_raises_rpc_error(-26, "Message POW too low", self.nodes[0].capd, "broadcast", m.serialize().hex())
         m = CapdMsg(b"broadcast a message whose POW does not match its difficulty")
         m.solve(4)
-        m.setDifficultyBitsFromPriority(1000000)
+        m.setDifficultyBitsFromPriority(20)
         assert_raises_rpc_error(-26, "Message POW inconsistent", self.nodes[0].capd, "broadcast", m.serialize().hex())
+        # Its priority is above every other message, and the messages created below must exceed the highest one
+        self.nodes[0].capd("remove", mHex)
+        self.nodes[1].capd("remove", mHex)
 
         # reduce the capd message size and validate that it gets pared down
         self.nodes[1].set("cache.maxCapdPool=10000")
