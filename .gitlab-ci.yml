@@ -166,6 +166,8 @@ gitian-binaries:
 .detect-cpus:
     before_script:
         - . ci/detect-cpus.sh
+        # A job that extends a ccache template and this one keeps only this before_script
+        - 'if [ -n "${CCACHE_DIR:-}" ]; then mkdir -p "$CCACHE_DIR"; ccache --zero-stats || true; fi'
 
 ######################################################
 ######## Linting
@@ -391,6 +393,9 @@ build-ubuntu-only-libnexa:
 ######################################################
 .ccache-ubuntu:
     extends: .ubuntu_ccache_scripts
+    variables:
+        # Every job that uses this cache downloads all of it. One build takes about 1.5 GB.
+        CCACHE_MAXSIZE: 2G
     cache:
         <<: *ccache_settings
         key: ccache-ubuntu
@@ -432,6 +437,7 @@ build-ubuntu:
         - mkdir build; cd build
         - ../configure --enable-shared --enable-debug --enable-zmq --enable-glibc-back-compat --enable-reduce-exports --cache-file=config.cache --prefix=$PWD/../depends/x86_64-linux-gnu CPPFLAGS=-DDEBUG_LOCKORDER
         - ../ci/make-serial-link.sh -j"$CPUS"
+        - ccache --cleanup
         - ccache --show-stats
     after_script:
         - |
