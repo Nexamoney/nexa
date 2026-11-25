@@ -6,7 +6,7 @@
 #define NEXA_BIGNUM_H
 
 #include <exception>
-#ifndef LIGHT // limit dependencies: BigNum is a NO_OP on android since script machine not needed
+#ifndef NO_SCRIPT_MACHINE // limit dependencies: BigNum is a NO_OP if the script machine is not built (no libgmp)
 #include <gmp.h>
 #endif
 #include <cstdint>
@@ -32,7 +32,7 @@ public:
 
 class BigNum
 {
-#ifndef LIGHT // limit dependencies
+#ifndef NO_SCRIPT_MACHINE // limit dependencies
 protected:
     mpz_t n;
 
@@ -40,13 +40,17 @@ public:
     BigNum(const std::string &str, int base = 10)
     {
         mpz_init(n);
-        mpz_set_str(n, str.c_str(), base);
+        int ret = mpz_set_str(n, str.c_str(), base);
+        if (ret == -1)
+            throw OutOfBounds("passed string is not a number");
     }
 
     BigNum(const char *str, int base = 10)
     {
         mpz_init(n);
-        mpz_set_str(n, str, base);
+        int ret = mpz_set_str(n, str, base);
+        if (ret == -1)
+            throw OutOfBounds("passed string is not a number");
     }
 
     BigNum(int64_t i = 0)
@@ -396,7 +400,7 @@ extern const BigNum bnInt64Max;
 extern const BigNum bnUint64Max;
 
 
-#ifndef LIGHT
+#ifndef NO_SCRIPT_MACHINE
 inline BigNum BigNum::operator>>(const unsigned long int amt) const
 {
     BigNum ret;

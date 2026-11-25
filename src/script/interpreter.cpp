@@ -322,7 +322,8 @@ bool ScriptMachine::ModifyScript(int position, uint8_t *data, size_t dataLength)
     CScript *s = (CScript *)script;
     if (!s)
         return false;
-
+    if (position < 0)
+        return false;
     if (s->size() < position + dataLength)
         s->resize(position + dataLength);
     uint8_t *spos = &((*s)[position]);

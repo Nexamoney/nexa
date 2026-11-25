@@ -6,8 +6,10 @@
 #define NEXA_TOKEN_GROUPS_H
 
 #include "chainparams.h"
+#include "primitives/transaction.h"
 #include "pubkey.h"
 #include <unordered_map>
+#include <vector>
 class CWallet;
 class CCoinsViewCache;
 class CValidationState;
@@ -343,6 +345,14 @@ bool CheckGroupTokens(const CTransaction &tx,
     CValidationState &state,
     const CCoinsViewCache &view,
     const CCoinsViewCache &readonlyCoins,
+    bool fGenesisSpendsInput = false);
+
+/** Verify that the token groups in this transaction properly balance, given the outputs it spends.
+    Unlike the CCoinsViewCache version, this does not need the UTXO set so it is available in light builds.
+    prevouts[i] must be the output spent by tx.vin[i]; the tx is invalid if the sizes differ. */
+bool CheckGroupTokens(const CTransaction &tx,
+    CValidationState &state,
+    const std::vector<CTxOut> &prevouts,
     bool fGenesisSpendsInput = false);
 
 // Return true if any output in this transaction is part of a group

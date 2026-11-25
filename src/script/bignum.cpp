@@ -5,7 +5,7 @@
 #include "script/bignum.h"
 #include "script/script.h"
 
-#ifndef ANDROID
+#ifndef NO_SCRIPT_MACHINE
 const BigNum bnZero = 0_BN;
 const BigNum bnOne = 1_BN;
 const BigNum bnInt64Max(std::numeric_limits<int64_t>::max());
@@ -97,7 +97,7 @@ bool BigNumScriptOp(BigNum &bn,
     return true;
 }
 
-#else // None of this is implemented in android
+#else // NO_SCRIPT_MACHINE: BigNum is a stub, so none of this is implemented
 const BigNum bnZero;
 const BigNum bnOne;
 const BigNum &bnFalse(bnZero);

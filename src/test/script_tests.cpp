@@ -3809,6 +3809,44 @@ BOOST_AUTO_TEST_CASE(script_debugger)
     BOOST_CHECK(stk[0][0] == 4);
 }
 
+BOOST_AUTO_TEST_CASE(script_machine_modify_script)
+{
+    ScriptMachine sm(0, ScriptImportedState(), 0xffffffff, 0xffffffff);
+    uint8_t data[3] = {OP_2, OP_3, OP_4};
+
+    // No script loaded: modification must fail
+    BOOST_CHECK(sm.ModifyScript(0, data, sizeof(data)) == false);
+
+    CScript s = CScript() << OP_1 << OP_1 << OP_1 << OP_1;
+    const CScript orig = s;
+    BOOST_CHECK(sm.BeginStep(s));
+
+    // Negative positions are rejected and leave the script untouched
+    BOOST_CHECK(sm.ModifyScript(-1, data, sizeof(data)) == false);
+    BOOST_CHECK(s == orig);
+    BOOST_CHECK(sm.ModifyScript(-100, data, 1) == false);
+    BOOST_CHECK(s == orig);
+    BOOST_CHECK(sm.ModifyScript(std::numeric_limits<int>::min(), data, sizeof(data)) == false);
+    BOOST_CHECK(s == orig);
+
+    // In-bounds overwrite
+    BOOST_CHECK(sm.ModifyScript(1, data, 2));
+    BOOST_CHECK(s == (CScript() << OP_1 << OP_2 << OP_3 << OP_1));
+
+    // Overwrite at position 0
+    BOOST_CHECK(sm.ModifyScript(0, data + 2, 1));
+    BOOST_CHECK(s == (CScript() << OP_4 << OP_2 << OP_3 << OP_1));
+
+    // Overwrite that runs past the end grows the script
+    BOOST_CHECK(sm.ModifyScript(3, data, 3));
+    BOOST_CHECK(s == (CScript() << OP_4 << OP_2 << OP_3 << OP_2 << OP_3 << OP_4));
+
+    // Write starting exactly at the end appends
+    BOOST_CHECK(sm.ModifyScript(s.size(), data, 1));
+    BOOST_CHECK(s == (CScript() << OP_4 << OP_2 << OP_3 << OP_2 << OP_3 << OP_4 << OP_2));
+    // Note: the script was resized out from under the machine, so do not continue stepping it.
+}
+
 BOOST_AUTO_TEST_CASE(script_can_append_self)
 {
     CScript s, d;

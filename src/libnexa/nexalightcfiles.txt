@@ -1,6 +1,7 @@
 libnexa/libnexa.cpp
 libnexa/libnexa_common.cpp
 libnexa/libnexa_jvm.cpp
+libnexa/libnexa_script_machine.cpp
 base58.cpp
 script/interpreter.cpp
 script/op_parse.cpp
@@ -11,6 +12,7 @@ script/stackitem.cpp
 script/merkleproof.cpp
 script/pushtxstate.cpp
 script/bignum.cpp
+script/script_error.cpp
 primitives/transaction.cpp
 primitives/block.cpp
 support/pagelocker.cpp

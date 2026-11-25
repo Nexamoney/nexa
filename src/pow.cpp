@@ -135,4 +135,5 @@ bool CheckProofOfWork(uint256 hash,
         return true;
     }
     assert(0); // Unknown POW algorithm
+    return false; // If assertions are compiled out, an unknown algorithm must fail POW, not return garbage
 }
