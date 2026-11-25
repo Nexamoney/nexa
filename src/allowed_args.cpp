@@ -657,7 +657,7 @@ static void addTweaks(AllowedArgs &allowedArgs, CTweakMap *pTweaks)
             "test.parallel", "test.pvtest", "test.blockLookAheadInterval", "test.maxAllowedNetMessage",
             "test.nextMaxBlockSize", "test.enforceMinTxSize", "test.avoidReconsiderMostWorkChain", "test.extVersion",
             "consensus.fork1Time", "consensus.fork2Time", "test.maxReorgDepth", "cache.maxHeaders",
-            "test.requestMissingSubblocks", "net.txRequestPeerShare"};
+            "test.requestMissingSubblocks", "net.txRequestPeerShare", "test.banLocalPeers", "test.scriptCheckQueues"};
         if (hiddenTweaks.count(optName))
             fDebugArg = true;
 
