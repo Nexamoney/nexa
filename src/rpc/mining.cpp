@@ -392,11 +392,9 @@ static UniValue BIP22ValidationResult(const CValidationState &state)
     return "valid?";
 }
 
-static UniValue MkFullMiningCandidateJson(const std::set<std::string> &setClientRules,
-    CBlockIndex *pindexPrev,
+static UniValue MkFullMiningCandidateJson(CBlockIndex *pindexPrev,
     int64_t coinbaseSize,
     std::unique_ptr<CBlockTemplate> &pblocktemplate,
-    const int nMaxVersionPreVB,
     const unsigned int nTransactionsUpdatedLast)
 {
     CBlockRef pblock = pblocktemplate->block; // pointer for convenience
@@ -509,8 +507,6 @@ UniValue mkblocktemplate(const UniValue &params,
 
     std::string strMode = "template";
     UniValue lpval = NullUniValue;
-    std::set<std::string> setClientRules;
-    int64_t nMaxVersionPreVB = -1;
     CScript coinbaseScript(coinbaseScriptIn); // non-const copy (we may modify this below)
 
     if (params.size() > 0)
@@ -716,8 +712,7 @@ UniValue mkblocktemplate(const UniValue &params,
     else
     {
         // Or create JSON:
-        return MkFullMiningCandidateJson(
-            setClientRules, pindexPrev, coinbaseSize, pblocktemplate, nMaxVersionPreVB, nTransactionsUpdatedLast);
+        return MkFullMiningCandidateJson(pindexPrev, coinbaseSize, pblocktemplate, nTransactionsUpdatedLast);
     }
 }
 
