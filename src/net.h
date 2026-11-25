@@ -378,9 +378,9 @@ public:
     /** The "hook" into capd functionality */
     CapdNode *capd = nullptr;
 
-    CCriticalSection cs_vSend;
-    CSerializeData msgBeingSent GUARDED_BY(cs_vSend);
-    size_t nSendOffset GUARDED_BY(cs_vSend); // offset inside the first vSendMsg already sent
+    CCriticalSection cs_msgBeingSent;
+    CSerializeData msgBeingSent GUARDED_BY(cs_msgBeingSent);
+    size_t nSendOffset GUARDED_BY(cs_msgBeingSent); // bytes already sent for the current msgBeingSent
 
     CLockSwapQ<CSerializeData> vSendMsg;
     CLockSwapQ<CSerializeData> vLowPrioritySendMsg;
@@ -405,12 +405,11 @@ public:
     std::deque<std::pair<CInv2, uint32_t> > vRecvGetData2 GUARDED_BY(csRecvGetData);
     std::deque<std::pair<CExtInv, uint32_t> > vRecvExtGetData GUARDED_BY(csRecvGetData);
 
-    CCriticalSection cs_vRecvMsg;
-    std::deque<CNetMessage> vRecvMsg_handshake GUARDED_BY(cs_vRecvMsg);
-    // the next message we receive from the socket
-    CNetMessage msg GUARDED_BY(cs_vRecvMsg);
-    CStatHistory<uint64_t> currentRecvMsgSize;
+    CCriticalSection cs_recvMsg;
+    std::deque<CNetMessage> vRecvMsg_handshake GUARDED_BY(cs_recvMsg);
+    CNetMessage msg GUARDED_BY(cs_recvMsg); // the next message we receive from the socket
 
+    CStatHistory<uint64_t> currentRecvMsgSize;
     std::atomic<uint64_t> nRecvBytes;
     CLockSwapQ<CNetMessage> vRecvMsg;
 
@@ -501,7 +500,6 @@ public:
     // b) the peer may tell us in its version message that we should not relay tx invs
     //    unless it loads a bloom filter.
     bool fRelayTxes;
-    bool fSentAddr;
     CSemaphoreGrant grantOutbound;
 
     CCriticalSection cs_filter;
@@ -567,12 +565,13 @@ public:
     uint256 hashContinue;
     int nStartingHeight;
 
-    // flood relay
-    std::vector<CAddress> vAddrToSend GUARDED_BY(cs_vSend);
-    CRollingBloomFilter addrKnown;
-    std::set<uint256> setKnown;
-    int64_t nNextAddrSend;
-    int64_t nNextLocalAddrSend;
+    // address relay
+    CCriticalSection cs_vAddr;
+    std::vector<CAddress> vAddrToSend GUARDED_BY(cs_vAddr);
+    CRollingBloomFilter addrKnown GUARDED_BY(cs_vAddr);
+    int64_t nNextAddrSend GUARDED_BY(cs_vAddr);
+    int64_t nNextLocalAddrSend GUARDED_BY(cs_vAddr);
+    bool fSentAddr GUARDED_BY(cs_vAddr);
 
     // inventory based relay
     CRollingFastFilter<4 * 1024 * 1024> filterInventoryKnown;
@@ -585,13 +584,13 @@ public:
 
     // Ping time measurement:
     // The pong reply we're expecting, or 0 if no pong expected.
-    uint64_t nPingNonceSent;
+    std::atomic<uint64_t> nPingNonceSent;
     // Time (in usec) the last ping was sent, or 0 if no ping was ever sent.
-    int64_t nPingUsecStart;
+    std::atomic<int64_t> nPingUsecStart;
     // Last measured round-trip time.
-    int64_t nPingUsecTime;
+    std::atomic<int64_t> nPingUsecTime;
     // Best measured round-trip time.
-    int64_t nMinPingUsecTime;
+    std::atomic<int64_t> nMinPingUsecTime;
     // Whether a ping is requested.
     std::atomic<bool> fPingQueued;
     // Whether an ADDR was requested.
@@ -646,19 +645,11 @@ public:
     /** Updates node configuration variables based on extversion data in the extversion member variable */
     void ReadConfigFromExtversion();
 
-    unsigned int GetSendMsgSize()
-    {
-        LOCK(cs_vSend);
-        return vSendMsg.size();
-    }
-
-
-    // requires LOCK(cs_vRecvMsg)
-    bool ReceiveMsgBytes(const char *pch, unsigned int nBytes) EXCLUSIVE_LOCKS_REQUIRED(cs_vRecvMsg);
+    bool ReceiveMsgBytes(const char *pch, unsigned int nBytes) EXCLUSIVE_LOCKS_REQUIRED(cs_recvMsg);
 
     // Examine the current message (msg) to see if block or thintype blocks have begun downloading data.
     std::atomic<bool> fDownloading{false};
-    void LookAhead() EXCLUSIVE_LOCKS_REQUIRED(cs_vRecvMsg);
+    void LookAhead() EXCLUSIVE_LOCKS_REQUIRED(cs_recvMsg);
 
     void SetRecvVersion(int nVersionIn) { nRecvVersion = nVersionIn; }
     const CMessageHeader::MessageStartChars &GetMagic(const CChainParams &params) const
@@ -709,10 +700,15 @@ public:
         return false;
     }
 
-    void AddAddressKnown(const CAddress &_addr) { addrKnown.insert(_addr.GetKey()); }
+    void AddAddressKnown(const CAddress &_addr)
+    {
+        LOCK(cs_vAddr);
+        addrKnown.insert(_addr.GetKey());
+    }
+
     void PushAddress(const CAddress &_addr, FastRandomContext &insecure_rand)
     {
-        LOCK(cs_vSend);
+        LOCK(cs_vAddr);
         // Whether the peer supports the address in `_addr`. For example,
         // nodes that do not implement BIP155 cannot receive Tor v3 addresses
         // because they require ADDRv2 (BIP155) encoding.
@@ -733,7 +729,6 @@ public:
             }
         }
     }
-
 
     void AddInventoryKnown(const CInv2 &inv)
     {

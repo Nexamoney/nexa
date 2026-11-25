@@ -642,7 +642,7 @@ static bool IsPriorityMsg(std::string strCommand)
 
 void CNode::LookAhead()
 {
-    AssertLockHeld(cs_vRecvMsg);
+    AssertLockHeld(cs_recvMsg);
     if (fDownloading.load())
         return;
 
@@ -680,7 +680,7 @@ void CNode::LookAhead()
 
 bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes)
 {
-    AssertLockHeld(cs_vRecvMsg);
+    AssertLockHeld(cs_recvMsg);
     while (nBytes > 0)
     {
         // Absorb network data.
@@ -825,10 +825,10 @@ int CNetMessage::readData(const char *pch, unsigned int nBytes)
 }
 
 
-// requires LOCK(cs_vSend), BU: returns > 0 if any data was sent, 0 if nothing accomplished.
-int SocketSendData(CNode *pnode, bool fSendTwo = false) EXCLUSIVE_LOCKS_REQUIRED(pnode->cs_vSend)
+// requires LOCK(cs_msgBeingSent), BU: returns > 0 if any data was sent, 0 if nothing accomplished.
+int SocketSendData(CNode *pnode, bool fSendTwo = false) EXCLUSIVE_LOCKS_REQUIRED(pnode->cs_msgBeingSent)
 {
-    AssertLockHeld(pnode->cs_vSend);
+    AssertLockHeld(pnode->cs_msgBeingSent);
     // BU This variable is incremented if something happens.  If it is zero at the bottom of the loop, we delay.  This
     // solves spin loop issues where the select does not block but no bytes can be transferred (traffic shaping limited,
     // for example).
@@ -1388,10 +1388,10 @@ void CleanupDisconnectedNodes()
         {
             bool fDelete = false;
             {
-                TRY_LOCK(pnode->cs_vSend, lockSend);
+                TRY_LOCK(pnode->cs_msgBeingSent, lockSend);
                 if (lockSend)
                 {
-                    TRY_LOCK(pnode->cs_vRecvMsg, lockRecv);
+                    TRY_LOCK(pnode->cs_recvMsg, lockRecv);
                     if (lockRecv)
                     {
                         TRY_LOCK(pnode->cs_inventory, lockInv);
@@ -1550,7 +1550,7 @@ void ThreadSocketHandler()
                     }
                     else
                     {
-                        TRY_LOCK(pnode->cs_vSend, lockSend);
+                        TRY_LOCK(pnode->cs_msgBeingSent, lockSend);
                         if (lockSend && (pnode->msgBeingSent.size() > 0))
                         {
                             FD_SET(hSocket, &fdsetSend);
@@ -1595,9 +1595,9 @@ void ThreadSocketHandler()
                 continue;
             if (FD_ISSET(hSocket, &fdsetRecv) || FD_ISSET(hSocket, &fdsetError))
             {
-                TRY_LOCK(pnode->cs_vRecvMsg, lockRecv);
                 // If traffic shaping says we can grab some bytes, and we don't have full send messages buffers
                 // (that is, the receiver is reading our responses), then grab some more requests to process
+                TRY_LOCK(pnode->cs_recvMsg, lockRecv);
                 int64_t amt2Recv = receiveShaper.available(RECV_SHAPER_MIN_FRAG);
                 if (lockRecv && (amt2Recv > 0))
                 {
@@ -1667,7 +1667,7 @@ void ThreadSocketHandler()
                 // This way we don't end up draining each queue for a peer before being able to send another priority
                 // message from another peer which would happen in the case of block announcements.
                 //
-                // The following presents a more difficult issue in maintaining locking orders. cs_vSend must be
+                // The following presents a more difficult issue in maintaining locking orders. cs_msgBeingSent must be
                 // taken before cs_prioritySendQ and hence the following blocks of code needed to preserve that order.
                 while (fPrioritySendMsg)
                 {
@@ -1701,7 +1701,7 @@ void ThreadSocketHandler()
                     if (pfrom != nullptr)
                     {
                         bool fEmpty = false;
-                        TRY_LOCK(pfrom->cs_vSend, lock_sendtwo);
+                        TRY_LOCK(pfrom->cs_msgBeingSent, lock_sendtwo);
                         if (lock_sendtwo)
                         {
                             if (!pfrom->vSendMsg.empty())
@@ -1733,7 +1733,7 @@ void ThreadSocketHandler()
                 }
 
                 // Send messages from this pnode's send queue
-                TRY_LOCK(pnode->cs_vSend, lockSend);
+                TRY_LOCK(pnode->cs_msgBeingSent, lockSend);
                 if (lockSend && sendShaper.try_leak(0))
                 {
                     progress += SocketSendData(pnode);
@@ -2973,13 +2973,14 @@ void NetCleanup()
         {
             // Since we are quitting, disconnect abruptly from the node rather than finishing up our conversation
             // with it.
+            pnode->vRecvMsg.clear();
             {
-                LOCK(pnode->cs_vRecvMsg);
-                pnode->vRecvMsg.clear();
+                LOCK(pnode->cs_recvMsg);
                 pnode->vRecvMsg_handshake.clear();
             }
+            pnode->vSendMsg.clear();
             {
-                LOCK(pnode->cs_vSend);
+                LOCK(pnode->cs_msgBeingSent);
                 pnode->msgBeingSent.clear();
             }
             pnode->nSendSize.store(0);

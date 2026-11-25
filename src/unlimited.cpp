@@ -1775,7 +1775,7 @@ extern UniValue getstructuresizes(const UniValue &params, bool fHelp)
         }
 
         {
-            LOCK(inode.cs_vSend);
+            LOCK(inode.cs_vAddr);
             node.pushKV("vAddrToSend", (int64_t)inode.vAddrToSend.size());
         }
 
