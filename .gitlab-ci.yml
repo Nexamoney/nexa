@@ -169,6 +169,24 @@ gitian-binaries:
         # A job that extends a ccache template and this one keeps only this before_script
         - 'if [ -n "${CCACHE_DIR:-}" ]; then mkdir -p "$CCACHE_DIR"; ccache --zero-stats || true; fi'
 
+# Builds for other platforms and configurations. They run on dev, security-* and tags.
+# On a merge request they run only if the MR has the ci::full label or changes the build system.
+.portability:
+    rules: &portability_rules
+        - if: $CI_PIPELINE_SOURCE == "schedule"
+          when: never
+        - if: $CI_MERGE_REQUEST_IID == null
+        - if: $CI_MERGE_REQUEST_LABELS =~ /ci::full/
+        - changes:
+              - .gitlab-ci.yml
+              - ci/**/*
+              - depends/**/*
+              - build-aux/**/*
+              - configure.ac
+              - autogen.sh
+              - Makefile.am
+              - src/Makefile*
+
 ######################################################
 ######## Linting
 ######################################################
@@ -210,8 +228,7 @@ build-ubuntu-nodeps:
             - ./build/src/test/test_nexa
             - ./build/src/bench/bench_nexa
             - ./build/config.log #in case of configure failure
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-ubuntu-nodeps-qt:
     stage: build
@@ -227,8 +244,7 @@ build-ubuntu-nodeps-qt:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-ubuntu-tests-nodeps:
     stage: build_tests
@@ -246,8 +262,7 @@ build-ubuntu-tests-nodeps:
         when: on_failure
         paths:
             - ./cores/
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 ######################################################
 ######## x86_64 Linux + deps as via system lib with no wallet
@@ -279,8 +294,7 @@ build-ubuntu-nodeps-nowallet-qt:
             - ./build/src/bench/bench_nexa
             - ./build/src/qt/test/test_nexa-qt
             - ./build/config.log #in case of configure failure
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-ubuntu-nodeps-nowallet:
     stage: build
@@ -296,8 +310,7 @@ build-ubuntu-nodeps-nowallet:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-ubuntu-tests-nodeps-nowallet:
     stage: build_tests
@@ -315,8 +328,7 @@ build-ubuntu-tests-nodeps-nowallet:
         when: on_failure
         paths:
             - ./cores/
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-ubuntu-tests-nodeps-nowallet-qt:
     stage: build_tests
@@ -334,8 +346,7 @@ build-ubuntu-tests-nodeps-nowallet-qt:
         when: on_failure
         paths:
             - ./cores/
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 ######################################################
 ######## Linux 64 bit, only libnexa from source deps
@@ -435,7 +446,7 @@ build-ubuntu:
     script:
         - ./autogen.sh
         - mkdir build; cd build
-        - ../configure --enable-shared --enable-debug --enable-zmq --enable-glibc-back-compat --enable-reduce-exports --cache-file=config.cache --prefix=$PWD/../depends/x86_64-linux-gnu CPPFLAGS=-DDEBUG_LOCKORDER
+        - ../configure --enable-shared --enable-debug --enable-zmq --enable-glibc-back-compat --enable-reduce-exports --cache-file=config.cache --prefix=$PWD/../depends/x86_64-linux-gnu CPPFLAGS=-DDEBUG_LOCKORDER $GUI_OPTION
         - ../ci/make-serial-link.sh -j"$CPUS"
         - ccache --cleanup
         - ccache --show-stats
@@ -456,6 +467,10 @@ build-ubuntu:
             - ./build/ci-failure-logs/
             - ./build/src/.libs/libnexa.*
     rules:
+      # No job uses the GUI built here. It is still built on dev, security-* and tags, and with the ci::full label.
+      - if: $CI_MERGE_REQUEST_IID && $CI_MERGE_REQUEST_LABELS !~ /ci::full/
+        variables:
+            GUI_OPTION: "--with-gui=no"
       - if: ($CI_PIPELINE_SOURCE != "schedule" || $EXTENDED_TESTS == "True")
 
 build-ubuntu-rostrum:
@@ -580,8 +595,7 @@ test-ubuntu-benchmarks:
           artifacts: true
     script:
         - (./build/src/bench/bench_nexa -evals=1)
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 test-ubuntu-qa-rostrum:
     stage: qa_tests
@@ -754,8 +768,7 @@ build-arm-depends-64:
     artifacts:
         paths:
             - depends/aarch64-linux-gnu
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-arm-64:
     stage: build
@@ -773,8 +786,7 @@ build-arm-64:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 ######################################################
 ######## ARM32
@@ -803,8 +815,7 @@ build-arm-depends-32:
     artifacts:
         paths:
             - depends/arm-linux-gnueabihf
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-arm-32:
     stage: build
@@ -822,8 +833,7 @@ build-arm-32:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 
 ######################################################
@@ -853,8 +863,7 @@ build-riscv-depends-64:
     artifacts:
         paths:
             - depends/riscv64-linux-gnu
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-riscv-64:
     stage: build
@@ -872,8 +881,7 @@ build-riscv-64:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 
 ######################################################
@@ -971,8 +979,7 @@ build-win-64-libnexa-jvm:
             - libnexa.dll
             - libnexa-debug.dll
             - libnexa.dll.sha256
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 # Native MSYS2 build + unit tests; dev only, never MRs.
 build-test-win-64-native:
@@ -1100,8 +1107,7 @@ build-osx-arm64-depends:
         paths:
             - depends/arm64-apple-darwin
             - depends/SDKs
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-osx-arm64:
     stage: build
@@ -1122,8 +1128,7 @@ build-osx-arm64:
             - ./build/src/nexad
             - ./build/config.log # on failure
             - ./depends/arm64-apple-darwin/share/config.site # on failure
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 ######################################################
 ######## Debian base settings
@@ -1164,8 +1169,7 @@ build-debian-nodeps:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-debian-nodeps-qt:
     stage: build
@@ -1181,8 +1185,7 @@ build-debian-nodeps-qt:
         when: on_failure
         paths:
             - build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 
 ######################################################
@@ -1226,8 +1229,7 @@ build-ubuntu24-nodeps:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-ubuntu24-nodeps-qt:
     stage: build
@@ -1243,8 +1245,7 @@ build-ubuntu24-nodeps-qt:
         when: on_failure
         paths:
             - build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 ######################################################
 ######## aarch64 for android on Ubuntu24
@@ -1269,8 +1270,7 @@ build-android-aarch64-depends:
     artifacts:
         paths:
             - depends/aarch64-linux-android
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-android-aarch64:
     stage: build
@@ -1290,8 +1290,7 @@ build-android-aarch64:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 ######################################################
 ######## armv7a for android on Ubuntu24
@@ -1316,8 +1315,7 @@ build-android-armv7a-depends:
     artifacts:
         paths:
             - depends/armv7a-linux-androideabi
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-android-armv7a:
     stage: build
@@ -1337,8 +1335,7 @@ build-android-armv7a:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 ######################################################
 ######## i686 for android on Ubuntu24
@@ -1363,8 +1360,7 @@ build-android-i686-depends:
     artifacts:
         paths:
             - depends/i686-linux-android
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-android-i686:
     stage: build
@@ -1384,8 +1380,7 @@ build-android-i686:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 ######################################################
 ######## x86_64 for android on Ubuntu24
@@ -1410,8 +1405,7 @@ build-android-x86_64-depends:
     artifacts:
         paths:
             - depends/x86_64-linux-android
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-android-x86_64:
     stage: build
@@ -1431,8 +1425,7 @@ build-android-x86_64:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 ######################################################
 ######## riscv64 for android on Ubuntu24
@@ -1457,8 +1450,7 @@ build-android-riscv64-depends:
     artifacts:
         paths:
             - depends/riscv64-linux-android
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-android-riscv64:
     stage: build
@@ -1478,8 +1470,7 @@ build-android-riscv64:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 
 ######################################################
@@ -1522,8 +1513,7 @@ build-alpine-nodeps:
         when: on_failure
         paths:
             - ./build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
 
 build-alpine-nodeps-qt:
     stage: build
@@ -1540,5 +1530,4 @@ build-alpine-nodeps-qt:
         when: on_failure
         paths:
             - build/config.log
-    rules:
-      - if: $CI_PIPELINE_SOURCE != "schedule"
+    rules: *portability_rules
