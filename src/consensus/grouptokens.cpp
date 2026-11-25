@@ -113,13 +113,13 @@ CGroupTokenInfo::CGroupTokenInfo(const CTxOut &output)
 }
 
 
-#ifndef LIGHT // limit dependencies (CCoinsViewCache).
-// This function determines the consensus validity of the group tokens in this transaction so it not useful
-// in a light wallet (and will not compile because the light wallet does not contain the UTXO)
-bool CheckGroupTokens(const CTransaction &tx,
+// This function determines the consensus validity of the group tokens in this transaction.
+// prevouts[i] is the output spent by tx.vin[i] (the callers ensure the sizes match).  Taking the prevouts rather than
+// a UTXO view lets it be used both by the full node and by libnexa's script machine, which in light builds does not
+// contain the UTXO.
+static bool CheckGroupTokensImpl(const CTransaction &tx,
     CValidationState &state,
-    const CCoinsViewCache &view,
-    const CCoinsViewCache &readonlyCoins,
+    const std::vector<CTxOut> &prevouts,
     bool fGenesisSpendsInput)
 {
     GroupBalanceMapRef gBalanceState = MakeGroupBalanceMapRef();
@@ -176,17 +176,12 @@ bool CheckGroupTokens(const CTransaction &tx,
 
     // Now iterate through the inputs applying them to match outputs.
     // If any input utxo address matches a non-nexa group address, defer since this could be a mint or burn
-    for (const auto &inp : tx.vin)
+    for (size_t inputIdx = 0; inputIdx < tx.vin.size(); inputIdx++)
     {
-        const COutPoint &prevout = inp.prevout;
-        const CCoinsViewCache &v = (inp.IsReadOnly()) ? readonlyCoins : view;
-        CoinAccessor coin(v, prevout);
-        if (coin->IsSpent())
-        {
-            return state.Invalid(false, REJECT_INVALID, "already-spent");
-        }
-        const CScript &script = coin->out.scriptPubKey;
-        const ScriptType scriptType = CTxOut::ScriptTypeOf(coin->out.type);
+        const CTxIn &inp = tx.vin[inputIdx];
+        const CTxOut &prevout = prevouts[inputIdx];
+        const CScript &script = prevout.scriptPubKey;
+        const ScriptType scriptType = CTxOut::ScriptTypeOf(prevout.type);
         DbgAssert(scriptType == script.type, );
         CGroupTokenInfo tokenGrp(script);
         // The prevout should never be invalid because that would mean that this node accepted a block with an
@@ -215,7 +210,7 @@ bool CheckGroupTokens(const CTransaction &tx,
         if (tokenGrp.associatedGroup.hasFlag(GroupTokenIdFlags::HOLDS_NEX))
         {
             // Set the NEX group quantity to the NEX amount so subsequent logic uses NEX.
-            tokenGrp.quantity = coin->out.nValue;
+            tokenGrp.quantity = prevout.nValue;
         }
 
         CAmount amount = tokenGrp.quantity;
@@ -398,7 +393,40 @@ bool CheckGroupTokens(const CTransaction &tx,
     state.groupState = gBalanceState;
     return true;
 }
+
+#ifndef LIGHT // limit dependencies (CCoinsViewCache).
+bool CheckGroupTokens(const CTransaction &tx,
+    CValidationState &state,
+    const CCoinsViewCache &view,
+    const CCoinsViewCache &readonlyCoins,
+    bool fGenesisSpendsInput)
+{
+    // Gather the outputs being spent (read-only inputs are looked up in readonlyCoins)
+    std::vector<CTxOut> prevouts;
+    prevouts.reserve(tx.vin.size());
+    for (const auto &inp : tx.vin)
+    {
+        const CCoinsViewCache &v = (inp.IsReadOnly()) ? readonlyCoins : view;
+        CoinAccessor coin(v, inp.prevout);
+        if (coin->IsSpent())
+        {
+            return state.Invalid(false, REJECT_INVALID, "already-spent");
+        }
+        prevouts.push_back(coin->out);
+    }
+    return CheckGroupTokensImpl(tx, state, prevouts, fGenesisSpendsInput);
+}
 #endif
+
+bool CheckGroupTokens(const CTransaction &tx,
+    CValidationState &state,
+    const std::vector<CTxOut> &prevouts,
+    bool fGenesisSpendsInput)
+{
+    if (prevouts.size() != tx.vin.size())
+        return state.Invalid(false, REJECT_INVALID, "bad-prevouts", "prevout count does not match input count");
+    return CheckGroupTokensImpl(tx, state, prevouts, fGenesisSpendsInput);
+}
 
 bool CGroupTokenID::isUserGroup(void) const { return (!data.empty()); }
 bool CGroupTokenID::isSubgroup(void) const { return (data.size() > PARENT_GROUP_ID_SIZE); }

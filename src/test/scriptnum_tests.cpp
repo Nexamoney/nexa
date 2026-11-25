@@ -1262,6 +1262,41 @@ BOOST_AUTO_TEST_CASE(fork1_bignum_extended_opcodes_integer_semantics)
     testScriptFlags = MANDATORY_SCRIPT_VERIFY_FLAGS;
 }
 
+BOOST_AUTO_TEST_CASE(bignum_string_ctor_test)
+{
+    // Valid strings parse in both the std::string and const char* constructors
+    BOOST_CHECK(BigNum("1234") == 1234_BN);
+    BOOST_CHECK(BigNum(std::string("1234")) == 1234_BN);
+    BOOST_CHECK(BigNum("-1234") == -1234_BN);
+    BOOST_CHECK(BigNum("ff", 16) == 255_BN);
+    BOOST_CHECK(BigNum(std::string("FF"), 16) == 255_BN);
+    BOOST_CHECK(BigNum("1234567891011121314151617181920") == 1234567891011121314151617181920_BN);
+
+    // Strings that are not numbers in the given base must throw rather than silently produce garbage
+    const char *bad10[] = {"", "abc", "12x", "1.5", "0x10", "--1"};
+    for (const char *s : bad10)
+    {
+        BOOST_CHECK_THROW((void)BigNum(s), OutOfBounds);
+        BOOST_CHECK_THROW(BigNum(std::string(s)), OutOfBounds);
+    }
+    const char *bad16[] = {"", "fg", "xyz", "0x10", "12 34z"};
+    for (const char *s : bad16)
+    {
+        BOOST_CHECK_THROW(BigNum(s, 16), OutOfBounds);
+        BOOST_CHECK_THROW(BigNum(std::string(s), 16), OutOfBounds);
+    }
+    // Digit valid in base 16 but not base 10
+    BOOST_CHECK_NO_THROW(BigNum("a", 16));
+    BOOST_CHECK_THROW(BigNum("a", 10), OutOfBounds);
+    // Digit valid in base 10 but not base 2
+    BOOST_CHECK(BigNum("101", 2) == 5_BN);
+    BOOST_CHECK_THROW(BigNum("102", 2), OutOfBounds);
+
+    // Check the error message
+    BOOST_CHECK_EXCEPTION(BigNum("nope"), OutOfBounds,
+        [](const OutOfBounds &e) -> bool { return strcmp(e.what(), "passed string is not a number") == 0; });
+}
+
 BOOST_AUTO_TEST_CASE(abs_test)
 {
     // check min

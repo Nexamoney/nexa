@@ -6,6 +6,7 @@ import test_framework.loginit
 import time
 import sys
 import copy
+import ctypes
 if sys.version_info[0] < 3:
     raise "Use Python 3"
 import logging
@@ -156,6 +157,61 @@ class MyTest (BitcoinTestFramework):
         assert_equal(err[0], libnexa.ScriptError.SCRIPT_ERR_UNBALANCED_CONDITIONAL)
         assert_equal(err[1], 2)
 
+        # Check BigNum arithmetic (needs libgmp: a library built without it has only a stub BigNum)
+        bmd = [(1 << 64).to_bytes(9, 'little') + b"\x00", OP_SETBMD]  # modulo 2^64 (magnitude + sign byte)
+        sm = libnexa.ScriptMachine()
+        worked = sm.eval(CScript(bmd + [OP_5, OP_BIN2BIGNUM, OP_7, OP_BIN2BIGNUM, OP_ADD]))
+        assert(worked)
+        stk = sm.stack()
+        assert_equal(stk[0][0], libnexa.StackItemType.BIGNUM)
+        assert_equal(int.from_bytes(stk[0][1], byteorder='little'), 12)
+        worked = sm.eval(CScript([OP_12, OP_BIN2BIGNUM, OP_EQUAL]))
+        assert(worked)
+        stk = sm.stack()
+        assert_equal(int.from_bytes(stk[0][1], byteorder='little'), 1)  # 5 + 7 == 12
+        sm.reset()
+        worked = sm.eval(CScript(bmd + [OP_5, OP_BIN2BIGNUM, OP_7, OP_BIN2BIGNUM, OP_ADD, OP_13, OP_BIN2BIGNUM, OP_EQUAL]))
+        assert(worked)
+        stk = sm.stack()
+        assert_equal(len(stk[0][1]), 0)  # 5 + 7 != 13
+        sm.cleanup()
+
+        self.runScriptMachineBadInputTests()
+
+    def runScriptMachineBadInputTests(self):
+        """Malformed numeric text must produce an error return, not an uncaught C++ exception (which aborts)"""
+        lib = libnexa.get_libnexa()
+        sm = libnexa.ScriptMachine()
+        buf = ctypes.create_string_buffer(500)
+
+        # BMD
+        assert lib.SmSetBMD(sm.smId, b"10000", buf, len(buf)) >= 0, buf.value
+        assert_equal(buf.value, b"10000")
+        for bad in [b"", b"xyz", b"12g4", b"0x10"]:
+            ret = lib.SmSetBMD(sm.smId, bad, buf, len(buf))
+            assert_equal(ret, -1)
+            assert buf.value.startswith(b"BMD is not a hex number"), buf.value
+            # the BMD is unchanged by a failed set
+            lib.SmGetBMD(sm.smId, buf, len(buf))
+            assert_equal(buf.value, b"10000")
+        assert_equal(lib.SmSetBMD(sm.smId, None, buf, len(buf)), -1)
+
+        # Registers
+        assert lib.SmSetRegisterText(sm.smId, 0, b"BIGNUM(DEC)", b"-1234", buf, len(buf)) >= 0, buf.value
+        assert lib.SmSetRegisterText(sm.smId, 0, b"BIGNUM", b"ff0000", buf, len(buf)) >= 0, buf.value
+        # zero and negative zero (sign byte only) are still accepted
+        assert lib.SmSetRegisterText(sm.smId, 0, b"BIGNUM", b"00", buf, len(buf)) >= 0, buf.value
+        assert lib.SmSetRegisterText(sm.smId, 0, b"BIGNUM", b"80", buf, len(buf)) >= 0, buf.value
+        for bad in [b"", b"abc", b"1.5", b"12x", b"--1"]:
+            ret = lib.SmSetRegisterText(sm.smId, 0, b"BIGNUM(DEC)", bad, buf, len(buf))
+            assert_equal(ret, -1)
+            assert buf.value.startswith(b"value is not a decimal number"), buf.value
+        ret = lib.SmSetRegisterText(sm.smId, 0, b"BIGNUM", b"zz00", buf, len(buf))
+        assert_equal(ret, -1)  # rejected by the hex check before reaching BigNum
+        assert_equal(lib.SmSetRegisterText(sm.smId, 0, None, b"1", buf, len(buf)), -1)
+        assert_equal(lib.SmSetRegisterText(sm.smId, 0, b"BIGNUM(DEC)", None, buf, len(buf)), -1)
+        sm.cleanup()
+
     def run_test(self):
         self.runAddressTests()
         self.runScriptMachineTests()
@@ -251,6 +307,22 @@ class MyTest (BitcoinTestFramework):
         assert(ret)
         ret = sm.eval(tx.vout[0].scriptPubKey)
         assert(ret)
+
+        # An input index beyond the tx's inputs must be rejected at creation (tx2 has exactly 1 input)
+        tx2bin = tx2.serialize()
+        prevoutsBin = ser_vector([tx.vout[0]])
+        for badIdx in [1, 2, 0x7fffffff, -1]:  # -1 arrives at the C API as 0xffffffff
+            badSm = libnexa.ScriptMachine(tx=tx2, prevouts=[tx.vout[0]], inputIdx=badIdx)
+            assert not badSm.smId, "script machine created with out of bounds inputIdx %d" % badIdx
+            err = ctypes.create_string_buffer(200)
+            smId = libnexa.get_libnexa().SmCreate(badSm.flags, badIdx, tx2bin, len(tx2bin), prevoutsBin, len(prevoutsBin), err, len(err))
+            assert not smId, "SmCreate succeeded with out of bounds inputIdx %d" % badIdx
+            assert err.value == b"Error: Selected input index is out of bounds", err.value
+        # The last valid index still works through the same path
+        err = ctypes.create_string_buffer(200)
+        smId = libnexa.get_libnexa().SmCreate(sm.flags, 0, tx2bin, len(tx2bin), prevoutsBin, len(prevoutsBin), err, len(err))
+        assert smId, err.value
+        libnexa.get_libnexa().SmRelease(smId)
 
         # commit the created transaction
         tx2id = self.nodes[0].sendrawtransaction(hexlify(tx2.serialize()).decode("utf-8"))

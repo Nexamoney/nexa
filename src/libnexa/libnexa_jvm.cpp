@@ -1414,7 +1414,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_nexa_libnexakotlin_Native_crypt
 
 /////// Script machine JVM ////////
 
-#ifndef LIGHT
+#ifndef NO_SCRIPT_MACHINE
 
 extern "C" JNIEXPORT jlong JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_create(JNIEnv *env,
     jobject ths,
@@ -1454,46 +1454,13 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_cre
     CScript satisfier(satbaa.data, satbaa.data + satbaa.size);
     CScript constraint(conbaa.data, conbaa.data + conbaa.size);
 
-    if (!satisfier.IsPushOnly())
-    {
-        triggerLibNexaException(env, "satisfier is not push-only");
-        return 0;
-    }
-    if (!constraint.IsPushOnly())
-    {
-        triggerLibNexaException(env, "constraint is not push-only");
-        return 0;
-    }
-
     if (flags == -1)
         flags = STANDARD_SCRIPT_VERIFY_FLAGS;
 
-    const unsigned int maxOps = 0xffffffff;
-    ScriptImportedState noSis;
-    ScriptMachine ssm(flags, noSis, maxOps, 0);
-    if (!ssm.Eval(satisfier))
-    {
-        triggerLibNexaException(env, ScriptErrorString(ssm.getError()));
-        return 0;
-    }
-    ScriptMachine csm(flags, noSis, maxOps, 0);
-    if (!csm.Eval(constraint))
-    {
-        triggerLibNexaException(env, ScriptErrorString(csm.getError()));
-        return 0;
-    }
-
     std::string error;
-    void *smh = CreateScriptMachine(flags, inputIdx, txb.data, txb.size, outpointb.data, outpointb.size, &error);
-
-    if (smh)
-    {
-        // copy over the stacks that were created by running the constraint and satisfier
-        ScriptMachineData *smd = (ScriptMachineData *)smh;
-        smd->sm->setAltStack(csm.getStack());
-        smd->sm->setStack(ssm.getStack());
-    }
-    else
+    void *smh = CreateTemplateContextScriptMachine(
+        flags, inputIdx, txb.data, txb.size, outpointb.data, outpointb.size, satisfier, constraint, error);
+    if (!smh)
     {
         triggerLibNexaException(env, error.c_str());
         return 0;
@@ -1684,7 +1651,15 @@ extern "C" JNIEXPORT jstring Java_org_nexa_libnexakotlin_ScriptMachine_setBMD(JN
         return nullptr;
     }
     std::string bmdHex = toString(env, jbmdHex);
-    smd->sm->bigNumModulo = BigNum(bmdHex, 16);
+    try
+    {
+        smd->sm->bigNumModulo = BigNum(bmdHex, 16);
+    }
+    catch (const OutOfBounds &e)
+    {
+        triggerLibNexaException(env, (std::string("BMD is not a hex number: ") + e.what()).c_str());
+        return nullptr;
+    }
     return env->NewStringUTF(smd->sm->bigNumModulo.str(16).c_str());
 }
 
@@ -1707,50 +1682,6 @@ extern "C" JNIEXPORT bool Java_org_nexa_libnexakotlin_ScriptMachine_modify(JNIEn
     return smd->sm->ModifyScript(offset, d.data, d.size);
 }
 
-
-std::string stackItem2String(const StackItem &item)
-{
-    std::string ret;
-    ret.reserve(256);
-    // return TYPE SIZE string(hex or false) DECIMAL
-    if (item.type == StackElementType::VCH)
-    {
-        size_t sz = item.size();
-        // special case for false stack item because insanity of interpreter
-        if (sz == 0)
-            return std::string(ret + "BYTES 0 false 0");
-        ret += "BYTES " + std::to_string(sz) + " " + item.hex() + "h";
-        try
-        {
-            int64_t t = item.asInt64(false); // TODO report minimal encoding
-            ret += " " + std::to_string(t);
-        }
-        catch (script_error &e)
-        {
-            ret += " NaN";
-        }
-        catch (BadOpOnType &e)
-        {
-            ret += " NaN";
-        }
-    }
-    else if (item.type == StackElementType::BIGNUM)
-    {
-        const BigNum &num = item.num();
-        size_t sz = num.magSize();
-        ret += "BIGNUM ";
-        ret += std::to_string(sz);
-        ret += " ";
-        ret += item.hex();
-        ret += "h ";
-        ret += num.str();
-    }
-    else
-    {
-        ret += "UNKNOWN"; // this sw needs to be updated for the newly added type
-    }
-    return ret;
-}
 
 /** This makes sense to give as text because we don't want the higher layers to have to parse the BigNum format
     and certainly don't want to expose the internal bignum representation
@@ -1808,79 +1739,14 @@ extern "C" JNIEXPORT jstring Java_org_nexa_libnexakotlin_ScriptMachine_setRegist
     }
 
     std::string type = toString(env, jtype);
-
-    int t = 0;
-
-    // I only want to string compare once
-    if (type == "BYTES")
-        t = 1;
-    else if (type == "BIGNUM")
-        t = 2;
-    else if (type == "BIGNUM(DEC)")
-        t = 3;
-    else if (type == "INTEGER(DEC)")
-        t = 4;
-    else
+    std::string value = toString(env, jhex);
+    std::string ret;
+    std::string error;
+    if (!SetRegisterFromText(smd, regNum, type, value, ret, error))
     {
-        triggerLibNexaException(env, "unknown data type");
+        triggerLibNexaException(env, error.c_str());
         return nullptr;
     }
-
-    StackItem item;
-    if ((t == 1) || (t == 2))
-    {
-        std::string hex = toString(env, jhex);
-        if (!IsHex(hex))
-        {
-            triggerLibNexaException(env, "value is not hex");
-            return nullptr;
-        }
-
-        if (t == 1) // bytes
-        {
-            auto data = ParseHex(hex);
-            item = StackItem(data);
-        }
-        else // bignum
-        {
-            if (hex.size() == 0)
-            {
-                item = StackItem(BigNum());
-            }
-            else
-            {
-                std::string sign = hex.substr(hex.length() - 2);
-                bool neg = false;
-                if (sign == "80")
-                    neg = true;
-                else if (sign != "00")
-                {
-                    triggerLibNexaException(env, "bignum hex must end in the number's sign: 00 for +, 80 for negative");
-                    return nullptr;
-                }
-                std::string mag = hex.substr(0, hex.length() - 2);
-                BigNum bn = BigNum(mag, 16);
-                if (neg)
-                    bn.negate();
-                item = StackItem(bn);
-            }
-        }
-    }
-    if (t == 3)
-    {
-        std::string dec = toString(env, jhex);
-        BigNum bn = BigNum(dec, 10);
-        item = StackItem(bn);
-    }
-    if (t == 4)
-    {
-        std::string dec = toString(env, jhex);
-        CScriptNum sn = CScriptNum::fromIntUnchecked(std::stoll(dec));
-        item = sn.vchStackItem();
-    }
-
-    smd->sm->arrRegisters[regNum] = item;
-    std::string ret = stackItem2String(item);
     return env->NewStringUTF(ret.c_str());
 }
 
@@ -1951,23 +1817,8 @@ extern "C" JNIEXPORT void JNICALL Java_org_nexa_libnexakotlin_ScriptMachine_setR
         return;
     }
 
-    if (maxScriptSize >= 0)
-        smd->sm->maxScriptSize = maxScriptSize;
-    if (maxOps >= 0)
-        smd->sm->maxOps = maxOps;
-    if (maxSignatureChecks >= 0)
-        smd->sm->maxConsensusSigOps = maxSignatureChecks;
-    if (maxStackUse >= 0)
-    {
-        // Stack accounting assumes the limit fits in 32 bits (stats.maxStackBytes is unsigned int)
-        smd->sm->maxStackUse = std::min<int64_t>(maxStackUse, std::numeric_limits<unsigned int>::max());
-    }
-    if (maxStackItems >= 0)
-        smd->sm->maxStackItems = maxStackItems;
-    if (maxOpExec >= 0)
-        smd->sm->maxOpExec = maxOpExec;
-    if (maxOpExecDepth >= 0)
-        smd->sm->maxOpExecDepth = maxOpExecDepth;
+    SetResourceLimits(
+        smd, maxScriptSize, maxOps, maxSignatureChecks, maxStackUse, maxStackItems, maxOpExec, maxOpExecDepth);
 }
 
 
@@ -2013,5 +1864,5 @@ extern "C" JNIEXPORT void JNICALL Java_org_nexa_libnexakotlin_ScriptMachineResou
     env->DeleteLocalRef(clss);
 }
 
-#endif // ifndef ANDROID
+#endif // ifndef NO_SCRIPT_MACHINE
 #endif // defined(JAVA)

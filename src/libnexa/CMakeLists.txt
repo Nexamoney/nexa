@@ -33,7 +33,10 @@ set(CMAKE_VERBOSE_MAKEFILE ON)
 # Gradle automatically packages shared libraries with your APK.
 
 
-add_definitions(-DLIGHT -DBUILD_ONLY_LIBNEXA -DANDROID -Wno-tautological-constant-compare -DBOOST_SYSTEM_NO_DEPRECATED)
+# HAVE_CONFIG_H: compat.h and compat/endian.h must see nexa-config.h before anything else defines HAVE_DECL_*
+# BOOST_MP_STANDALONE: keep Boost.Multiprecision (cpp_int) from pulling in Boost.Math, whose fp_traits.hpp
+#   static_asserts that x86 long double is 80 bits -- false on Android x86_64 (128-bit IEEE quad)
+add_definitions(-DHAVE_CONFIG_H -DLIGHT -DBUILD_ONLY_LIBNEXA -DANDROID -Wno-tautological-constant-compare -DBOOST_SYSTEM_NO_DEPRECATED -DBOOST_MP_STANDALONE)
 
 set(libsrc
              # Provides a relative path to your source file(s).
@@ -54,6 +57,7 @@ set(libsrc
              ../script/pushtxstate.cpp
              ../script/merkleproof.cpp
              ../script/bignum.cpp
+             ../script/script_error.cpp
              ../primitives/transaction.cpp
              ../primitives/block.cpp
              ../primitives/block.h
@@ -116,6 +120,15 @@ set(libsrc
              ../validation/headervalidation.cpp
              )
 
+# The script machine needs BigNum, which needs libgmp.  libgmp is built from source for the target ABI below.
+# Configure with -DNO_SCRIPT_MACHINE=ON to build without the script machine (and libgmp).
+option(NO_SCRIPT_MACHINE "Build without the script machine and libgmp" OFF)
+if (NO_SCRIPT_MACHINE)
+  add_definitions(-DNO_SCRIPT_MACHINE)
+else()
+  list(APPEND libsrc libnexa_script_machine.cpp libnexa_script_machine.h)
+endif()
+
 add_library(objlib OBJECT ${libsrc})
 set_property(TARGET objlib PROPERTY POSITION_INDEPENDENT_CODE 1)
 target_compile_features(objlib PRIVATE cxx_std_17)
@@ -126,7 +139,7 @@ add_library(nexalighta STATIC $<TARGET_OBJECTS:objlib>)
 target_compile_features(nexalight PRIVATE cxx_std_17)
 target_compile_features(nexalighta PRIVATE cxx_std_17)
 
-SET(OPT_SELECTION "-DHAVE_CONFIG_H -DVERIFY")
+SET(OPT_SELECTION "-DVERIFY")
 SET_SOURCE_FILES_PROPERTIES(../secp256k1/src/secp256k1.c PROPERTIES COMPILE_FLAGS ${OPT_SELECTION} )
 
 # broken but should work
@@ -156,6 +169,78 @@ set( Boost_INCLUDE_DIRS ${CMAKE_CURRENT_LIST_DIR}/boost)
 #set( Boost_LIBRARIES ${F1} ${F2} )
 set( Boost_LIBRARIES )
 
+if (NOT NO_SCRIPT_MACHINE)
+  include(ExternalProject)
+  # keep version and hash in sync with downloadGmpLib.sh and depends/packages/libgmp.mk
+  set(GMP_VERSION 6.3.0)
+  set(GMP_SHA256 a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898)
+  # use the archive fetched by downloadGmpLib.sh if it is there, otherwise download it
+  if (EXISTS ${CMAKE_CURRENT_LIST_DIR}/gmp-${GMP_VERSION}.tar.xz)
+    set(GMP_URL ${CMAKE_CURRENT_LIST_DIR}/gmp-${GMP_VERSION}.tar.xz)
+  else()
+    set(GMP_URL https://gmplib.org/download/gmp/gmp-${GMP_VERSION}.tar.xz)
+  endif()
+
+  # gmp configure --host triple for each ABI (same triples as the depends system uses)
+  if (ANDROID_ABI STREQUAL "arm64-v8a")
+    set(GMP_HOST --host=aarch64-linux-android)
+  elseif (ANDROID_ABI STREQUAL "armeabi-v7a")
+    set(GMP_HOST --host=armv7a-linux-androideabi)
+  elseif (ANDROID_ABI STREQUAL "x86")
+    set(GMP_HOST --host=i686-linux-android)
+  elseif (ANDROID_ABI STREQUAL "x86_64")
+    set(GMP_HOST --host=x86_64-linux-android)
+  elseif (ANDROID_ABI STREQUAL "riscv64")
+    set(GMP_HOST --host=riscv64-linux-android)
+  elseif (ANDROID_ABI)
+    message(FATAL_ERROR "No libgmp host triple for ANDROID_ABI ${ANDROID_ABI}")
+  else()
+    set(GMP_HOST "")  # not cross compiling
+  endif()
+
+  # Compile gmp with the same compiler (and target) as everything else
+  set(GMP_CC "${CMAKE_C_COMPILER}")
+  if (CMAKE_C_COMPILER_TARGET)
+    string(APPEND GMP_CC " --target=${CMAKE_C_COMPILER_TARGET}")
+  endif()
+  if (CMAKE_SYSROOT)
+    string(APPEND GMP_CC " --sysroot=${CMAKE_SYSROOT}")
+  endif()
+
+  set(GMP_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/gmp)
+  # DOWNLOAD_EXTRACT_TIMESTAMP only exists in cmake >= 3.24 (older versions misparse it as part of URL_HASH)
+  set(GMP_EXTRACT_TIMESTAMP)
+  if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+    set(GMP_EXTRACT_TIMESTAMP DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  endif()
+  # --disable-assembly: generic C only, as the depends build does for android
+  ExternalProject_Add(gmp_build
+    URL ${GMP_URL}
+    URL_HASH SHA256=${GMP_SHA256}
+    ${GMP_EXTRACT_TIMESTAMP}
+    PREFIX ${CMAKE_CURRENT_BINARY_DIR}/gmp-ext
+    CONFIGURE_COMMAND <SOURCE_DIR>/configure ${GMP_HOST} --prefix=${GMP_PREFIX}
+        --disable-shared --enable-static --with-pic --disable-assembly
+        "CC=${GMP_CC}" "CFLAGS=-O2 -fPIC" "AR=${CMAKE_AR}" "RANLIB=${CMAKE_RANLIB}"
+    BUILD_COMMAND make -j8
+    INSTALL_COMMAND make install
+    BUILD_BYPRODUCTS ${GMP_PREFIX}/lib/libgmp.a
+    )
+  add_library(gmp STATIC IMPORTED)
+  set_target_properties(gmp PROPERTIES IMPORTED_LOCATION ${GMP_PREFIX}/lib/libgmp.a)
+  add_dependencies(gmp gmp_build)
+  add_dependencies(objlib gmp_build)  # gmp.h must exist before compiling
+  include_directories(${GMP_PREFIX}/include)
+  set(GMP_LIBRARIES gmp)
+else()
+  set(GMP_LIBRARIES)
+endif()
+
+# The per-platform directory holding nexa-config.h.  BEFORE puts it first, so it wins over any stale
+# nexa-config.h in the source tree.  Defaults to this directory, where nexa-config.h used to be copied.
+set(NEXA_CONFIG_DIR ${CMAKE_CURRENT_LIST_DIR} CACHE PATH "Directory containing nexa-config.h")
+include_directories(BEFORE ${NEXA_CONFIG_DIR})
+
 include_directories( .
   ..
   ../script
@@ -180,6 +265,7 @@ SET(CMAKE_CXX_FLAGS  "-std=c++17 ${CMAKE_CXX_FLAGS}")
 target_link_libraries( # Specifies the target library.
                        nexalight
                        # Links the target library to these libraries
+                       ${GMP_LIBRARIES}
                        android  # base android library
                        log  # android log library
                        # ${Boost_LIBRARIES}
@@ -188,6 +274,7 @@ target_link_libraries( # Specifies the target library.
 target_link_libraries( # Specifies the target library.
                        nexalighta
                        # Links the target library to these libraries
+                       ${GMP_LIBRARIES}
                        android  # base android library
                        log  # android log library
                        c++_static
