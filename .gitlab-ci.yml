@@ -182,10 +182,11 @@ gitian-binaries:
               - ci/**/*
               - depends/**/*
               - build-aux/**/*
-              - configure.ac
-              - autogen.sh
-              - Makefile.am
-              - src/Makefile*
+              - "**/Makefile*"
+              - "**/configure.ac"
+              - "**/autogen.sh"
+              - "**/CMakeLists.txt"
+              - "**/*.m4"
 
 ######################################################
 ######## Linting
