@@ -142,11 +142,6 @@ CAmount GetBlockSubsidy(int nHeight, const Consensus::Params &consensusParams);
  */
 uint64_t GetCoinsMinted(int nHeight, const Consensus::Params &consensusParams);
 
-/**
- * Determine what nVersion a new block should use.
- */
-int32_t ComputeBlockVersion(const CBlockIndex *pindexPrev, const Consensus::Params &params);
-
 /** Return whether switching from tip to a chain branching at fork is within the configured reorg depth. */
 bool IsReorgInRange(const CBlockIndex *tip, const CBlockIndex *fork);
 

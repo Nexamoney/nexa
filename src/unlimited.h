@@ -71,8 +71,6 @@ extern std::set<CBlockIndex *> setDirtyBlockIndex;
 extern std::set<CBlockIndex *> setOldDirtyBlockIndex;
 extern std::set<const CBlockIndex *> setHeadersToTrim;
 
-extern uint32_t blockVersion; // Overrides the mined block version if non-zero
-
 /** Default maximum number of Outbound connections to simultaneously allow*/
 extern int nMaxOutConnections;
 
@@ -103,9 +101,6 @@ extern std::vector<std::string> expeditedBlockNodes;
 
 // print out a configuration warning during initialization
 // bool InitWarning(const std::string &str);
-
-// Replace Core's ComputeBlockVersion
-int32_t UnlimitedComputeBlockVersion(const CBlockIndex *pindexPrev, const Consensus::Params &params, uint32_t nTime);
 
 // This API finds a near match to the specified IP address, for example you can
 // leave the port off and it will find the first match to the IP.
@@ -152,10 +147,6 @@ extern UniValue setminingmaxblock(const UniValue &params, bool fHelp);
 // Get and set the custom string that miners can place into the coinbase transaction
 extern UniValue getminercomment(const UniValue &params, bool fHelp);
 extern UniValue setminercomment(const UniValue &params, bool fHelp);
-
-// Get and set the generated (mined) block version.  USE CAREFULLY!
-extern UniValue getblockversion(const UniValue &params, bool fHelp);
-extern UniValue setblockversion(const UniValue &params, bool fHelp);
 
 // RPC Return a list of all available statistics
 extern UniValue getstatlist(const UniValue &params, bool fHelp);
@@ -239,8 +230,6 @@ extern CStatHistory<uint64_t, MinValMax<uint64_t> > poolSize;
 // Configuration variable validators
 std::string OutboundConnectionValidator(const int &value, int *item, bool validate);
 std::string SubverValidator(const std::string &value, std::string *item, bool validate);
-// validator for the voting tweak
-std::string Bip135VoteValidator(const std::string &value, std::string *item, bool validate);
 // ensure that only 1 fork is active
 std::string ForkTimeValidator(const uint64_t &value, uint64_t *item, bool validate);
 std::string TokenWalletUpdater(const bool &value, CTweak<bool> *item, bool validate);

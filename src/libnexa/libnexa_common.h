@@ -130,18 +130,6 @@ public:
     }
 };
 
-// libnexa does not support versionbits right now so just supply this which is used in chainparams
-struct ForkDeploymentInfo
-{
-    /** Deployment name */
-    const char *name;
-    /** Whether GBT clients can safely ignore this rule in simplified usage */
-    bool gbt_force;
-    /** What is this client's vote? */
-    bool myVote;
-};
-extern struct ForkDeploymentInfo VersionBitsDeploymentInfo[];
-
 /**  Subset of BCH chainparams so we can convert addresses and do other light-client operations
  */
 class BchRegtestParams : public CChainParams

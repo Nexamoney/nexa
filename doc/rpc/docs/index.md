@@ -54,14 +54,12 @@
 
 - [genesis](commands/genesis.md)
 - [getblocktemplate](commands/getblocktemplate.md) ( "jsonrequestobject" )
-- [getblockversion](commands/getblockversion.md)
 - [getminercomment](commands/getminercomment.md)
 - [getminingcandidate](commands/getminingcandidate.md)
 - [getmininginfo](commands/getmininginfo.md)
 - [getminingmaxblock](commands/getminingmaxblock.md)
 - [getnetworkhashps](commands/getnetworkhashps.md) ( blocks height )
 - [prioritisetransaction](commands/prioritisetransaction.md) <tx id or idem> <priority delta> <fee delta>
-- [setblockversion](commands/setblockversion.md) blockVersionNumber
 - [setminercomment](commands/setminercomment.md)
 - [setminingmaxblock](commands/setminingmaxblock.md) blocksize
 - [submitblock](commands/submitblock.md) "hexdata" ( "jsonparametersobject" )
