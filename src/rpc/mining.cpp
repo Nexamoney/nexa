@@ -460,22 +460,6 @@ static UniValue MkFullMiningCandidateJson(const std::set<std::string> &setClient
 
     UniValue result(UniValue::VOBJ);
     result.pushKV("capabilities", aCaps);
-    result.pushKV("rules", aRules);
-    result.pushKV("vbavailable", vbavailable);
-    result.pushKV("vbrequired", int(0));
-
-    if (nMaxVersionPreVB >= 2)
-    {
-        // If VB is supported by the client, nMaxVersionPreVB is -1, so we won't get here
-        // Because BIP 34 changed how the generation transaction is serialised, we can only use version/force back to v2
-        // blocks
-        // This is safe to do [otherwise-]unconditionally only because we are throwing an exception above if a non-force
-        // deployment gets activated
-        // Note that this can probably also be removed entirely after the first BIP9/BIP135 non-force deployment
-        // (ie, segwit) gets activated
-        aMutable.push_back("version/force");
-    }
-
     result.pushKV("previousblockhash", pblock->hashPrevBlock.GetHex());
     result.pushKV("transactions", transactions);
     result.pushKV("coinbaseaux", aux);
@@ -574,25 +558,6 @@ UniValue mkblocktemplate(const UniValue &params,
             CValidationState state;
             TestBlockValidity(state, Params(), std::make_shared<const CBlock>(block), pindexPrev, false, true);
             return BIP22ValidationResult(state);
-        }
-
-        const UniValue &aClientRules = find_value(oparam, "rules");
-        if (aClientRules.isArray())
-        {
-            for (unsigned int i = 0; i < aClientRules.size(); ++i)
-            {
-                const UniValue &v = aClientRules[i];
-                setClientRules.insert(v.get_str());
-            }
-        }
-        else
-        {
-            // NOTE: It is important that this NOT be read if versionbits is supported
-            const UniValue &uvMaxVersion = find_value(oparam, "maxversion");
-            if (uvMaxVersion.isNum())
-            {
-                nMaxVersionPreVB = uvMaxVersion.get_int64();
-            }
         }
     }
 
@@ -782,8 +747,6 @@ UniValue getblocktemplate(const UniValue &params, bool fHelp)
 
             "\nResult:\n"
             "{\n"
-            "  \"rules\" : [ \"rulename\", ... ],    (array of strings) specific block rules that are to be enforced\n"
-            "submissions\n"
             "  \"previousblockhash\" : \"xxxx\",    (string) The hash of current highest block\n"
             "  \"transactions\" : [                (array) contents of non-coinbase transactions that should be "
             "included in the next block\n"
