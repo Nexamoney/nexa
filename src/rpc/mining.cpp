@@ -440,8 +440,6 @@ static UniValue MkFullMiningCandidateJson(CBlockIndex *pindexPrev,
         transactions.push_back(entry);
     }
 
-    UniValue aRules(UniValue::VARR);
-    UniValue vbavailable(UniValue::VOBJ);
     UniValue aux(UniValue::VOBJ);
     // COINBASE_FLAGS were assigned in CreateNewBlock() in the steps above.  Now we can use it here.
     {
