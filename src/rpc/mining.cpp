@@ -722,9 +722,8 @@ UniValue getblocktemplate(const UniValue &params, bool fHelp)
             "\nIf the request parameters include a 'mode' key, that is used to explicitly select between the default "
             "'template' request or a 'proposal'.\n"
             "It returns data needed to construct a block to work on.\n"
-            "For full specification, see BIPs 22 and 9:\n"
+            "For the block template protocol, see BIP 22:\n"
             "    https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki\n"
-            "    https://github.com/bitcoin/bips/blob/master/bip-0009.mediawiki#getblocktemplate_changes\n"
 
             "\nArguments:\n"
             "1. \"jsonrequestobject\"       (string, optional) A json object in the following spec\n"
