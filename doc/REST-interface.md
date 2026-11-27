@@ -43,9 +43,6 @@ Only supports JSON as output format.
 * chainwork : (string) total amount of work in active chain, in hexadecimal
 * coinsupply: (numeric) total amount of satoshis minted so far in the active chain
 * pruned : (boolean) if the blocks are subject to pruning
-* softforks : (array) status of softforks in progress
-* bip9_softforks": (object) status of BIP9 softforks in progress
-* bip135_forks": (object) status of BIP135 forks in progress
 
 #### Query UTXO set
 `GET /rest/getutxos/<checktxpool>/<txidem>-<n>/<txidem>-<n>/.../<txidem>-<n>.<bin|hex|json>`

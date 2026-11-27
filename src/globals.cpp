@@ -54,7 +54,6 @@
 #include "validation/validation.h"
 #include "validationinterface.h"
 #include "version.h"
-#include "versionbits.h"
 
 // The group token cache can and should be compiled even when the wallet is disabled.
 #include "wallet/grouptokencache.h"
@@ -296,7 +295,6 @@ vector<std::string> vAddedNodes;
 set<CNetAddr> setservAddNodeAddresses;
 
 int nMaxOutConnections = DEFAULT_MAX_OUTBOUND_CONNECTIONS;
-uint32_t blockVersion = 0; // Overrides the mined block version if non-zero
 
 std::vector<std::string> BUComments = std::vector<std::string>();
 std::string minerComment;
@@ -374,12 +372,6 @@ CIndexedCommitQ *txCommitQ GUARDED_BY(cs_commitQ) = nullptr;
 CThreadCorral txProcessingCorral;
 
 // Configuration Tweaks
-
-std::string bip135Vote;
-CTweakRef<std::string> bip135VoteTweak("mining.vote",
-    "Comma separated list of features to vote for in a block's nVersion field (as per BIP135)",
-    &bip135Vote,
-    &Bip135VoteValidator);
 
 CTweak<uint64_t> pruneIntervalTweak("prune.pruneInterval",
     strprintf("How much block data (in MiB) is written to disk before trying to prune our block storage (default: %ld)",

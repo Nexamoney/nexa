@@ -10,7 +10,7 @@
 #include "consensus/merkle.h"
 #include "key.h"
 #include "policy/policy.h"
-#include "versionbits.h" // bip135 added
+#include "pow.h"
 
 #include "tinyformat.h"
 #include "util.h"
@@ -219,13 +219,6 @@ public:
         // difficulty is cut in half. Doubled if blocks are ahead of schedule.
         // Two days
         consensus.nASERTHalfLife = 2 * 24 * 60 * 60;
-        // testing bit
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nStartTime = 1199145601LL; // January 1, 2008
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nTimeout = 1230767999LL; // December 31, 2008
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].windowsize = 2016;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].threshold = 1916; // 95% of 2016
-
         consensus.nextForkActivationTime = NEXT_FORK_ACTIVATION_TIME;
 
         /**
@@ -327,11 +320,6 @@ public:
         // difficulty is cut in half. Doubled if blocks are ahead of schedule.
         // Two days
         consensus.nASERTHalfLife = 2 * 24 * 60 * 60;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nStartTime = 0;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nTimeout = 999999999999LL;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].windowsize = 144;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].threshold = 108; // 75% of 144
 
         // Fork1 rules always active on regtest
         consensus.fork1Height = 0;
@@ -823,4 +811,3 @@ CChainParams &ModifiableParams()
     assert(pCurrentParams);
     return *pCurrentParams;
 }
-// bip135 end

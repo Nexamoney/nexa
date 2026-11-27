@@ -204,8 +204,6 @@ validation/verifydb.cpp
 validation/verifydb.h
 validationinterface.cpp
 validationinterface.h
-versionbits.cpp
-versionbits.h
 version.h
 qt/addressbookpage.cpp
 qt/addressbookpage.h
@@ -408,7 +406,6 @@ test/univalue_tests.cpp
 test/util_tests.cpp
 test/utilhttp_tests.cpp
 test/utilprocess_tests.cpp
-test/versionbits_tests.cpp
 txlookup.cpp
 txlookup.h
 wallet/crypter.cpp

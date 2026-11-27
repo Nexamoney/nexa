@@ -3,9 +3,8 @@ getblocktemplate ( "jsonrequestobject" )
 
 If the request parameters include a 'mode' key, that is used to explicitly select between the default 'template' request or a 'proposal'.
 It returns data needed to construct a block to work on.
-For full specification, see BIPs 22 and 9:
+For the block template protocol, see BIP 22:
     https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki
-    https://github.com/bitcoin/bips/blob/master/bip-0009.mediawiki#getblocktemplate_changes
 
 Arguments:
 1. "jsonrequestobject"       (string, optional) A json object in the following spec
@@ -20,13 +19,6 @@ Arguments:
 
 Result:
 {
-  "version" : n,                    (numeric) The block version
-  "rules" : [ "rulename", ... ],    (array of strings) specific block rules that are to be enforced
-  "vbavailable" : {                 (json object) set of pending, supported versionbit (BIP 9) softfork deployments
-      "rulename" : bitnumber        (numeric) identifies the bit number as indicating acceptance and readiness for the named softfork rule
-      ,...
-  },
-  "vbrequired" : n,                 (numeric) bit mask of versionbits the server requires set in submissions
   "previousblockhash" : "xxxx",    (string) The hash of current highest block
   "transactions" : [                (array) contents of non-coinbase transactions that should be included in the next block
       {

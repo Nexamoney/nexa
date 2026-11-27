@@ -114,7 +114,6 @@ extern bool fLogIPs;
 
 extern const char *const CONF_FILENAME;
 extern const char *const PID_FILENAME;
-extern const char *const FORKS_CSV_FILENAME; // bip135 added
 
 // Takes a std::vector of strings and splits individual arguments further up if
 // they contain commas. Also removes space from the output strings.
@@ -158,7 +157,6 @@ void FileCommit(FILE *fileout);
 bool TruncateFile(FILE *file, unsigned int length);
 int RaiseFileDescriptorLimit(int nMinFD);
 void AllocateFileRange(FILE *file, uint64_t offset, uint64_t length);
-fs::path GetForksCsvFile(); // bip135 added
 void ReadConfigFile(std::map<std::string, std::string> &mapSettingsRet,
     std::map<std::string, std::vector<std::string> > &mapMultiSettingsRet,
     const AllowedArgs::AllowedArgs &allowedArgs);

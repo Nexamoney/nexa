@@ -850,17 +850,11 @@ static UniValue getblock(const UniValue &params, bool fHelp)
             "  \"hash\" : \"hash\",     (string) the block hash (same as provided)\n"
             "  \"confirmations\" : n,   (numeric) The number of confirmations, or -1 if the block is not on the main "
             "chain\n"
-            "  \"size\" : n,            (numeric) The block size\n"
             "  \"height\" : n,          (numeric) The block height or index\n"
+            "  \"size\" : n,            (numeric) The block size\n"
             "  \"txcount\" : n,         (numeric) The number of transactions in the block\n"
             "  \"feePoolAmt\" : n,      (numeric) The fee pool amount\n"
-            "  \"version\" : n,         (numeric) The block version\n"
-            "  \"versionHex\" : \"00000000\", (string) The block version formatted in hexadecimal\n"
             "  \"merkleroot\" : \"xxxx\", (string) The merkle root\n"
-            "  \"tx\" : [               (array of string) The transaction ids\n"
-            "     \"transactionid\"     (string) The transaction id\n"
-            "     ,...\n"
-            "  ],\n"
             "  \"time\" : ttt,          (numeric) The block time in seconds since epoch (Jan 1 1970 GMT)\n"
             "  \"mediantime\" : ttt,    (numeric) The median block time in seconds since epoch (Jan 1 1970 GMT)\n"
             "  \"nonce\" : n,           (numeric) The nonce\n"
@@ -870,10 +864,18 @@ static UniValue getblock(const UniValue &params, bool fHelp)
             "block (in hex)\n"
             "  \"utxoCommitment\" : n,  (hash)    The utxo commitment\n"
             "  \"minerdata\" : \"xxxx\",        (string) A hex string identifier that the miner provides\n"
+            "  \"status\": status,      (string) Block status\n"
             "  \"previousblockhash\" : \"hash\",  (string) The hash of the previous block\n"
             "  \"ancestorblockhash\" : \"hash\",  (string) The hash of the ancestor block\n"
             "  \"nextblockhash\" : \"hash\"       (string) The hash of the next block\n"
-            "  \"status\": status,      (string) Block status\n"
+            "  \"txid\" : [               (array of string) The transaction ids\n"
+            "     \"transaction id\"     (string) The transaction id\n"
+            "     ,...\n"
+            "  ],\n"
+            "  \"txidem\" : [               (array of string) The transaction ids\n"
+            "     \"transaction idem\"     (string) The transaction id\n"
+            "     ,...\n"
+            "  ],\n"
             "}\n"
             "\nResult (for verbosity = 2, tx_count = false):\n"
             "{\n"
@@ -1536,96 +1538,6 @@ UniValue verifychain(const UniValue &params, bool fHelp)
     return CVerifyDB().VerifyDB(Params(), pcoinsTip, nCheckLevel, nCheckDepth);
 }
 
-#if 0 // unused
-/** Implementation of IsSuperMajority with better feedback */
-static UniValue SoftForkMajorityDesc(int version, CBlockIndex *pindex, const Consensus::Params &consensusParams)
-{
-    UniValue rv(UniValue::VOBJ);
-    bool activated = false;
-    switch (version)
-    {
-        // Kept as an example
-        // case 3:
-        //    activated = pindex->height() >= consensusParams.BIP66Height;
-        //    break;
-    }
-    rv.pushKV("status", activated);
-    return rv;
-}
-
-
-static UniValue SoftForkDesc(const std::string &name,
-    int version,
-    CBlockIndex *pindex,
-    const Consensus::Params &consensusParams)
-{
-    UniValue rv(UniValue::VOBJ);
-    rv.pushKV("id", name);
-    rv.pushKV("version", version);
-    rv.pushKV("reject", SoftForkMajorityDesc(version, pindex, consensusParams));
-    return rv;
-}
-#endif
-
-static void pushBackThresholdStatus(UniValue &rv,
-    const Consensus::Params &consensusParams,
-    const ThresholdState thresholdState,
-    Consensus::DeploymentPos id,
-    VersionBitBIP versionBitBIP)
-{
-    if (versionBitBIP == BIP_135)
-    {
-        rv.pushKV("bit", (int)id);
-    }
-    switch (thresholdState)
-    {
-    case THRESHOLD_DEFINED:
-        rv.pushKV("status", "defined");
-        break;
-    case THRESHOLD_STARTED:
-        rv.pushKV("status", "started");
-        break;
-    case THRESHOLD_LOCKED_IN:
-        rv.pushKV("status", "locked_in");
-        break;
-    case THRESHOLD_ACTIVE:
-        rv.pushKV("status", "active");
-        break;
-    case THRESHOLD_FAILED:
-        rv.pushKV("status", "failed");
-        break;
-    }
-    if (versionBitBIP == BIP_009 && THRESHOLD_STARTED == thresholdState)
-    {
-        rv.pushKV("bit", consensusParams.vDeployments[id].bit);
-    }
-    rv.pushKV("startTime", consensusParams.vDeployments[id].nStartTime);
-    rv.pushKV("timeout", consensusParams.vDeployments[id].nTimeout);
-}
-
-static UniValue BIP9SoftForkDesc(const Consensus::Params &consensusParams, Consensus::DeploymentPos id)
-{
-    UniValue rv(UniValue::VOBJ);
-    const ThresholdState thresholdState = VersionBitsTipState(consensusParams, id);
-    pushBackThresholdStatus(rv, consensusParams, thresholdState, id, BIP_009);
-
-    return rv;
-}
-
-// bip135 begin
-static UniValue BIP135ForkDesc(const Consensus::Params &consensusParams, Consensus::DeploymentPos id)
-{
-    UniValue rv(UniValue::VOBJ);
-    const ThresholdState thresholdState = VersionBitsTipState(consensusParams, id);
-    pushBackThresholdStatus(rv, consensusParams, thresholdState, id, BIP_135);
-    rv.pushKV("windowsize", consensusParams.vDeployments[id].windowsize);
-    rv.pushKV("threshold", consensusParams.vDeployments[id].threshold);
-    rv.pushKV("minlockedblocks", consensusParams.vDeployments[id].minlockedblocks);
-    rv.pushKV("minlockedtime", consensusParams.vDeployments[id].minlockedtime);
-    return rv;
-}
-// bip135 end
-
 UniValue getblockchaininfo(const UniValue &params, bool fHelp)
 {
     if (fHelp || params.size() != 0)
@@ -1655,46 +1567,6 @@ UniValue getblockchaininfo(const UniValue &params, bool fHelp)
             "enabled)\n"
             "  \"prune_target_size\": xxxxxx,  (numeric) the target size used by pruning (only present if automatic "
             "pruning is enabled)\n"
-            "  \"softforks\": [            (array) status of softforks in progress\n"
-            "     {\n"
-            "        \"id\": \"xxxx\",        (string) name of softfork\n"
-            "        \"version\": xx,         (numeric) block version\n"
-            "        \"reject\": {            (object) progress toward rejecting pre-softfork blocks\n"
-            "           \"status\": xx,       (boolean) true if threshold reached\n"
-            "        },\n"
-            "     }, ...\n"
-            "  ],\n"
-            "  \"bip9_softforks\": {          (object) status of BIP9 softforks in progress\n"
-            "     \"xxxx\" : {                (string) name of the softfork\n"
-            "        \"status\": \"xxxx\",    (string) one of \"defined\", \"started\", \"lockedin\", \"active\", "
-            "\"failed\"\n"
-            "        \"bit\": xx,             (numeric) the bit, 0-28, in the block version field used to signal this "
-            "soft fork\n"
-            "        \"startTime\": xx,       (numeric) the minimum median time past of a block at which the bit gains "
-            "its meaning\n"
-            "        \"timeout\": xx          (numeric) the median time past of a block at which the deployment is "
-            "considered failed if not yet locked in\n"
-            "     }\n"
-            "  }\n"
-            // bip135 begin
-            "  \"bip135_forks\": {            (object) status of BIP135 forks in progress\n"
-            "     \"xxxx\" : {                (string) name of the fork\n"
-            "        \"status\": \"xxxx\",      (string) one of \"defined\", \"started\", \"locked_in\", \"active\", "
-            "\"failed\"\n"
-            "        \"bit\": xx,             (numeric) the bit (0-28) in the block version field used to signal this "
-            "fork (only for \"started\" status)\n"
-            "        \"startTime\": xx,       (numeric) the minimum median time past of a block at which the bit gains "
-            "its meaning\n"
-            "        \"windowsize\": xx,      (numeric) the number of blocks over which the fork status is tallied\n"
-            "        \"threshold\": xx,       (numeric) the number of blocks in a window that must signal for fork to "
-            "lock in\n"
-            "        \"minlockedblocks\": xx, (numeric) the minimum number of blocks to elapse after lock-in and "
-            "before activation\n"
-            "        \"minlockedtime\": xx,   (numeric) the minimum number of seconds to elapse after median time past "
-            "of lock-in until activation\n"
-            "     }\n"
-            "  }\n"
-            // bip135 end
             "}\n"
             "\nExamples:\n" +
             HelpExampleCli("getblockchaininfo", "") + HelpExampleRpc("getblockchaininfo", ""));
@@ -1753,28 +1625,6 @@ UniValue getblockchaininfo(const UniValue &params, bool fHelp)
 
         obj.pushKV("prune_target_size", nPruneTarget);
     }
-
-    const Consensus::Params &consensusParams = Params().GetConsensus();
-    UniValue softforks(UniValue::VARR);
-    UniValue bip9_softforks(UniValue::VOBJ);
-    UniValue bip135_forks(UniValue::VOBJ); // bip135 added
-    // bip135 begin : add all the configured forks
-    for (int i = 0; i < Consensus::MAX_VERSION_BITS_DEPLOYMENTS; i++)
-    {
-        Consensus::DeploymentPos bit = static_cast<Consensus::DeploymentPos>(i);
-        const struct ForkDeploymentInfo &vbinfo = VersionBitsDeploymentInfo[bit];
-        if (IsConfiguredDeployment(consensusParams, bit))
-        {
-            bip9_softforks.pushKV(vbinfo.name, BIP9SoftForkDesc(consensusParams, bit));
-            bip135_forks.pushKV(vbinfo.name, BIP135ForkDesc(consensusParams, bit));
-        }
-    }
-
-    obj.pushKV("softforks", softforks);
-    obj.pushKV("bip9_softforks", bip9_softforks);
-    // to maintain backward compat initially, we introduce a new list for the full BIP135 data
-    obj.pushKV("bip135_forks", bip135_forks);
-    // bip135 end
 
     return obj;
 }

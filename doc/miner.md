@@ -124,23 +124,6 @@ A python based test of these interfaces is located at qa/rpc-tests/miningtest.py
 Exactly the same as ***submitblock***.  None means successful, error string or JSONRPCException if there is a problem.
 
 
-## BIP135-based feature voting
-
-BIP135 is an enhancement of BIP9, allowing miners to vote for features by setting certain bits in the version field of solved blocks.
-The definition of the meaning of the bits in the version field changes and is found in config/forks.csv.  You may define your own bits, however
-such a definition is not valuable unless the vast majority of miners agree to honor those bit definitions.
-Detailed information is available in doc/bip135-genvoting.md.
-
-Miners may enable voting for certain features via the "mining.vote" configuration parameter.  Provide a comma separate list of feature names.
-For example, if forks.csv defines three features "f0", "f1" and "f2", you might vote for "f1" and "f2" via the following configuration setting:
-
-```
-mining.vote=f0,f1
-```
-
-This parameter can be accessed or changed at any time via the "get" and "set" RPC calls.
-
-
 ## Setting your subversion string (spoofing the user agent)
 
 To hide that this is a Nexa node, set the "net.subversionOverride" to a string of your choice, in the nexa.conf file or using ./nexa-cli:
@@ -184,42 +167,6 @@ nexa-cli getminingmaxblock
 ```
  - WARNING: Setting this max block size parameter means that Nexa may mine blocks of that size on the NEXT block.
  
-
-## Setting your block version
-
-Miners can set the block version flag via CLI/RPC or config file:
-
-From the CLI/RPC, 
-```sh
-nexa-cli setblockversion (version number or string)
-```
-For example:
-
-The following all choose to vote for 2MB blocks:
-```sh
-nexa-cli setblockversion 0x30000000
-nexa-cli setblockversion 805306368
-nexa-cli setblockversion BIP109
-```
-
-The following does not vote for 2MB blocks:
-```sh
-nexa-cli setblockversion 0x20000000
-nexa-cli setblockversion 536870912
-nexa-cli setblockversion BASE
-```
-
-You can discover the current block version using:
-```sh
-nexa-cli getblockversion
-```
-From nexa.conf:
- > blockversion=805306368
-
-Note you must specify the version in decimal format in the nexa.conf file.
-Here is an easy conversion in Linux: python -c "print '%d' % 0x30000000"
-
- - WARNING: If you use nonsense numbers when calling setblockversion, you'll end up generating blocks with nonsense versions!
 
 ## Setting your block retry intervals
 

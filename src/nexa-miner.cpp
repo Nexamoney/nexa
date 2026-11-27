@@ -96,8 +96,6 @@ public:
     NexaMinerArgs(CTweakMap *pTweaks = nullptr)
     {
         addHeader(_("Mining options:"))
-            .addArg("blockversion=<n>", ::AllowedArgs::requiredInt,
-                _("Set the block version number. For testing only. Value must be an integer"))
             .addArg("cpus=<n>", ::AllowedArgs::requiredInt,
                 _("Number of cpus to use for mining (default: 1). Value must be an integer"))
             .addArg("duration=<n>", ::AllowedArgs::requiredInt,

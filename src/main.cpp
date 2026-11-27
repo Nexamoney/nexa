@@ -58,7 +58,6 @@
 #include "utiltranslate.h"
 #include "validation/validation.h"
 #include "validationinterface.h"
-#include "versionbits.h"
 
 #include <algorithm>
 #include <boost/algorithm/hex.hpp>
@@ -69,7 +68,7 @@
 #include <thread>
 
 #if defined(NDEBUG)
-#error "Bitcoin cannot be compiled without assertions."
+#error "Nexa cannot be compiled without assertions."
 #endif
 
 /** Number of nodes with fSyncStarted set to true. */
@@ -430,9 +429,6 @@ void PartitionCheck(bool (*initialDownloadCheck)(),
     }
 }
 
-// Protected by cs_main
-VersionBitsCache versionbitscache;
-
 bool CheckAgainstCheckpoint(unsigned int height, const uint256 &hash, const CChainParams &chainparams)
 {
     const CCheckpointData &ckpt = chainparams.Checkpoints();
@@ -693,12 +689,6 @@ bool AlreadyHaveBlock(const CInv2 &inv)
     if (suspectBlockBodies.IsSuspect(inv.hash))
         return false;
     return true;
-}
-
-ThresholdState VersionBitsTipState(const Consensus::Params &params, Consensus::DeploymentPos pos)
-{
-    LOCK(cs_main);
-    return VersionBitsState(chainActive.Tip(), params, pos, versionbitscache);
 }
 
 void MainCleanup()
